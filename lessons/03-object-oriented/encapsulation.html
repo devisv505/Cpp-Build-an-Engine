@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Encapsulation, const &amp; Access — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn C++ encapsulation: access specifiers, hiding data behind methods, getters/setters and const-correct member functions for a clean engine API.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Encapsulation, const &amp; Access</h1>
+
+        <p class="lead">In the last lesson your <code>Transform</code> class learned to construct and clean up after itself with RAII. Now we make it <strong>trustworthy</strong>. Encapsulation is the art of hiding a class's internals behind a small, well-behaved public interface so the rest of the engine can only touch it in safe, intentional ways. Get this right and every future system — rendering, physics, scene graphs — becomes far easier to reason about.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How <code>public</code>, <code>private</code> and <code>protected</code> control who can touch each member</li>
+            <li>Why hiding data behind methods keeps invariants safe</li>
+            <li>How to write sensible getters and setters — and when to skip them</li>
+            <li>What <code>const</code> member functions promise, and why const-correctness matters</li>
+            <li>How encapsulation shapes a clean, dependable engine API</li>
+          </ul>
+        </div>
+
+        <h2>Access specifiers: who is allowed in</h2>
+        <p>Every member of a class lives behind an <strong>access specifier</strong>. There are three, and each answers the question "who is allowed to see or change this?"</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Specifier</th><th>Accessible from</th><th>Use it for</th></tr></thead><tbody>
+          <tr><td><code>public</code></td><td>Anywhere</td><td>The interface — methods callers are meant to use</td></tr>
+          <tr><td><code>private</code></td><td>Only this class</td><td>Data and helpers that are implementation details</td></tr>
+          <tr><td><code>protected</code></td><td>This class and derived classes</td><td>Members subclasses need (more on this next lesson)</td></tr>
+        </tbody></table></div>
+
+        <p>The one difference between <code>class</code> and <code>struct</code> in C++ is the default: members of a <code>class</code> are <code>private</code> unless you say otherwise, while a <code>struct</code>'s members default to <code>public</code>. That is why we reach for <code>class</code> when a type has invariants to protect.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">An invariant is a promise</div><p>An <strong>invariant</strong> is a rule that must always hold true for an object — for example, "a health value is never negative." Encapsulation exists so no outside code can quietly break that promise.</p></div></div>
+
+        <h2>Hiding data behind methods</h2>
+        <p>Imagine a component with a public field anyone can write. Nothing stops a bug elsewhere from stuffing a nonsense value into it:</p>
+
+        <pre><code class="language-cpp" data-file="leaky.cpp">// Everything is public — no protection at all.
+struct Health {
+    int current;
+    int max;
+};
+
+Health hp{ 100, 100 };
+hp.current = -9999;   // Oops. Nothing stopped this.
+hp.max = 0;           // Now current &gt; max, and divide-by-zero looms.</code></pre>
+
+        <p>When data is <code>private</code>, the only way to change it is through methods you control — and those methods can enforce the rules every single time:</p>
+
+        <pre><code class="language-cpp" data-file="Health.cpp">#include &lt;algorithm&gt;  // std::clamp, std::max
+
+class Health {
+public:
+    Health(int maxHp)
+        : m_max(std::max(1, maxHp)), m_current(std::max(1, maxHp)) {}
+
+    // Mutators keep the invariant 0 &lt;= current &lt;= max intact.
+    void takeDamage(int amount) {
+        if (amount &lt; 0) return;                 // ignore nonsense
+        m_current = std::max(0, m_current - amount);
+    }
+
+    void heal(int amount) {
+        if (amount &lt; 0) return;
+        m_current = std::min(m_max, m_current + amount);
+    }
+
+private:
+    int m_max;
+    int m_current;
+};</code></pre>
+
+        <p>Now <code>m_current</code> can <em>never</em> fall below zero or climb above <code>m_max</code>, no matter who calls what. The class is the single source of truth for its own rules. Notice the <code>m_</code> prefix on the fields — a common convention that makes it obvious at a glance which names are member data.</p>
+
+        <h2>Getters and setters</h2>
+        <p>Sometimes callers legitimately need to read a value, or set one under controlled conditions. That is what <strong>getters</strong> and <strong>setters</strong> are for. A getter is usually a tiny method that returns a copy or reference; a setter validates before storing.</p>
+
+        <pre><code class="language-cpp" data-file="Health.cpp">class Health {
+public:
+    Health(int maxHp)
+        : m_max(std::max(1, maxHp)), m_current(m_max) {}
+
+    // Getters: read-only access, no way to corrupt state.
+    int current() const { return m_current; }
+    int max() const     { return m_max; }
+    bool isAlive() const { return m_current &gt; 0; }
+
+    // Setter: validates, then stores.
+    void setMax(int newMax) {
+        m_max = std::max(1, newMax);
+        m_current = std::min(m_current, m_max); // keep it in range
+    }
+
+private:
+    int m_max;
+    int m_current;
+};</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Don't add getters and setters reflexively</div><p>A getter/setter pair that just reads and writes a field with no validation is barely better than a public field — but it does preserve your freedom to add rules later without breaking callers. Expose behavior first (<code>takeDamage</code>), raw accessors only where they earn their place.</p></div></div>
+
+        <h2>const member functions</h2>
+        <p>Look again at the getters above — each ends with <code>const</code> after the parameter list. A <strong>const member function</strong> promises not to modify the object it is called on. The compiler enforces that promise: inside a const method you cannot assign to a member or call a non-const method.</p>
+
+        <pre><code class="language-cpp" data-file="const_demo.cpp">class Counter {
+public:
+    int value() const {
+        // m_count = 0;   // ERROR: cannot modify in a const method
+        return m_count;   // reading is fine
+    }
+    void increment() { ++m_count; } // non-const: allowed to change state
+
+private:
+    int m_count = 0;
+};</code></pre>
+
+        <p>This is the difference between a <em>query</em> (asks a question, changes nothing) and a <em>command</em> (does something). Marking queries <code>const</code> documents your intent and lets the compiler catch mistakes.</p>
+
+        <h3>Why const-correctness matters</h3>
+        <p>The payoff appears the moment you pass objects around by <code>const&amp;</code> — which you will do constantly in an engine to avoid copying big objects. You can only call <code>const</code> methods on a <code>const</code> reference:</p>
+
+        <pre><code class="language-cpp" data-file="const_correct.cpp">// Passing by const reference: fast (no copy) and safe (no changes).
+void printHealth(const Health&amp; hp) {
+    // hp.current() works — it's a const method.
+    std::cout &lt;&lt; hp.current() &lt;&lt; " / " &lt;&lt; hp.max() &lt;&lt; '\n';
+    // hp.takeDamage(5); // ERROR: takeDamage is non-const, hp is const
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Const spreads — start early</div><p>If a getter isn't marked <code>const</code>, you can't call it through a <code>const&amp;</code>, so callers are forced to take non-const references, and the "can't be changed" guarantee unravels across your whole codebase. Mark every query <code>const</code> from day one; retrofitting it later is painful.</p></div></div>
+
+        <h2>Refining our Transform component</h2>
+        <p>Let's pull it all together by hardening the <code>Transform</code> from the previous lesson. Position and rotation become <code>private</code>; we expose read access with const getters, controlled mutation with setters, and a const query that reports whether the cached world matrix is stale.</p>
+
+        <pre><code class="language-cpp" data-file="Transform.h">#pragma once
+#include &lt;DirectXMath.h&gt;
+
+// A component-based engine leans on encapsulation: systems talk to
+// Transform only through its public interface, never its raw fields.
+class Transform {
+public:
+    Transform() = default;
+
+    // --- Queries: const, because they never change the object ---
+    const DirectX::XMFLOAT3&amp; position() const { return m_position; }
+    const DirectX::XMFLOAT3&amp; rotation() const { return m_rotation; }
+    const DirectX::XMFLOAT3&amp; scale()    const { return m_scale; }
+    bool isDirty() const { return m_dirty; }
+
+    // --- Commands: non-const, they mutate and flag a rebuild ---
+    void setPosition(const DirectX::XMFLOAT3&amp; p) {
+        m_position = p;
+        m_dirty = true;              // world matrix must be rebuilt
+    }
+    void setScale(const DirectX::XMFLOAT3&amp; s) {
+        m_scale = s;
+        m_dirty = true;
+    }
+
+    // Builds the model matrix. const: reading state, returning a value.
+    DirectX::XMMATRIX worldMatrix() const {
+        using namespace DirectX;
+        XMMATRIX s = XMMatrixScaling(m_scale.x, m_scale.y, m_scale.z);
+        XMMATRIX r = XMMatrixRotationRollPitchYaw(
+            m_rotation.x, m_rotation.y, m_rotation.z);
+        XMMATRIX t = XMMatrixTranslation(
+            m_position.x, m_position.y, m_position.z);
+        return s * r * t;            // scale, then rotate, then translate
+    }
+
+private:
+    DirectX::XMFLOAT3 m_position{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 m_rotation{ 0.0f, 0.0f, 0.0f }; // radians
+    DirectX::XMFLOAT3 m_scale{ 1.0f, 1.0f, 1.0f };
+    bool m_dirty = true;
+};</code></pre>
+
+        <p>Because the fields are private, the only way to move an object is through <code>setPosition</code> — which guarantees the <code>m_dirty</code> flag flips so our renderer knows to recompute the world matrix. No system can forget to set the flag, because no system can reach the data directly. That is encapsulation earning its keep: the class enforces its own correctness.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Interface vs. implementation</div><p>Callers depend on the public methods — the <em>interface</em>. How <code>Transform</code> stores its data — the <em>implementation</em> — stays yours to change. Swap <code>XMFLOAT3</code> for a quaternion rotation later and, as long as the public methods still behave, not a single caller needs editing.</p></div></div>
+
+        <h2>Why a clean engine API relies on this</h2>
+        <p>Unity and Unreal expose thousands of objects through small, disciplined interfaces. You never poke a private field of a Unity <code>Transform</code>; you call <code>SetPosition</code> and trust it to update everything downstream. Your engine will grow the same way. Every component you build — meshes, materials, cameras — becomes a black box with a tidy public face and a protected interior. When a subsystem misbehaves you look inside one class, not the whole program, because nothing else could have touched its data.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><code>public</code>, <code>private</code> and <code>protected</code> decide who can access each member; <code>class</code> defaults to <code>private</code>.</li>
+            <li>Hiding data behind methods lets a class enforce its invariants so no outside code can corrupt its state.</li>
+            <li>Getters give safe read access and setters validate before storing — but expose behavior rather than raw fields where you can.</li>
+            <li>A <code>const</code> member function promises not to modify the object; mark every query <code>const</code> so it works through <code>const&amp;</code>.</li>
+            <li>Encapsulation separates a stable interface from a changeable implementation — the foundation of a clean engine API.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

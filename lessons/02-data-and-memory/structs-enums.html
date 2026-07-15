@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Structs &amp; Enums: Grouping Data — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Bundle related data with structs, access members with the dot operator, and model named states with enum class — the building blocks of a Vertex and Transform.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Structs &amp; Enums: Grouping Data</h1>
+
+        <p class="lead">So far we have juggled loose variables one at a time. But a 3D engine thinks in <em>things</em>: a vertex, a transform, a color. Each of those is really several numbers that belong together. In this lesson you will learn to bundle related data into a single named type using <strong>struct</strong>, and to give meaningful names to fixed sets of states using <strong>enum class</strong>. These two tools are the quiet foundation under every component we will build later.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to declare a <code>struct</code> to group related fields into one type</li>
+            <li>How to create instances and read/write members with the dot operator <code>.</code></li>
+            <li>How to write a realistic <code>Vertex</code> and <code>Transform</code> struct we will reuse when rendering</li>
+            <li>The real difference between <code>struct</code> and <code>class</code> (default access)</li>
+            <li>Why <code>enum class</code> is the safe, modern way to name states</li>
+          </ul>
+        </div>
+
+        <h2>Why group data at all?</h2>
+        <p>Imagine describing a single point in 3D space. You need an x, a y, and a z. Now imagine a triangle with three of those points, each also carrying a color. If you tried to track that with separate variables — <code>x0</code>, <code>y0</code>, <code>z0</code>, <code>r0</code>, <code>g0</code>, <code>b0</code>, <code>x1</code>, and so on — you would drown in names before drawing a single frame.</p>
+        <p>A <strong>struct</strong> lets you invent your own type that packages those values together. Once you have it, one variable represents the whole bundle, and the compiler keeps the pieces organized for you.</p>
+
+        <pre><code class="language-cpp" data-file="point.cpp">#include &lt;iostream&gt;
+
+// A struct defines a brand-new type made of named fields (called "members").
+struct Point3D {
+    float x;
+    float y;
+    float z;
+};
+
+int main() {
+    // Create an instance and initialize its members in order.
+    Point3D p{ 1.0f, 2.0f, 3.0f };
+
+    // Access members with the dot operator '.'
+    std::cout &lt;&lt; "x = " &lt;&lt; p.x &lt;&lt; "\n";
+    std::cout &lt;&lt; "y = " &lt;&lt; p.y &lt;&lt; "\n";
+
+    // Members are just variables you can assign to.
+    p.z = 10.0f;
+    std::cout &lt;&lt; "z = " &lt;&lt; p.z &lt;&lt; "\n";
+    return 0;
+}</code></pre>
+
+        <p>That <code>Point3D p{ 1.0f, 2.0f, 3.0f };</code> line uses <strong>aggregate initialization</strong>: the values in the braces fill the members top to bottom. You can also default-initialize members right in the struct, which is a good habit so nothing is ever left as garbage:</p>
+
+        <pre><code class="language-cpp" data-file="point2.cpp">struct Point3D {
+    float x = 0.0f;   // default member initializers
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+Point3D origin;              // all zeros, thanks to the defaults above
+Point3D up{ 0.0f, 1.0f, 0.0f };</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Default your members</div>
+            <p>Giving each member a default value (like <code>= 0.0f</code>) means a freshly created struct is always in a known state. Uninitialized floats hold random junk, and random junk in a vertex position means garbage triangles on screen.</p>
+          </div>
+        </div>
+
+        <h2>A real Vertex struct</h2>
+        <p>When we start talking to DirectX, the GPU needs a list of <strong>vertices</strong>. Each vertex is exactly the kind of grouped data structs were made for: a position and a color. This is not a toy example — it is essentially the layout you will hand to the graphics card in the rendering module.</p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">// Reused throughout the rendering module.
+// A single point of a mesh: where it is, and what color it is.
+struct Vertex {
+    float x = 0.0f;   // position
+    float y = 0.0f;
+    float z = 0.0f;
+
+    float r = 1.0f;   // color (red, green, blue, alpha)
+    float g = 1.0f;
+    float b = 1.0f;
+    float a = 1.0f;
+};</code></pre>
+
+        <p>Because a <code>Vertex</code> is a plain type, you can drop many of them into a <code>std::vector</code> — the growable array we met earlier — to describe an entire triangle or mesh:</p>
+
+        <pre><code class="language-cpp" data-file="triangle.cpp">#include &lt;vector&gt;
+#include "Vertex.h"
+
+std::vector&lt;Vertex&gt; makeTriangle() {
+    std::vector&lt;Vertex&gt; verts;
+
+    // Three corners. Position first, then an RGBA color.
+    verts.push_back(Vertex{  0.0f,  0.5f, 0.0f,  1.0f, 0.0f, 0.0f, 1.0f }); // top, red
+    verts.push_back(Vertex{  0.5f, -0.5f, 0.0f,  0.0f, 1.0f, 0.0f, 1.0f }); // right, green
+    verts.push_back(Vertex{ -0.5f, -0.5f, 0.0f,  0.0f, 0.0f, 1.0f, 1.0f }); // left, blue
+
+    return verts;
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">The GPU cares about layout</div>
+            <p>Later, DirectX will read this vector as raw bytes. Because our members are simple floats laid out in order, the memory of one <code>Vertex</code> is just seven floats back to back — exactly what a <em>vertex buffer</em> expects. Structs give us that predictable memory shape for free.</p>
+          </div>
+        </div>
+
+        <h2>A Transform struct</h2>
+        <p>Every object in a scene needs to know where it sits, how it is turned, and how big it is. In Unity that is the <em>Transform</em> component; in Unreal it is baked into every actor. We will build the same idea, and it starts as a humble struct that groups three positions' worth of data.</p>
+
+        <pre><code class="language-cpp" data-file="Transform.h">struct Vector3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
+// A component that says where an object is in the world.
+struct Transform {
+    Vector3 position;                 // where it is
+    Vector3 rotation;                 // pitch/yaw/roll in degrees
+    Vector3 scale{ 1.0f, 1.0f, 1.0f };// how big (1 = unchanged)
+};</code></pre>
+
+        <p>Notice a struct can contain other structs. A <code>Transform</code> is built from three <code>Vector3</code> values, and you reach through with chained dots:</p>
+
+        <pre><code class="language-cpp" data-file="move.cpp">#include "Transform.h"
+
+void nudgeUp(Transform&amp; t) {
+    // Read and write nested members by chaining the dot operator.
+    t.position.y += 1.0f;   // move one unit up the Y axis
+}</code></pre>
+
+        <p>That <code>Transform&amp;</code> parameter is a <em>reference</em> — the function edits the caller's actual transform instead of a copy. Grouping the data made the function signature clean: one <code>Transform</code> rather than nine loose floats.</p>
+
+        <h2>struct vs class</h2>
+        <p>You may have heard C++ also has <code>class</code>. Here is the honest truth that surprises most beginners: <strong>struct and class are almost the same thing</strong>. They both define a type with members and functions. The single built-in difference is the <em>default access level</em>.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Keyword</th><th>Members default to</th><th>Conventional use</th></tr></thead>
+            <tbody>
+              <tr><td><code>struct</code></td><td><strong>public</strong> (visible from outside)</td><td>Plain data bundles like <code>Vertex</code></td></tr>
+              <tr><td><code>class</code></td><td><strong>private</strong> (hidden, accessed via methods)</td><td>Types that protect their internal state</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>The two snippets below behave identically — the only reason to pick one keyword over the other is to signal your intent to other programmers:</p>
+
+        <pre><code class="language-cpp" data-file="access.cpp">struct A {
+    int value;      // public by default: anyone can read/write A::value
+};
+
+class B {
+    int value;      // private by default: only B's own code can touch it
+public:
+    void set(int v) { value = v; }   // a method opens a controlled door
+    int get() const { return value; }
+};</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">A simple rule of thumb</div>
+            <p>Reach for <code>struct</code> when the type is just data that everyone is allowed to see and set — like <code>Vertex</code> or <code>Transform</code>. Reach for <code>class</code> when the type owns something it must guard (a file handle, a GPU resource) and wants to control how you touch it.</p>
+          </div>
+        </div>
+
+        <h2>Naming states with enum</h2>
+        <p>Data is not always numbers. Sometimes a value is one of a small, fixed set of choices: a light is Directional, Point, or Spot; a game is Loading, Playing, or Paused. You <em>could</em> use raw integers (0, 1, 2) but then <code>state = 7;</code> compiles happily and means nothing. An <strong>enum</strong> gives those choices real names.</p>
+        <p>Prefer the modern, scoped form: <code>enum class</code>. It keeps the names tidy inside their type and refuses to silently convert to and from integers, which prevents a whole category of bugs.</p>
+
+        <pre><code class="language-cpp" data-file="state.cpp">#include &lt;iostream&gt;
+
+// Scoped enumeration: the values live inside GameState.
+enum class GameState {
+    Loading,
+    Playing,
+    Paused,
+    GameOver
+};
+
+void update(GameState state) {
+    // Names must be qualified: GameState::Playing, not just Playing.
+    switch (state) {
+        case GameState::Loading:  std::cout &lt;&lt; "Loading...\n";   break;
+        case GameState::Playing:  std::cout &lt;&lt; "Running game\n"; break;
+        case GameState::Paused:   std::cout &lt;&lt; "Paused\n";       break;
+        case GameState::GameOver: std::cout &lt;&lt; "Game over\n";    break;
+    }
+}
+
+int main() {
+    GameState state = GameState::Loading;
+    update(state);
+
+    state = GameState::Playing;
+    update(state);
+    return 0;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Avoid old-style plain enum</div>
+            <p>A classic <code>enum GameState { Loading, Playing };</code> leaks its names into the surrounding scope and implicitly converts to <code>int</code>. Two such enums that both define <code>Loading</code> would clash, and <code>if (state == 0)</code> would compile even though it is meaningless. <code>enum class</code> stops both mistakes — use it by default.</p>
+          </div>
+        </div>
+
+        <p>Enums combine beautifully with structs. Our <code>Transform</code> could sit next to a small render description that names its options instead of using magic numbers:</p>
+
+        <pre><code class="language-cpp" data-file="light.cpp">enum class LightType {
+    Directional,
+    Point,
+    Spot
+};
+
+struct Light {
+    Vector3   position;
+    Vector3   color{ 1.0f, 1.0f, 1.0f };
+    float     intensity = 1.0f;
+    LightType type = LightType::Point;   // clear, self-documenting
+};</code></pre>
+
+        <p>Reading <code>light.type = LightType::Spot;</code> tells you exactly what is happening. That readability is not a luxury — when your engine grows to thousands of lines, self-documenting types are what keep it understandable.</p>
+
+        <h2>Putting it together</h2>
+        <p>Structs and enums are the vocabulary of an engine. A mesh is a <code>std::vector&lt;Vertex&gt;</code>; an object's placement is a <code>Transform</code>; its behavior branches on an <code>enum class</code> state. Everything from here on out will be built by combining these grouped types, so getting comfortable now pays off in every later lesson.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <code>struct</code> defines your own type by grouping related members; access them with the dot operator <code>.</code>, and chain dots for nested structs.</li>
+            <li>Give members default values so a fresh instance is never full of garbage; then use aggregate initialization <code>Vertex{ ... }</code> to fill them.</li>
+            <li>A <code>Vertex</code> (position + color) and a <code>Transform</code> (position, rotation, scale) are real engine types we will reuse when rendering.</li>
+            <li><code>struct</code> and <code>class</code> differ only in default access — <code>struct</code> is public (data bundles), <code>class</code> is private (guarded state).</li>
+            <li>Use <code>enum class</code> to name a fixed set of states safely; it scopes the names and blocks accidental integer conversions.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

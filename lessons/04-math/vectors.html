@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vectors: the Language of 3D — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn what a 3D vector is, how to add, subtract, scale, measure, and normalize it, then wire it into a reusable Vector3 for your engine.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Vectors: the Language of 3D</h1>
+
+        <p class="lead">In the last lesson you learned that every object in a 3D scene lives inside a coordinate space. But a coordinate on its own is just three numbers. The <strong>vector</strong> is the tool that turns those numbers into something you can move, aim, and measure. Nearly everything in graphics — a camera pointing at a target, a bullet's trajectory, the surface a light bounces off — is expressed as a vector, so this is the single most important piece of math in your engine.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The two ways to read a vector: as a <strong>position</strong> and as a <strong>direction</strong>.</li>
+            <li>Adding, subtracting, and scaling vectors — and what each operation means geometrically.</li>
+            <li>How to measure a vector's <strong>length</strong> (magnitude) with a square root.</li>
+            <li>What <strong>normalization</strong> is and why unit vectors matter so much.</li>
+            <li>How to reuse your <code>Vector3</code> class and preview DirectXMath's <code>XMFLOAT3</code>.</li>
+          </ul>
+        </div>
+
+        <h2>What a vector actually is</h2>
+
+        <p>A 3D vector is just three numbers grouped together: an <code>x</code>, a <code>y</code>, and a <code>z</code> component. The magic is that the <em>same</em> three numbers can mean two different things depending on how you use them.</p>
+
+        <ul>
+          <li>As a <strong>position</strong>, a vector says <em>where</em> something is. The point <code>(3, 0, 5)</code> is "3 units right, 0 up, 5 forward" from the origin.</li>
+          <li>As a <strong>direction</strong> (or displacement), a vector says <em>which way and how far</em>. The vector <code>(0, 1, 0)</code> means "straight up," and <code>(0, 5, 0)</code> means "straight up, five units of it."</li>
+        </ul>
+
+        <p>This dual nature is why we can use one <code>Vector3</code> type for the position of a cube, the direction a camera faces, and the velocity of a projectile. When we build our <strong>Transform</strong> component later, its <code>position</code> will be a vector, and so will the direction it moves each frame.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 220" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg">
+              <!-- axes -->
+              <line x1="60" y1="180" x2="320" y2="180" stroke="currentColor" stroke-width="1" opacity="0.5"/>
+              <line x1="60" y1="180" x2="60" y2="30" stroke="currentColor" stroke-width="1" opacity="0.5"/>
+              <text x="326" y="184" font-size="12" stroke="none" fill="currentColor">x</text>
+              <text x="52" y="26" font-size="12" stroke="none" fill="currentColor">y</text>
+              <!-- vector arrow -->
+              <line x1="60" y1="180" x2="240" y2="70" stroke="#4aa8ff" stroke-width="2.5"/>
+              <polygon points="240,70 228,72 234,82" fill="#4aa8ff" stroke="#4aa8ff"/>
+              <circle cx="60" cy="180" r="3" fill="currentColor" stroke="none"/>
+              <text x="150" y="112" font-size="13" stroke="none" fill="#4aa8ff">v = (x, y, z)</text>
+              <!-- second panel: same vector, two meanings -->
+              <text x="420" y="70" font-size="13" stroke="none" fill="currentColor">position: a point</text>
+              <text x="420" y="150" font-size="13" stroke="none" fill="currentColor">direction: an arrow</text>
+              <circle cx="400" cy="65" r="4" fill="#4aa8ff" stroke="none"/>
+              <line x1="392" y1="145" x2="410" y2="145" stroke="#4aa8ff" stroke-width="2.5"/>
+              <polygon points="410,145 400,142 400,148" fill="#4aa8ff" stroke="#4aa8ff"/>
+            </svg>
+          </div>
+          <figcaption>The same triple of numbers is a point when read as a position and an arrow when read as a direction.</figcaption>
+        </figure>
+
+        <h2>Adding and subtracting vectors</h2>
+
+        <p>Vector addition works component by component: you add the x's, the y's, and the z's. Geometrically, adding means "start at the first vector, then walk along the second." If you are at position <code>(2, 0, 3)</code> and you move by the direction <code>(0, 0, 4)</code>, you end up at <code>(2, 0, 7)</code>.</p>
+
+        <p><strong>Subtraction</strong> is the operation you will reach for constantly. The vector <code>b - a</code> is "the direction from <code>a</code> to <code>b</code>." To make a camera look at a target, you compute <code>target - cameraPosition</code> and that difference is exactly the direction the camera must face.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Remember: destination minus source</div>
+            <p>The direction "from A to B" is always <code>B - A</code>, not <code>A - B</code>. Get the order backwards and your object points in exactly the wrong direction — a very common first bug.</p>
+          </div>
+        </div>
+
+        <h2>Scalar multiplication</h2>
+
+        <p>Multiplying a vector by a single number — a <strong>scalar</strong> — scales its length while keeping its direction. Multiply <code>(0, 1, 0)</code> by <code>5</code> and you get <code>(0, 5, 0)</code>: same "up" direction, five times as long. Multiply by a negative number and the vector flips to point the opposite way. This is how you turn a velocity into a per-frame step: <code>velocity * deltaTime</code>.</p>
+
+        <h2>Reusing our Vector3 class</h2>
+
+        <p>Back in the OOP module we built a small <code>Vector3</code> struct with overloaded operators. Here it is again, now that the operations above have real geometric meaning. Notice how each operator is just the component-wise rule we described.</p>
+
+        <pre><code class="language-cpp" data-file="Vector3.h">#pragma once
+#include &lt;cmath&gt;
+
+struct Vector3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+
+    // Add two vectors component by component.
+    Vector3 operator+(const Vector3&amp; rhs) const {
+        return { x + rhs.x, y + rhs.y, z + rhs.z };
+    }
+
+    // Subtract: (b - a) is the direction from a to b.
+    Vector3 operator-(const Vector3&amp; rhs) const {
+        return { x - rhs.x, y - rhs.y, z - rhs.z };
+    }
+
+    // Scale by a single number (scalar multiply).
+    Vector3 operator*(float s) const {
+        return { x * s, y * s, z * s };
+    }
+
+    // Length (magnitude): the Pythagorean theorem in 3D.
+    float Length() const {
+        return std::sqrt(x * x + y * y + z * z);
+    }
+
+    // Return a unit-length copy pointing the same way.
+    Vector3 Normalized() const {
+        float len = Length();
+        if (len &gt; 0.0f) {
+            return { x / len, y / len, z / len };
+        }
+        return { 0.0f, 0.0f, 0.0f }; // guard against divide-by-zero
+    }
+};</code></pre>
+
+        <h2>Length: how long is a vector?</h2>
+
+        <p>The <strong>magnitude</strong> (or length) of a vector answers "how far?" It is the straight-line distance from the tail of the arrow to its tip. In 3D it comes straight from the Pythagorean theorem, extended to three axes:</p>
+
+        <pre><code class="language-text">length = sqrt(x*x + y*y + z*z)</code></pre>
+
+        <p>So the vector <code>(3, 0, 4)</code> has length <code>sqrt(9 + 0 + 16) = sqrt(25) = 5</code>. Once you can measure length, the distance between two points <code>a</code> and <code>b</code> is simply <code>(b - a).Length()</code> — the length of the vector between them. You'll use that for things like "is this enemy close enough to attack?"</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">sqrt is not free</div>
+            <p>The square root is a relatively expensive CPU operation. When you only need to <em>compare</em> distances (which is closer?), compare the squared lengths and skip the <code>sqrt</code> entirely — the ordering is identical.</p>
+          </div>
+        </div>
+
+        <h2>Normalization: making a unit vector</h2>
+
+        <p>A <strong>unit vector</strong> is a vector with a length of exactly 1. <strong>Normalizing</strong> means dividing a vector by its own length so it keeps its direction but shrinks (or grows) to length 1. That is exactly what <code>Normalized()</code> does above.</p>
+
+        <p>Why do we care so much? Because a unit vector represents <em>pure direction</em> with no magnitude baked in. Almost every direction in graphics is expected to be normalized:</p>
+
+        <ul>
+          <li>Surface <strong>normals</strong> used in lighting must be unit length or your shading will be too bright or too dark.</li>
+          <li>The direction a camera or character <strong>faces</strong> is a unit vector, so you can multiply it by any speed you like.</li>
+          <li>Many math formulas (like the dot product in the next lesson) assume their inputs are normalized.</li>
+        </ul>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Never normalize a zero vector</div>
+            <p>A vector of length 0 has no direction, and dividing by 0 produces <code>NaN</code> values that silently corrupt every calculation downstream. Always guard with an <code>if (len &gt; 0.0f)</code> check, exactly as the class above does.</p>
+          </div>
+        </div>
+
+        <h3>Putting it together</h3>
+
+        <p>Here is a short, complete program that uses every operation from this lesson. It computes the direction from a camera to a target and steps the camera toward it by a fixed speed.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include "Vector3.h"
+
+int main() {
+    Vector3 cameraPos { 0.0f, 2.0f, 0.0f };
+    Vector3 target    { 3.0f, 2.0f, 4.0f };
+
+    // Direction from camera to target = destination - source.
+    Vector3 toTarget = target - cameraPos;
+
+    float distance = toTarget.Length();          // how far away is it?
+    Vector3 dir    = toTarget.Normalized();       // pure direction, length 1
+
+    std::cout &lt;&lt; "Distance to target: " &lt;&lt; distance &lt;&lt; "\n";
+    std::cout &lt;&lt; "Facing direction:  ("
+              &lt;&lt; dir.x &lt;&lt; ", " &lt;&lt; dir.y &lt;&lt; ", " &lt;&lt; dir.z &lt;&lt; ")\n";
+
+    // Move the camera 1.5 units along that direction.
+    float speed = 1.5f;
+    cameraPos = cameraPos + dir * speed;          // add a scaled direction
+
+    std::cout &lt;&lt; "New camera position: ("
+              &lt;&lt; cameraPos.x &lt;&lt; ", " &lt;&lt; cameraPos.y &lt;&lt; ", " &lt;&lt; cameraPos.z &lt;&lt; ")\n";
+    return 0;
+}</code></pre>
+
+        <p>Run it and you'll see the distance is <code>5</code> (a 3-4 right triangle on the x/z plane), the facing direction is a unit vector, and the camera slides <code>1.5</code> units toward the target. Every line here is an operation you'll perform thousands of times per frame in a real engine.</p>
+
+        <h2>A preview of DirectXMath</h2>
+
+        <p>Our hand-written <code>Vector3</code> is perfect for learning, but when we reach the DirectX modules we'll store vector data in the format the GPU and the DirectXMath library expect: <code>XMFLOAT3</code>. It is a plain three-float struct, deliberately simple so it maps directly to what a shader reads.</p>
+
+        <pre><code class="language-cpp" data-file="preview.cpp">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+// XMFLOAT3 is just storage: three floats, no math built in.
+XMFLOAT3 positionStorage { 3.0f, 0.0f, 4.0f };
+
+// Load it into an XMVECTOR for fast SIMD math, then store the result back.
+XMVECTOR v      = XMLoadFloat3(&amp;positionStorage);
+XMVECTOR unit   = XMVector3Normalize(v);          // hardware-accelerated normalize
+XMFLOAT3 result;
+XMStoreFloat3(&amp;result, unit);</code></pre>
+
+        <p>The pattern is the same math you just wrote by hand — the library only adds a load/store step so it can use fast SIMD instructions under the hood. Because the concepts are identical, everything you learned here transfers directly. Don't worry about memorizing this now; it's just a signpost for where we're headed.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Storage vs. math types</div>
+            <p>DirectXMath splits these on purpose: <code>XMFLOAT3</code> is compact <em>storage</em>, while <code>XMVECTOR</code> is the <em>math</em> type your CPU processes quickly. You load, compute, then store. Keep them straight and the API stops feeling mysterious.</p>
+          </div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A vector is three components (<code>x, y, z</code>) that read as either a <strong>position</strong> or a <strong>direction</strong>.</li>
+            <li><strong>Addition</strong> combines movements; <strong>subtraction</strong> (<code>B - A</code>) gives the direction from A to B; <strong>scalar multiply</strong> changes length without changing direction.</li>
+            <li><strong>Length</strong> is <code>sqrt(x*x + y*y + z*z)</code>; compare squared lengths to avoid the costly square root.</li>
+            <li><strong>Normalizing</strong> divides by length to make a unit vector — pure direction — and you must guard against the zero vector.</li>
+            <li>Our <code>Vector3</code> class already implements all of this, and it mirrors DirectXMath's <code>XMFLOAT3</code> / <code>XMVECTOR</code> that we'll adopt later.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

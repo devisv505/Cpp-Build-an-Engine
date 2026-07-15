@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your First Program: Hello, World — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Create a Console App in Visual Studio and dissect the Hello World program token by token, then build and run it.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Your First Program: Hello, World</h1>
+
+        <p class="lead">Now that the tools are installed, it's time to make the compiler do something for you. In this lesson you'll create a fresh Console App in Visual Studio, look at the classic "Hello, World" program, and take it apart one token at a time. Every line you see here is a building block you'll reuse thousands of times on the road to your own 3D engine, so understanding <em>why</em> each piece exists matters more than memorizing it.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to create a new C++ Console App project in Visual Studio</li>
+            <li>What every token in the Hello World program means</li>
+            <li>How <code>#include</code>, <code>int main()</code>, and <code>return 0</code> fit together</li>
+            <li>How <code>std::cout</code> and the <code>&lt;&lt;</code> operator print text</li>
+            <li>How to build and run your program and see its output</li>
+          </ul>
+        </div>
+
+        <h2>Creating a Console App</h2>
+        <p>Open Visual Studio and choose <strong>Create a new project</strong>. In the template search box, type "Console App" and pick the one labelled <strong>Console App</strong> with the <strong>C++</strong> tag (not the C# or .NET one). Click <strong>Next</strong>.</p>
+        <ol>
+          <li>Give the project a name, for example <code>HelloWorld</code>.</li>
+          <li>Pick a location on disk you can find again — you'll be creating many projects over this course.</li>
+          <li>Click <strong>Create</strong>.</li>
+        </ol>
+        <p>Visual Studio generates a small program for you and opens a file called <code>HelloWorld.cpp</code>. The generated file usually prints "Hello World!" already. We'll replace its contents with a clean version so we can examine every line without distractions.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">A <code>.cpp</code> file is just text</div><p>The <code>.cpp</code> extension marks a C++ <strong>source file</strong>. It's plain text — the compiler reads it and translates it into an executable your computer can run. Nothing magic about it.</p></div>
+        </div>
+
+        <h2>The program</h2>
+        <p>Select everything in <code>HelloWorld.cpp</code>, delete it, and type this in. Typing it yourself (rather than pasting) helps it stick:</p>
+
+        <pre><code class="language-cpp" data-file="HelloWorld.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    std::cout &lt;&lt; "Hello, World\n";
+    return 0;
+}
+</code></pre>
+
+        <p>Six meaningful lines. Let's walk through every one.</p>
+
+        <h3><code>#include &lt;iostream&gt;</code></h3>
+        <p>Lines starting with <code>#</code> are <strong>preprocessor directives</strong> — instructions handled before the real compilation begins. <code>#include</code> means "paste the contents of another file right here." The file <code>&lt;iostream&gt;</code> is part of the C++ Standard Library; its name stands for <strong>input/output stream</strong>. It declares the tools we need to print text to the screen, including <code>std::cout</code>. Without this line, the compiler would have no idea what <code>std::cout</code> is.</p>
+        <p>The angle brackets <code>&lt;</code> and <code>&gt;</code> tell the compiler to look for the file among the standard, system-provided headers. Later we'll write our own headers and include them with quotes instead, like <code>#include "Transform.h"</code>.</p>
+
+        <h3><code>int main()</code></h3>
+        <p>This line declares a <strong>function</strong> named <code>main</code>. A function is a named block of instructions. <code>main</code> is special: it is the <strong>entry point</strong> of every C++ program. When you run your program, the operating system calls <code>main</code> first, and execution flows from top to bottom through its body.</p>
+        <p>The word <code>int</code> in front says <code>main</code> hands back an <strong>integer</strong> (a whole number) when it finishes. The empty parentheses <code>()</code> mean it takes no inputs for now. The curly braces <code>{ }</code> that follow enclose the function's <strong>body</strong> — the actual work.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Exactly one <code>main</code></div><p>A program has exactly one <code>main</code> function — it's the one, agreed-upon place execution starts. Every game engine, including the one you'll build, ultimately has a <code>main</code> somewhere that kicks everything off.</p></div>
+        </div>
+
+        <h3><code>std::cout &lt;&lt; "Hello, World\n";</code></h3>
+        <p>This is the line that actually does something visible. It has several parts:</p>
+        <ul>
+          <li><code>std::cout</code> is the <strong>standard output stream</strong> — a channel that sends text to the console window. The <code>std::</code> prefix means it lives in the <strong>standard namespace</strong>, a labelled container that groups all the Standard Library's names so they don't collide with yours. Read it aloud as "std, then cout."</li>
+          <li><code>&lt;&lt;</code> is the <strong>stream insertion operator</strong>. It "pushes" the thing on its right into the stream on its left. Think of the arrows as pointing the data toward <code>cout</code>.</li>
+          <li><code>"Hello, World\n"</code> is a <strong>string literal</strong> — literal text, marked by double quotes. Everything between the quotes is printed exactly as written, except for escape sequences (next paragraph).</li>
+          <li>The <code>;</code> at the end is a <strong>semicolon</strong>. In C++ almost every statement ends with one. Forgetting it is the single most common beginner error, so watch for it.</li>
+        </ul>
+        <p>The <code>\n</code> inside the quotes is an <strong>escape sequence</strong> meaning "newline." The backslash tells the compiler the next character is special rather than literal, and <code>n</code> makes the cursor drop to the next line — just like pressing <kbd>Enter</kbd>. Without it, later output would run on the same line.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Chain your output</div><p>You can insert several things in one statement by chaining <code>&lt;&lt;</code>: <code>std::cout &lt;&lt; "Score: " &lt;&lt; 42 &lt;&lt; "\n";</code>. Each <code>&lt;&lt;</code> hands another value to the stream, left to right. We'll lean on this constantly when logging what our engine is doing.</p></div>
+        </div>
+
+        <h3><code>return 0;</code></h3>
+        <p>Remember that <code>main</code> promised to return an <code>int</code>. This line fulfils that promise. Returning <code>0</code> is the universal convention for "the program finished successfully." Any non-zero value signals that something went wrong, which is useful when other programs or scripts run yours and check whether it succeeded. After <code>return</code>, the function ends and the program exits.</p>
+
+        <p>Here's a quick reference for every token you just met:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Token</th><th>What it is</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>#include</code></td><td>Preprocessor directive</td><td>Pastes another file's contents in</td></tr>
+            <tr><td><code>&lt;iostream&gt;</code></td><td>Standard header</td><td>Provides <code>std::cout</code> and friends</td></tr>
+            <tr><td><code>int</code></td><td>Type</td><td>A whole number; here, <code>main</code>'s return type</td></tr>
+            <tr><td><code>main</code></td><td>Function name</td><td>The program's entry point</td></tr>
+            <tr><td><code>std::cout</code></td><td>Output stream</td><td>Sends text to the console</td></tr>
+            <tr><td><code>&lt;&lt;</code></td><td>Insertion operator</td><td>Pushes a value into a stream</td></tr>
+            <tr><td><code>"..."</code></td><td>String literal</td><td>Literal text to print</td></tr>
+            <tr><td><code>\n</code></td><td>Escape sequence</td><td>A newline (line break)</td></tr>
+            <tr><td><code>;</code></td><td>Semicolon</td><td>Ends a statement</td></tr>
+            <tr><td><code>return 0;</code></td><td>Return statement</td><td>Exits <code>main</code>, reporting success</td></tr>
+          </tbody>
+        </table></div>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 150" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="20" y="55" width="120" height="44" rx="8" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="80" y="82" fill="currentColor" font-family="monospace" font-size="15" text-anchor="middle">"Hello, World"</text>
+          <line x1="140" y1="77" x2="235" y2="77" stroke="currentColor" stroke-width="2"/>
+          <polygon points="235,77 225,72 225,82" fill="currentColor"/>
+          <text x="188" y="68" fill="#4aa8ff" font-family="monospace" font-size="14" text-anchor="middle">&lt;&lt;</text>
+          <rect x="240" y="55" width="120" height="44" rx="8" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="300" y="82" fill="currentColor" font-family="monospace" font-size="15" text-anchor="middle">std::cout</text>
+          <line x1="360" y1="77" x2="455" y2="77" stroke="currentColor" stroke-width="2"/>
+          <polygon points="455,77 445,72 445,82" fill="currentColor"/>
+          <rect x="460" y="55" width="120" height="44" rx="8" stroke="currentColor" stroke-width="2"/>
+          <text x="520" y="82" fill="currentColor" font-family="sans-serif" font-size="14" text-anchor="middle">Console</text>
+        </svg></div><figcaption>The insertion operator pushes text into <code>cout</code>, which forwards it to the console window.</figcaption></figure>
+
+        <h2>Build and run</h2>
+        <p>Time to see it work. Make sure the toolbar near the top shows a configuration like <strong>Debug</strong> and a platform like <strong>x64</strong> — the defaults are fine for now.</p>
+        <ul>
+          <li>Press <kbd>Ctrl</kbd> + <kbd>F5</kbd> to <strong>Start Without Debugging</strong>. Visual Studio compiles your code and, if there are no errors, launches it.</li>
+          <li>A console window pops up showing:</li>
+        </ul>
+
+        <pre><code class="language-console">Hello, World
+
+C:\...\HelloWorld.exe (process 12345) exited with code 0.
+Press any key to close this window . . .</code></pre>
+
+        <p>That "exited with code 0" line is your <code>return 0;</code> showing up in the real world — the operating system received the success code. Press any key to close the window.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">If it won't compile</div><p>Read the first error in the <strong>Error List</strong>, not the last — later errors are often just fallout from the first. The usual culprits are a missing <code>;</code>, a mismatched quote or brace, or a typo like <code>Std::cout</code> (capital S) or <code>cout</code> without the <code>std::</code> prefix. Fix the top error and build again.</p></div>
+        </div>
+
+        <p>Congratulations — you just wrote, compiled, and ran a C++ program, and you can explain every character in it. That's a real milestone. In the next lesson we'll dig deeper into the build-and-run cycle and meet the debugger, the single most valuable tool for understanding what your code is actually doing — knowledge you'll rely on heavily once your engine grows to thousands of lines.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <strong>Console App</strong> project gives you a <code>.cpp</code> source file that the compiler turns into an executable.</li>
+            <li><code>#include &lt;iostream&gt;</code> pulls in the Standard Library's input/output tools, including <code>std::cout</code>.</li>
+            <li><code>int main()</code> is the program's entry point; execution runs top to bottom through its <code>{ }</code> body.</li>
+            <li><code>std::cout &lt;&lt; "text\n";</code> sends text to the console, and <code>\n</code> starts a new line; every statement ends in <code>;</code>.</li>
+            <li><code>return 0;</code> ends <code>main</code> and reports success to the operating system.</li>
+            <li>Press <kbd>Ctrl</kbd> + <kbd>F5</kbd> to build and run without the debugger.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

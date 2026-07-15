@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operator Overloading — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Teach C++ operators to work on your own types by building a Vector3 with +, -, scalar *, ==, Dot() and stream printing.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Operator Overloading</h1>
+
+        <p class="lead">Wouldn't it be nice to write <code>a + b</code> when <code>a</code> and <code>b</code> are 3D vectors, instead of calling <code>Add(a, b)</code> everywhere? Operator overloading lets your own types plug into the same symbols the built-in types use. In this lesson we build a small <code>Vector3</code> — the exact type that will power the <strong>Transform</strong> component of our engine — and teach it how to add, subtract, scale, and compare.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What operator overloading is and the syntax for <code>operator+</code>, <code>operator-</code>, and friends</li>
+            <li>When to write an operator as a <strong>member</strong> function versus a <strong>free (non-member)</strong> function</li>
+            <li>How to build a reusable <code>Vector3</code> with <code>+</code>, <code>-</code>, scalar <code>*</code>, and <code>==</code></li>
+            <li>How to add a <code>Dot()</code> product and a printable <code>operator&lt;&lt;</code></li>
+            <li>Why you should overload operators sparingly and keep their meaning intuitive</li>
+          </ul>
+        </div>
+
+        <h2>What is an operator, really?</h2>
+        <p>In C++ an operator like <code>+</code> is just a function with a special name. When you write <code>3 + 4</code> the compiler already knows how to add two <code>int</code>s. But if you write <code>a + b</code> where both are your own <code>Vector3</code> type, the compiler has no built-in meaning — so it looks for a function named <code>operator+</code> that accepts two <code>Vector3</code>s. Overloading simply means <em>providing that function</em>.</p>
+        <p>This matters for game math. A 3D position, a direction, a velocity — these are all vectors, and the math reads far more clearly as <code>position + velocity * deltaTime</code> than as a pile of nested function calls.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">You can't invent new symbols</div><p>You can only overload operators that already exist in C++ (<code>+</code>, <code>-</code>, <code>*</code>, <code>==</code>, <code>&lt;&lt;</code>, and so on). You cannot create a brand-new operator like <code>**</code>, and you cannot change the number of operands or their precedence.</p></div>
+        </div>
+
+        <h2>Member vs. free functions</h2>
+        <p>There are two places you can define an operator, and choosing well makes your type easier to use.</p>
+        <ul>
+          <li><strong>Member function:</strong> the left-hand operand is the object itself (<code>this</code>), and you write only the right-hand side as a parameter. Natural for operators that modify or belong to one object, like <code>+=</code> or <code>==</code>.</li>
+          <li><strong>Free (non-member) function:</strong> both operands are parameters. This is the friendlier choice for symmetric operators such as <code>+</code>, and it is <em>required</em> when the left operand is a type you don't own — for example the stream in <code>std::cout &lt;&lt; v</code>, where the left side is <code>std::ostream</code>.</li>
+        </ul>
+
+        <div class="table-wrap"><table><thead><tr><th>Operator</th><th>Best home</th><th>Why</th></tr></thead><tbody>
+          <tr><td><code>a + b</code></td><td>Free function</td><td>Symmetric; treats both sides equally</td></tr>
+          <tr><td><code>a += b</code></td><td>Member</td><td>Modifies the left object in place</td></tr>
+          <tr><td><code>a == b</code></td><td>Member or free</td><td>Either works; member is common</td></tr>
+          <tr><td><code>os &lt;&lt; v</code></td><td>Free function</td><td>Left operand is <code>std::ostream</code>, not ours</td></tr>
+        </tbody></table></div>
+
+        <h2>Building a Vector3</h2>
+        <p>Let's start with the data and a couple of members. We use a <code>struct</code> so the fields are public by default — for a small math type where everyone reads and writes <code>x</code>, <code>y</code>, <code>z</code> directly, that is perfectly idiomatic.</p>
+
+        <pre><code class="language-cpp" data-file="Vector3.h">#pragma once
+#include &lt;iostream&gt;
+
+struct Vector3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+
+    // Default + component constructor
+    Vector3() = default;
+    Vector3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+
+    // Compound assignment as a MEMBER: modifies *this, returns a reference
+    Vector3&amp; operator+=(const Vector3&amp; rhs) {
+        x += rhs.x;
+        y += rhs.y;
+        z += rhs.z;
+        return *this;   // allow chaining: a += b += c;
+    }
+};</code></pre>
+
+        <p>Notice <code>operator+=</code> returns <code>Vector3&amp;</code> (a reference to the modified object). That mirrors how the built-in <code>+=</code> behaves and lets you chain operations. Now the symmetric operators, written as <strong>free functions</strong>. We pass by <code>const&amp;</code> to avoid copying and to promise we won't modify the inputs.</p>
+
+        <pre><code class="language-cpp" data-file="Vector3.h">// Vector + Vector  (free function)
+inline Vector3 operator+(const Vector3&amp; a, const Vector3&amp; b) {
+    return Vector3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+// Vector - Vector
+inline Vector3 operator-(const Vector3&amp; a, const Vector3&amp; b) {
+    return Vector3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+// Vector * scalar  (scales the vector)
+inline Vector3 operator*(const Vector3&amp; v, float s) {
+    return Vector3(v.x * s, v.y * s, v.z * s);
+}
+
+// scalar * Vector  (so 2.0f * v also works — same math, args flipped)
+inline Vector3 operator*(float s, const Vector3&amp; v) {
+    return v * s;   // reuse the version above
+}
+
+// Equality: are two vectors the same?
+inline bool operator==(const Vector3&amp; a, const Vector3&amp; b) {
+    return a.x == b.x &amp;&amp; a.y == b.y &amp;&amp; a.z == b.z;
+}
+
+inline bool operator!=(const Vector3&amp; a, const Vector3&amp; b) {
+    return !(a == b);   // define != in terms of == to stay consistent
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Provide both orders for scalar multiply</div><p>We wrote <code>operator*</code> twice — once for <code>v * 2.0f</code> and once for <code>2.0f * v</code>. C++ won't automatically flip the operands for you, so if you only define one, the other form fails to compile. The second version just reuses the first.</p></div>
+        </div>
+
+        <h3>The dot product</h3>
+        <p>Not every operation deserves an operator. The <strong>dot product</strong> combines two vectors into a single number that tells you how aligned they are — it is central to lighting and to checking whether something faces the camera. There is no obvious symbol for it, so we give it a plain, well-named function instead.</p>
+
+        <pre><code class="language-cpp" data-file="Vector3.h">// Dot product: a scalar measuring alignment of two vectors.
+inline float Dot(const Vector3&amp; a, const Vector3&amp; b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Comparing floats exactly is risky</div><p>Our <code>operator==</code> uses exact <code>==</code> on <code>float</code>s. That is fine for testing "is this the untouched value?", but after real math (rotations, additions) rounding error creeps in and two "equal" vectors may differ in the last bit. For engine code you'll usually compare with a small tolerance (an <em>epsilon</em>) instead. We'll cover that in the math module.</p></div>
+        </div>
+
+        <h3>Printing with operator&lt;&lt;</h3>
+        <p>To debug vectors you want to <code>std::cout</code> them directly. Because the left operand is a <code>std::ostream</code> (a type we don't own), this <em>must</em> be a free function. It takes the stream by reference, writes into it, and returns it so you can chain more <code>&lt;&lt;</code>.</p>
+
+        <pre><code class="language-cpp" data-file="Vector3.h">// Stream output — note the ostream&amp; return so chaining works.
+inline std::ostream&amp; operator&lt;&lt;(std::ostream&amp; os, const Vector3&amp; v) {
+    os &lt;&lt; "(" &lt;&lt; v.x &lt;&lt; ", " &lt;&lt; v.y &lt;&lt; ", " &lt;&lt; v.z &lt;&lt; ")";
+    return os;
+}</code></pre>
+
+        <h2>Putting it together</h2>
+        <p>Here is a full program that uses every operator we defined. It compiles as-is with a C++17 compiler.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include "Vector3.h"
+#include &lt;iostream&gt;
+
+int main() {
+    Vector3 position(0.0f, 1.0f, 0.0f);
+    Vector3 velocity(2.0f, 0.0f, -1.0f);
+    float   deltaTime = 0.5f;   // half a second
+
+    // Reads just like the math: p = p + v * dt
+    position = position + velocity * deltaTime;
+    std::cout &lt;&lt; "New position: " &lt;&lt; position &lt;&lt; "\n";
+
+    // Compound assignment (member operator+=)
+    Vector3 gravity(0.0f, -9.8f, 0.0f);
+    velocity += gravity * deltaTime;
+    std::cout &lt;&lt; "New velocity: " &lt;&lt; velocity &lt;&lt; "\n";
+
+    // Equality
+    Vector3 origin;                 // (0, 0, 0)
+    std::cout &lt;&lt; "At origin? " &lt;&lt; (position == origin ? "yes" : "no") &lt;&lt; "\n";
+
+    // Dot product: how aligned are these two directions?
+    Vector3 forward(0.0f, 0.0f, 1.0f);
+    Vector3 toTarget(0.0f, 0.0f, 1.0f);
+    std::cout &lt;&lt; "Alignment: " &lt;&lt; Dot(forward, toTarget) &lt;&lt; "\n";
+
+    return 0;
+}</code></pre>
+
+        <p>Expected output:</p>
+        <pre><code class="language-console">New position: (1, 1, -0.5)
+New velocity: (2, -4.9, -1)
+At origin? no
+Alignment: 1</code></pre>
+
+        <p>That last line is the payoff. <code>position + velocity * deltaTime</code> is exactly the update every physics engine runs each frame, and thanks to overloading it reads like the equation from a textbook. When we build the <strong>Transform</strong> component later, this <code>Vector3</code> is what stores its position and scale.</p>
+
+        <h2>Don't overdo it</h2>
+        <p>Operator overloading is powerful, and that is precisely why it is easy to abuse. The golden rule: <strong>an overloaded operator should do what a reader already expects that symbol to do.</strong> If <code>+</code> did something surprising — say, appended to a log file — every reader of your code would be misled.</p>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body"><div class="c-title">Overload only when the meaning is obvious</div><p>Adding two vectors with <code>+</code>? Great. Using <code>*</code> to mean "cross product" versus "scale"? Ambiguous — reach for a named function like <code>Cross()</code> instead. If you have to explain what an operator does, it probably shouldn't have been an operator. Named functions (like our <code>Dot()</code>) are never wrong.</p></div>
+        </div>
+
+        <p>A few practical guidelines to carry forward:</p>
+        <ul>
+          <li>Keep operators cheap and side-effect-free (except the compound-assignment family like <code>+=</code>).</li>
+          <li>Preserve expected relationships: if you write <code>==</code>, also write <code>!=</code> in terms of it.</li>
+          <li>Take arguments by <code>const&amp;</code> to avoid needless copies of large types.</li>
+          <li>When in doubt, prefer a clearly named function over a clever operator.</li>
+        </ul>
+
+        <p>In the next lesson we'll make types like this even more reusable with <strong>templates</strong>, so a single definition can work for <code>float</code>, <code>double</code>, or any numeric type.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>An operator is a specially named function; overloading gives it meaning for your own types.</li>
+            <li>Write symmetric operators (<code>+</code>, <code>-</code>, <code>*</code>) as free functions; write in-place ones (<code>+=</code>) as members.</li>
+            <li><code>operator&lt;&lt;</code> must be a free function because its left operand is <code>std::ostream</code>.</li>
+            <li>Provide both <code>v * s</code> and <code>s * v</code>; C++ does not flip operands for you.</li>
+            <li>Some operations (like the dot product) belong in named functions such as <code>Dot()</code>, not operators.</li>
+            <li>Overload sparingly — only when the symbol's meaning is intuitive and unsurprising.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

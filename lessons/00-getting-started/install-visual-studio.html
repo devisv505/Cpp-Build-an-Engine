@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Installing Visual Studio, CLion &amp; the Tools — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Set up a C++ toolchain with Visual Studio on Windows or CLion and Apple Clang on macOS, then verify that the compiler works.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Installing Visual Studio, CLion &amp; the Tools</h1>
+
+        <p class="lead">In the last lesson you learned <em>what</em> a compiler and linker do. Now it's time to put them on your machine. On <strong>Windows</strong>, we'll install Visual Studio and the Windows SDK so you're ready for C++ and DirectX 11. On <strong>macOS</strong>, we'll install Apple Clang and CLion so you can follow the C++ lessons with the same professional editing, building, and debugging tools.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Which setup to use on Windows or macOS</li>
+            <li>How to install Visual Studio and the Windows SDK on Windows</li>
+            <li>How to install Apple Clang and CLion on a Mac</li>
+            <li>How to confirm your compiler works from a terminal</li>
+          </ul>
+        </div>
+
+        <h2>Choose your setup</h2>
+        <p>Your operating system decides which compiler you can use. Both paths teach the same standard C++, but only the Windows path can build the DirectX 11 engine later in the course.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Your computer</th><th>Install</th><th>Compiler</th><th>Course support</th></tr></thead>
+          <tbody>
+            <tr><td>Windows 11</td><td>Visual Studio Community 2026</td><td>MSVC (<code>cl</code>)</td><td>All C++ and DirectX lessons</td></tr>
+            <tr><td>Windows 10</td><td>Visual Studio Community 2022</td><td>MSVC (<code>cl</code>)</td><td>All C++ and DirectX lessons</td></tr>
+            <tr><td>macOS</td><td>CLion + Xcode Command Line Tools</td><td>Apple Clang (<code>clang++</code>)</td><td>C++ lessons; not native DirectX</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Mac users can start here too</div><p>DirectX 11 is a Windows technology, so a Mac cannot build the later engine chapters natively. You can complete the C++ foundations on macOS, then use a Windows PC or a compatible Windows virtual machine for the DirectX portion. If you use a VM, confirm that it supports the DirectX features needed by the course.</p></div>
+        </div>
+
+        <h2>Windows — Visual Studio</h2>
+
+        <h3>Visual Studio vs. Visual Studio Code</h3>
+        <p>First, a name that trips up almost everyone. <strong>Visual Studio</strong> and <strong>Visual Studio Code</strong> are two different products. Visual Studio Code (VS&nbsp;Code) is a lightweight text editor. <strong>Visual Studio</strong> is the full development environment (an "IDE") that bundles the Microsoft C++ compiler, a debugger, and the Windows SDK together. For this course we want the full Visual Studio, because it ships everything DirectX needs in one place.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">It really is free</div><p>The <strong>Community</strong> edition is completely free for students, open-source projects, and individual developers. There is no trial timer and no credit card required — you will build this entire engine without paying a cent.</p></div>
+        </div>
+
+        <h3>Step 1 — Download the installer</h3>
+        <p>Open your browser and go to the <a href="https://visualstudio.microsoft.com/downloads/">Visual Studio downloads page</a>. On Windows 11, choose <strong>Visual Studio Community 2026</strong>. This downloads a small installer — it's only a few megabytes because it's just the <em>bootstrapper</em>. The real components download in the next step once you've told it what you want.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Still using Windows 10?</div><p>Visual Studio 2026 requires Windows 11. Install <strong>Visual Studio Community 2022</strong> from Microsoft's older downloads instead; the workload choices and course instructions are the same. Windows 10 has reached end of support, so upgrade to Windows 11 when your hardware allows it.</p></div>
+        </div>
+
+        <h3>Step 2 — Run the installer and pick the workload</h3>
+        <p>Double-click the downloaded file. After a short setup step, the <strong>Visual Studio Installer</strong> window appears with a grid of <strong>workloads</strong>. A workload is a bundle of tools for a particular kind of development. You only need one:</p>
+        <ul>
+          <li>Find the tile labeled <strong>Desktop development with C++</strong> and tick its checkbox. This installs the MSVC compiler, the linker, the standard library, and the debugger you read about last lesson.</li>
+        </ul>
+
+        <p>Before clicking Install, look at the <strong>Installation details</strong> panel on the right. This lists the individual components the workload will add. This is the part that matters most for us.</p>
+
+        <h3>Confirm a Windows SDK is checked</h3>
+        <p>In that right-hand panel, make sure a <strong>Windows 11 SDK</strong> (or <strong>Windows 10 SDK</strong>) checkbox is ticked. The Windows SDK contains the DirectX 11 headers and libraries — files like <code>d3d11.h</code> and <code>d3d11.lib</code> — that our engine will include and link against. The "Desktop development with C++" workload usually selects a recent SDK for you, but always verify it, because without it none of the DirectX code in later lessons will compile.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't skip the SDK</div><p>If you later see errors like <code>cannot open source file "d3d11.h"</code>, it almost always means the Windows SDK component wasn't installed. You can fix it any time by reopening the Visual Studio Installer and clicking <strong>Modify</strong>.</p></div>
+        </div>
+
+        <p>The table below shows what to expect. The first two rows are the essentials; the SDK is the one to double-check.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Component</th><th>What it gives you</th><th>Needed?</th></tr></thead>
+          <tbody>
+            <tr><td>Latest MSVC build tools</td><td>The C++ compiler &amp; linker</td><td>Required</td></tr>
+            <tr><td>Windows 10/11 SDK</td><td>DirectX 11 headers &amp; libraries</td><td>Required</td></tr>
+            <tr><td>C++ CMake tools</td><td>Cross-editor project builds</td><td>Recommended</td></tr>
+            <tr><td>Just-In-Time debugger</td><td>Attaches to crashes automatically</td><td>Optional</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>When the boxes are ticked, click <strong>Install</strong>. The download is several gigabytes, so this is a good moment to grab a coffee. You can keep working on the machine while it runs.</p>
+
+        <h3>Step 3 — Verify the install</h3>
+        <p>Once the installer finishes, let's prove the compiler is really there. The simplest check is to launch <strong>Visual Studio</strong> from the Start menu — if it opens to the start window, the IDE is installed. But the more satisfying check is to ask the compiler itself to report its version.</p>
+
+        <p>Visual Studio installs a special terminal named <strong>Developer PowerShell for VS</strong>, followed by your Visual Studio version. It's a normal PowerShell window that already knows where the compiler lives. Open the Start menu, type "Developer PowerShell", and launch it. Then run:</p>
+
+        <pre><code class="language-powershell">cl</code></pre>
+
+        <p><code>cl</code> is the name of the Microsoft C++ compiler (short for "compiler"). With no arguments it prints its version and exits. You should see something similar to this:</p>
+
+        <pre><code class="language-console">Microsoft (R) C/C++ Optimizing Compiler Version 19.5x for x64
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+usage: cl [ option... ] filename... [ /link linkoption... ]</code></pre>
+
+        <p>If you see that, congratulations — your toolchain works. If instead PowerShell says <code>cl</code> is not recognized, you almost certainly opened a normal PowerShell rather than the <strong>Developer</strong> one; the developer version sets up the environment variables the compiler needs.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Prefer to confirm the DirectX headers too?</div><p>You can check the SDK arrived by asking whether the main DirectX header exists. The exact folder version will differ on your machine, and that's fine.</p></div>
+        </div>
+
+        <pre><code class="language-powershell"># List any d3d11.h the Windows SDK installed (version folders vary)
+Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Include" -Recurse -Filter d3d11.h</code></pre>
+
+        <p>If that command prints one or more paths, the DirectX 11 headers are on your system and you're ready for the engine chapters.</p>
+
+        <h3>A tiny end-to-end test (optional)</h3>
+        <p>Want to compile something right now? In the Developer PowerShell, create a one-line program and build it. This exercises the compiler <em>and</em> the linker exactly as we discussed in the previous lesson.</p>
+
+        <pre><code class="language-cpp" data-file="check.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    // If this prints, your compiler and linker both work.
+    std::cout &lt;&lt; "Toolchain OK\n";
+    return 0;
+}</code></pre>
+
+        <pre><code class="language-powershell"># Compile check.cpp into check.exe, then run it
+cl /EHsc check.cpp
+.\check.exe</code></pre>
+
+        <p>Seeing <code>Toolchain OK</code> in the terminal means the whole pipeline — source file, compiler, linker, executable — is healthy. The <code>/EHsc</code> flag simply enables standard C++ exception handling; we'll rely on it throughout the course.</p>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't run cl from a plain terminal</div><p>Calling <code>cl</code> from an ordinary Command Prompt or PowerShell will fail with "not recognized." The compiler needs environment variables that only the <strong>Developer</strong> terminals set up. Always use the Developer PowerShell for your Visual Studio version (or build from inside Visual Studio) and this problem disappears.</p></div>
+        </div>
+
+        <h2>macOS — CLion and Apple Clang</h2>
+        <p>CLion is a cross-platform C++ IDE from JetBrains. It provides the editor, project system, and debugger, while Apple's developer tools provide the actual <strong>Clang compiler</strong> and macOS SDK. CLion also bundles CMake, so you do not need to install CMake separately for this course.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">CLion is free for learning</div><p>JetBrains offers CLion free for non-commercial use, including learning, hobby projects, and non-commercial open-source work. Choose <strong>Non-commercial use</strong> when CLion asks for a license and sign in with a JetBrains Account. Commercial work requires a paid license.</p></div>
+        </div>
+
+        <h3>Step 1 — Install Apple's command-line tools</h3>
+        <p>Open <strong>Terminal</strong> from Applications → Utilities and run:</p>
+
+        <pre><code class="language-bash">xcode-select --install</code></pre>
+
+        <p>macOS opens an installation dialog. Click <strong>Install</strong>, accept the license, and wait for it to finish. This adds Apple Clang, the macOS SDK, system headers, and other tools that CLion needs. If the command says the tools are already installed, you can continue. A full Xcode installation also includes these tools, so you do not need to install them twice.</p>
+
+        <h3>Step 2 — Verify Apple Clang</h3>
+        <p>Still in Terminal, ask the C++ compiler for its version:</p>
+
+        <pre><code class="language-bash">clang++ --version</code></pre>
+
+        <p>You should see output beginning with <code>Apple clang version</code>. The exact version and target depend on your version of macOS and whether your Mac uses Apple silicon or Intel.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">After a macOS upgrade</div><p>If Clang suddenly stops working after upgrading macOS, open System Settings → General → Software Update and install any available Command Line Tools update. Apple sometimes releases a matching tools package separately.</p></div>
+        </div>
+
+        <h3>Step 3 — Install CLion</h3>
+        <p>Go to the <a href="https://www.jetbrains.com/clion/download/">CLion download page</a>. JetBrains recommends installing it through the <strong>Toolbox App</strong>, which handles updates for you. A standalone download also works: open the <code>.dmg</code> and drag CLion into your Applications folder.</p>
+
+        <p>Launch CLion, choose <strong>Non-commercial use</strong> for this course, and sign in or create a JetBrains Account. When the welcome screen appears, the IDE itself is installed.</p>
+
+        <h3>Step 4 — Check CLion's toolchain</h3>
+        <p>In CLion, open <strong>Settings</strong> with <code>⌘,</code>, then go to <strong>Build, Execution, Deployment → Toolchains</strong>. CLion normally detects everything automatically. Your default system toolchain should show:</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Tool</th><th>Expected choice</th></tr></thead>
+          <tbody>
+            <tr><td>C compiler</td><td>Apple Clang (<code>/usr/bin/clang</code>)</td></tr>
+            <tr><td>C++ compiler</td><td>Apple Clang++ (<code>/usr/bin/clang++</code>)</td></tr>
+            <tr><td>Debugger</td><td>Bundled LLDB</td></tr>
+            <tr><td>CMake</td><td>Bundled</td></tr>
+            <tr><td>Build tool</td><td>Bundled Ninja or detected Make</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>Green check marks beside the entries mean CLion found the tools. If the compiler fields are empty, make sure <code>clang++ --version</code> works in Terminal, restart CLion, and return to this screen.</p>
+
+        <h3>Step 5 — Compile the test program on macOS</h3>
+        <p>Save the same <code>check.cpp</code> program shown above, open Terminal in that folder, and run:</p>
+
+        <pre><code class="language-bash"># Compile with C++17, create an executable named check, then run it
+clang++ -std=c++17 check.cpp -o check
+./check</code></pre>
+
+        <p>If Terminal prints <code>Toolchain OK</code>, Apple Clang compiled and linked your program successfully. CLion will use that same compiler when you build projects inside the IDE.</p>
+
+        <h2>Optional — Use CLion on Windows</h2>
+        <p>Prefer CLion's interface on Windows? You can use it without giving up DirectX support. Install Visual Studio and the <strong>Desktop development with C++</strong> workload first, exactly as described in the Windows path above. Then install CLion and select a <strong>Visual Studio</strong> toolchain under <strong>Settings → Build, Execution, Deployment → Toolchains</strong>.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Keep the Microsoft toolchain on Windows</div><p>CLion is the IDE, but MSVC and the Windows SDK still do the compiling and provide the DirectX headers and libraries. Avoid switching the course projects to MinGW if you want the smoothest path through the Windows and DirectX chapters.</p></div>
+        </div>
+
+        <h2>Possible errors and how to fix them</h2>
+        <p>Toolchain errors can look like problems in your C++ even when the code is correct. Match the message you see below, apply the fix, and then let the IDE reload its project information.</p>
+
+        <h3>macOS — <code>fatal error: 'iostream' file not found</code></h3>
+        <p>This means Clang is installed, but it cannot find the C++ standard-library headers. It commonly happens when the active Command Line Tools package is incomplete or no longer matches macOS after an update.</p>
+
+        <p>First, check which developer tools macOS is using:</p>
+
+        <pre><code class="language-bash">xcode-select -p
+xcrun --find clang++
+xcrun --show-sdk-path</code></pre>
+
+        <p>If full Xcode is installed in the Applications folder, switch to its complete toolchain:</p>
+
+        <pre><code class="language-bash">sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer</code></pre>
+
+        <p>Enter your Mac password when Terminal asks for it, then verify that the selected path and compiler changed:</p>
+
+        <pre><code class="language-bash">xcode-select -p
+xcrun clang++ --version</code></pre>
+
+        <p>The first command should now print <code>/Applications/Xcode.app/Contents/Developer</code>. Restart CLion and select <strong>Tools → CMake → Reset Cache and Reload Project</strong> before building again.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't have full Xcode?</div><p>Open System Settings → General → Software Update and install any available Command Line Tools update. If no compatible update appears and <code>xcode-select --install</code> does not repair the missing headers, install Xcode from the Mac App Store and use the switch command above.</p></div>
+        </div>
+
+        <h3>CLion — the project builds, but standard-library names stay red</h3>
+        <p>If the program runs with exit code <code>0</code>, but <code>&lt;iostream&gt;</code> and <code>std::cout</code> are red or typing <code>std::</code> shows no suggestions, the compiler is working but CLion's editor index still has the old header paths cached.</p>
+
+        <ol>
+          <li>Select <strong>Tools → CMake → Reset Cache and Reload Project</strong>.</li>
+          <li>Wait until CMake loading and indexing finish; progress appears in CLion's status bar.</li>
+          <li>If names remain red, open <strong>Settings → Build, Execution, Deployment → Toolchains</strong>. Confirm the C++ compiler is <code>/usr/bin/clang++</code> and the tool entries have green check marks, then click <strong>Apply</strong>.</li>
+          <li>Reset the CMake cache once more. As a final fallback, select <strong>File → Invalidate Caches → Invalidate and Restart</strong>.</li>
+        </ol>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Build output and editor analysis are separate</div><p>A successful build proves that the compiler can find the headers. Red code after that usually means the IDE's cached code model is stale, not that you need to change <code>#include &lt;iostream&gt;</code> or add a special library.</p></div>
+        </div>
+
+        <h3>Windows — quick fixes</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Error</th><th>Fix</th></tr></thead>
+          <tbody>
+            <tr><td><code>cl</code> is not recognized</td><td>Run it from the Developer PowerShell for your Visual Studio version, not a plain terminal.</td></tr>
+            <tr><td><code>cannot open source file "d3d11.h"</code></td><td>Open Visual Studio Installer → Modify and add a Windows SDK under Desktop development with C++.</td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Why this setup matters for your engine</h2>
+        <p>It might feel like a lot of ceremony just to print a line of text, but you now have the tools that turn source code into a running program. On Windows, <strong>MSVC</strong> compiles your C++ and the <strong>Windows SDK</strong> provides DirectX files such as <code>d3d11.h</code> and <code>d3d11.lib</code>. On macOS, <strong>Apple Clang</strong> compiles the same standard C++ while CLion uses <strong>CMake</strong> to organize the build and <strong>LLDB</strong> to debug it. The core language skills transfer between both platforms; only the platform-specific graphics layer changes.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>On Windows 11, install <strong>Visual Studio Community 2026</strong> with the <strong>Desktop development with C++</strong> workload; Windows 10 users can use Visual Studio 2022.</li>
+            <li>Confirm a <strong>Windows 10/11 SDK</strong> is checked so the DirectX 11 headers and libraries are available.</li>
+            <li>Verify MSVC by running <code>cl</code> in the <strong>Developer PowerShell</strong> for your Visual Studio version.</li>
+            <li>On macOS, install Apple's tools with <code>xcode-select --install</code>, then install <strong>CLion</strong>.</li>
+            <li>Verify Apple Clang with <code>clang++ --version</code> and check CLion's system toolchain.</li>
+            <li>Mac users can complete the C++ lessons natively, but the DirectX engine chapters require Windows.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

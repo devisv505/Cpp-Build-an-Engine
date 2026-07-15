@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arrays &amp; std::vector — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn C-style fixed arrays and std::vector in C++: indexing, bounds safety, push_back, size, and range-based for loops for engine data.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Arrays &amp; std::vector</h1>
+
+        <p class="lead">So far our variables have held a single value at a time. But a game engine is really a machine for managing <em>lists</em> of things: entities in a scene, vertices in a mesh, high scores on a leaderboard. In this lesson you'll meet C-style fixed arrays, understand why they're dangerous, and then learn <code>std::vector</code> — the growable, safe, modern container we'll reach for again and again as we build our engine.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to declare, fill and index a C-style fixed array — and why indices start at 0</li>
+            <li>Why reading or writing past the end of an array is a serious bug</li>
+            <li>How to use <code>std::vector</code> to grow a list at runtime with <code>push_back</code></li>
+            <li>Reading elements with <code>size()</code>, <code>operator[]</code>, and the range-based <code>for</code> loop</li>
+            <li>When and why to prefer <code>std::vector</code> in engine code</li>
+          </ul>
+        </div>
+
+        <h2>C-style fixed arrays</h2>
+
+        <p>An <strong>array</strong> is a block of memory holding several values of the same type, laid out one after another. You declare one by writing the element type, a name, and the count in square brackets:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    // An array of 4 ints. The [4] is the fixed size.
+    int scores[4] = { 90, 85, 70, 100 };
+
+    // Access elements by index. Indices start at 0!
+    std::cout &lt;&lt; "First score:  " &lt;&lt; scores[0] &lt;&lt; "\n"; // 90
+    std::cout &lt;&lt; "Fourth score: " &lt;&lt; scores[3] &lt;&lt; "\n"; // 100
+
+    // You can also assign to an element.
+    scores[1] = 88;
+
+    return 0;
+}</code></pre>
+
+        <p>Notice that a 4-element array is indexed <code>0</code>, <code>1</code>, <code>2</code>, <code>3</code>. The index is really an <em>offset</em> from the start of the block, so the first element sits at offset 0. This trips up almost everyone at first, so say it out loud: <strong>the last valid index is the size minus one.</strong></p>
+
+        <p>Because the array lives on the stack (remember the stack from the previous lesson), its size must be known when you compile — you cannot decide <code>scores[n]</code> where <code>n</code> is read from the user. That fixed nature is the array's biggest limitation.</p>
+
+        <h3>The bounds danger</h3>
+
+        <p>C++ does <strong>not</strong> check that your index is valid. If <code>scores</code> has 4 elements and you write <code>scores[4]</code> or <code>scores[7]</code>, the compiler happily generates code that reads or writes memory it doesn't own. This is called an <em>out-of-bounds access</em>, and it's one of the most common sources of crashes and security bugs in C and C++.</p>
+
+        <pre><code class="language-cpp" data-file="oops.cpp">int scores[4] = { 90, 85, 70, 100 };
+
+// BUG: valid indices are 0..3, but we touch index 4.
+scores[4] = 55; // undefined behavior — may crash, may corrupt data</code></pre>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Off-by-one is undefined behavior</div>
+            <p>Reading or writing outside an array's bounds is <em>undefined behavior</em>: the program might crash immediately, silently corrupt a nearby variable, or appear to work until it mysteriously breaks later. There's no exception, no warning — just a landmine. Always keep indices in the range <code>0</code> to <code>size − 1</code>.</p>
+          </div>
+        </div>
+
+        <h2>Enter std::vector — the dynamic array</h2>
+
+        <p>Most of the time we don't know up front how many things we'll have. A scene might load 3 objects or 3,000. That's exactly what <code>std::vector</code> is for: it's a <strong>dynamic array</strong> from the C++ standard library that lives on the heap, grows as you add elements, and cleans up after itself automatically. Include <code>&lt;vector&gt;</code> to use it.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+
+int main()
+{
+    // An empty vector of ints — no size baked in.
+    std::vector&lt;int&gt; scores;
+
+    // Add elements one at a time; the vector grows to fit.
+    scores.push_back(90);
+    scores.push_back(85);
+    scores.push_back(70);
+    scores.push_back(100);
+
+    // size() tells you how many elements are currently stored.
+    std::cout &lt;&lt; "We have " &lt;&lt; scores.size() &lt;&lt; " scores.\n";
+
+    // Index just like an array, with operator[].
+    std::cout &lt;&lt; "First score: " &lt;&lt; scores[0] &lt;&lt; "\n";
+
+    return 0;
+}</code></pre>
+
+        <p>The <code>std::vector&lt;int&gt;</code> syntax means "a vector whose elements are <code>int</code>." The part in angle brackets is the element type — you'll see <code>std::vector&lt;float&gt;</code>, <code>std::vector&lt;GameObject&gt;</code>, and so on. This angle-bracket style is a <em>template</em>; we'll explore templates properly later, but for now just read it as "vector of ___."</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Reserve when you know the count</div>
+            <p>If you know roughly how many elements you'll add, call <code>scores.reserve(1000)</code> first. It pre-allocates memory so the vector doesn't have to keep resizing as it grows — a small habit that pays off in hot engine loops.</p>
+          </div>
+        </div>
+
+        <h3>Looping with range-based for</h3>
+
+        <p>To visit every element, C++ gives us a clean, readable loop that works for arrays and vectors alike: the <strong>range-based for loop</strong>. It reads almost like English — "for each <code>score</code> in <code>scores</code>":</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+
+int main()
+{
+    std::vector&lt;int&gt; scores = { 90, 85, 70, 100 };
+
+    // Read-only pass: 'score' is a copy of each element.
+    int total = 0;
+    for (int score : scores)
+        total += score;
+
+    std::cout &lt;&lt; "Total: " &lt;&lt; total &lt;&lt; "\n"; // 345
+
+    // Modifying pass: 'auto&amp;' is a reference, so changes stick.
+    for (auto&amp; score : scores)
+        score += 5; // bonus points for everyone
+
+    std::cout &lt;&lt; "First score is now " &lt;&lt; scores[0] &lt;&lt; "\n"; // 95
+
+    return 0;
+}</code></pre>
+
+        <p>The distinction is important. <code>for (int score : scores)</code> hands you a <em>copy</em> of each element — great for reading, but writing to <code>score</code> wouldn't affect the vector. <code>for (auto&amp; score : scores)</code> gives you a <strong>reference</strong> to the real element (and <code>auto</code> just lets the compiler figure out the type), so any changes you make are written back into the vector.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Use const &amp; to read big things cheaply</div>
+            <p>When elements are large (say a struct holding several floats), copying each one just to read it is wasteful. Write <code>for (const auto&amp; item : items)</code>: the reference avoids the copy, and <code>const</code> promises you won't modify it. We'll lean on this pattern constantly when iterating over components.</p>
+          </div>
+        </div>
+
+        <h2>A tiny engine-flavored example</h2>
+
+        <p>Let's make this concrete with something closer to what we're building. Imagine each object in a scene has a position in 3D space. We can store those positions in a vector and update them every frame. Here's a stripped-down version using a simple struct:</p>
+
+        <pre><code class="language-cpp" data-file="positions.cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+
+// A minimal 3D position. Later this becomes part of our Transform component.
+struct Vec3
+{
+    float x, y, z;
+};
+
+int main()
+{
+    std::vector&lt;Vec3&gt; positions;
+
+    // Spawn three objects at different spots.
+    positions.push_back({ 0.0f, 0.0f, 0.0f });
+    positions.push_back({ 1.0f, 0.0f, 2.0f });
+    positions.push_back({ -3.0f, 0.5f, 4.0f });
+
+    // Simulate one frame: nudge everything upward on the Y axis.
+    const float deltaY = 0.1f;
+    for (auto&amp; p : positions) // reference, so the update sticks
+        p.y += deltaY;
+
+    // Report the final state.
+    std::cout &lt;&lt; "Tracking " &lt;&lt; positions.size() &lt;&lt; " objects:\n";
+    for (const auto&amp; p : positions) // const reference: read-only, no copy
+        std::cout &lt;&lt; "  (" &lt;&lt; p.x &lt;&lt; ", " &lt;&lt; p.y &lt;&lt; ", " &lt;&lt; p.z &lt;&lt; ")\n";
+
+    return 0;
+}</code></pre>
+
+        <p>This is the shape of a lot of engine code: a vector of data, a loop that transforms it each frame, and a loop that reads it back. When we later build a proper <strong>Transform component</strong>, its positions, rotations and scales will live in containers exactly like this one.</p>
+
+        <h2>Array vs. vector at a glance</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Feature</th><th>C-style array <code>int a[4]</code></th><th><code>std::vector&lt;int&gt;</code></th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Size fixed at compile time</td><td>Yes</td><td>No — grows at runtime</td></tr>
+              <tr><td>Add elements later</td><td>No</td><td>Yes, via <code>push_back</code></td></tr>
+              <tr><td>Knows its own length</td><td>No</td><td>Yes, via <code>size()</code></td></tr>
+              <tr><td>Lives on</td><td>Stack (usually)</td><td>Heap (managed for you)</td></tr>
+              <tr><td>Cleans up automatically</td><td>Yes (but can't grow)</td><td>Yes</td></tr>
+              <tr><td>Bounds-checked option</td><td>No</td><td><code>at()</code> throws on bad index</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Both <code>operator[]</code> and <code>at()</code> let you index a vector. <code>operator[]</code> is fast but unchecked (just like an array); <code>at()</code> checks the index and throws an exception if it's out of range. Use <code>at()</code> when you're unsure and <code>operator[]</code> in tight loops where you've already guaranteed the index is valid.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't hold references across a push_back</div>
+            <p>When a vector grows, it may move all its elements to a bigger block of memory. Any pointer or reference you saved to an element beforehand becomes <em>dangling</em> — it points at freed memory. If you're going to keep adding elements, grab references only after you're done growing, or store an index instead.</p>
+          </div>
+        </div>
+
+        <h2>Which should you use?</h2>
+
+        <p>The recommendation is simple: <strong>reach for <code>std::vector</code> by default.</strong> It's safe, it manages its own memory, it knows its length, and it grows when you need it to. Plain C-style arrays still have their place — small fixed-size lookup tables, or interoperating with C APIs and some parts of the DirectX interface — but for the everyday job of "I have a list of things," the vector is the right tool. Nearly every collection in our engine, from mesh vertices to the list of active game objects, will be a <code>std::vector</code>.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A C-style array <code>int a[N]</code> is a fixed-size block indexed from <code>0</code> to <code>N − 1</code>.</li>
+            <li>Indexing outside those bounds is undefined behavior — no warning, just bugs and crashes.</li>
+            <li><code>std::vector</code> is a dynamic array: grow it with <code>push_back</code>, ask its length with <code>size()</code>, and index it with <code>operator[]</code> or the checked <code>at()</code>.</li>
+            <li>The range-based <code>for (auto&amp; x : v)</code> loop iterates cleanly; use <code>auto&amp;</code> to modify, <code>const auto&amp;</code> to read big elements without copying.</li>
+            <li>Prefer <code>std::vector</code> for engine data — it's safe, self-managing, and the container we'll build most of the engine around.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Constructors, Destructors &amp; RAII — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn C++ constructors, member initializer lists, destructors, and the RAII idiom that keeps engine resources safe.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Constructors, Destructors &amp; RAII</h1>
+
+        <p class="lead">In the previous lesson you built classes and created objects from them. But how does an object come to life in a valid state, and what happens when it goes away? In this lesson we answer both questions and meet <strong>RAII</strong>, the single most important idiom in C++. RAII is the reason C++ can manage GPU buffers, file handles, and memory safely without a garbage collector — and it is the foundation every resource-owning class in our engine will rest on.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Write default and parameterized <strong>constructors</strong> to initialize objects safely.</li>
+            <li>Use a <strong>member initializer list</strong> and understand why it beats assignment in the body.</li>
+            <li>Write a <strong>destructor</strong> that runs automatically when an object is destroyed.</li>
+            <li>Apply the <strong>RAII</strong> idiom: acquire a resource in the constructor, release it in the destructor.</li>
+            <li>See why RAII is how our engine will own GPU and system resources without leaks.</li>
+          </ul>
+        </div>
+
+        <h2>What a constructor is for</h2>
+        <p>A <strong>constructor</strong> is a special member function that runs automatically the moment an object is created. Its job is to put the object into a valid, usable state before anyone touches it. A constructor has the same name as the class and no return type — not even <code>void</code>.</p>
+        <p>If you write no constructor at all, the compiler generates a trivial one for you. But relying on that leaves members uninitialized, which is one of the most common sources of bugs in C++. Take control by writing your own.</p>
+
+        <pre><code class="language-cpp" data-file="Vec3.h">// A tiny 3D vector — the kind of type our engine uses everywhere.
+struct Vec3 {
+    float x;
+    float y;
+    float z;
+
+    // Default constructor: no arguments, sensible zero state.
+    Vec3() {
+        x = 0.0f;
+        y = 0.0f;
+        z = 0.0f;
+    }
+
+    // Parameterized constructor: caller supplies the components.
+    Vec3(float px, float py, float pz) {
+        x = px;
+        y = py;
+        z = pz;
+    }
+};
+
+Vec3 origin;              // calls Vec3()        -> (0, 0, 0)
+Vec3 up(0.0f, 1.0f, 0.0f); // calls Vec3(float,...) -> (0, 1, 0)</code></pre>
+
+        <p>Notice we have two constructors with the same name but different parameters. That is <strong>overloading</strong>, and it lets one type support several ways of being created. The compiler picks the right one by matching the arguments you pass.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Give every member a value</div><p>If your class has data members, initialize all of them in every constructor. An uninitialized <code>float</code> or pointer holds garbage, and the bug it causes may not appear until much later — often somewhere unrelated.</p></div>
+        </div>
+
+        <h2>Member initializer lists</h2>
+        <p>Assigning to members inside the constructor body works for simple types, but there is a better tool: the <strong>member initializer list</strong>. It appears after a colon, before the body, and initializes each member <em>directly</em> instead of default-constructing it and then overwriting it.</p>
+
+        <pre><code class="language-cpp" data-file="Vec3.h">struct Vec3 {
+    float x, y, z;
+
+    // Preferred: initialize members directly, in declaration order.
+    Vec3() : x(0.0f), y(0.0f), z(0.0f) {}
+
+    Vec3(float px, float py, float pz) : x(px), y(py), z(pz) {}
+};</code></pre>
+
+        <p>For a <code>float</code> the difference is invisible, but the initializer list becomes essential the moment a member is a type that must be initialized at birth — a reference, a <code>const</code> member, or a class that has no default constructor. Those cannot be assigned later, so the initializer list is the only way to set them.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Order matters</div><p>Members are initialized in the order they are <em>declared</em> in the class, not the order you list them in the initializer list. Keep the two orders in sync to avoid confusing surprises — some compilers will warn you when they differ.</p></div>
+        </div>
+
+        <h2>Destructors: the automatic cleanup</h2>
+        <p>The mirror image of a constructor is the <strong>destructor</strong>. It runs automatically when an object's lifetime ends — when a local variable goes out of scope, or when you <code>delete</code> a heap object. Its name is the class name with a leading tilde (<code>~</code>), and like a constructor it takes no arguments and returns nothing.</p>
+        <p>For a plain <code>Vec3</code> you would never write a destructor; there is nothing to clean up. Destructors earn their keep when an object <em>owns</em> something that must be released: heap memory, a file, a network socket, or a GPU buffer. That ownership idea is the heart of the next section.</p>
+
+        <h2>RAII: the big idea</h2>
+        <p><strong>RAII</strong> stands for <em>Resource Acquisition Is Initialization</em>. The name is clumsy, but the rule is simple and powerful:</p>
+        <ul>
+          <li><strong>Acquire</strong> the resource in the constructor.</li>
+          <li><strong>Release</strong> it in the destructor.</li>
+        </ul>
+        <p>Because the destructor runs automatically and <em>guarantees</em> to run — whether the function returns normally, hits an early <code>return</code>, or unwinds because of an exception — the resource is always released exactly once. You never write manual cleanup at every exit point, and you can never forget to. The object's lifetime <em>is</em> the resource's lifetime.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 170" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="30" y="60" width="150" height="50" rx="8" stroke="#4aa8ff"/>
+          <text x="105" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Constructor</text>
+          <text x="105" y="135" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">acquire resource</text>
+          <rect x="225" y="60" width="150" height="50" rx="8"/>
+          <text x="300" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">object in use</text>
+          <text x="300" y="135" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">valid, safe</text>
+          <rect x="420" y="60" width="150" height="50" rx="8" stroke="#4aa8ff"/>
+          <text x="495" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Destructor</text>
+          <text x="495" y="135" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">release resource</text>
+          <path d="M180 85 L225 85" stroke="#4aa8ff"/><path d="M218 80 L225 85 L218 90" stroke="#4aa8ff"/>
+          <path d="M375 85 L420 85" stroke="#4aa8ff"/><path d="M413 80 L420 85 L413 90" stroke="#4aa8ff"/>
+        </svg></div><figcaption>An object's lifetime brackets the resource it owns — construction acquires, destruction releases.</figcaption></figure>
+
+        <h3>A class that owns a resource</h3>
+        <p>Let's make this concrete with a class that owns a block of heap memory. This models exactly what our engine will later do for vertex data before we hand it to the GPU. The class allocates in its constructor and frees in its destructor — no caller ever has to remember to clean up.</p>
+
+        <pre><code class="language-cpp" data-file="VertexBuffer.cpp">#include &lt;iostream&gt;
+#include &lt;cstddef&gt; // std::size_t
+
+// Owns a raw block of vertex memory. Acquire in ctor, release in dtor.
+class VertexBuffer {
+public:
+    // Constructor ACQUIRES the resource.
+    explicit VertexBuffer(std::size_t count)
+        : m_count(count), m_data(new float[count]) {
+        std::cout &lt;&lt; "Allocated " &lt;&lt; m_count &lt;&lt; " floats\n";
+    }
+
+    // Destructor RELEASES the resource — runs automatically.
+    ~VertexBuffer() {
+        delete[] m_data;
+        std::cout &lt;&lt; "Freed the buffer\n";
+    }
+
+    void set(std::size_t i, float value) { m_data[i] = value; }
+    float get(std::size_t i) const { return m_data[i]; }
+    std::size_t size() const { return m_count; }
+
+private:
+    std::size_t m_count;
+    float* m_data;
+};
+
+void uploadTriangle() {
+    VertexBuffer vb(9); // 3 vertices * 3 floats — memory acquired here
+    vb.set(0, 1.0f);
+    std::cout &lt;&lt; "First value: " &lt;&lt; vb.get(0) &lt;&lt; "\n";
+} // vb goes out of scope here -> ~VertexBuffer() runs -> memory freed
+
+int main() {
+    uploadTriangle();
+    std::cout &lt;&lt; "Back in main, buffer already cleaned up.\n";
+    return 0;
+}</code></pre>
+
+        <p>Run this and you will see the allocation message, the value, then "Freed the buffer" — all without a single manual cleanup call in <code>uploadTriangle</code>. The moment <code>vb</code> leaves scope, its destructor fires. That is RAII doing its job.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">The Rule of Three</div><p>Once a class owns a raw resource and has a real destructor, the compiler-generated copy behavior becomes dangerous: copying our <code>VertexBuffer</code> would leave two objects pointing at the same memory, and both destructors would try to free it — a double-free crash. When you write a destructor that releases a resource, you usually also need to handle copying (delete or define the copy constructor and copy assignment). We'll tackle copy and move semantics properly in a later module; for now, avoid copying resource-owning objects.</p></div>
+        </div>
+
+        <h2>Why the engine leans on RAII</h2>
+        <p>Manual cleanup does not scale. A real render frame might touch dozens of resources, and any early exit that skips a cleanup call leaks memory or GPU handles. RAII removes that entire class of bug: the compiler emits the cleanup for you at every exit path.</p>
+        <p>The C++ standard library is already built this way, and you have been relying on it without noticing. When you use <code>std::vector</code>, its constructor allocates and its destructor frees — a vector is a textbook RAII type. <code>std::string</code>, <code>std::fstream</code>, and smart pointers like <code>std::unique_ptr</code> all follow the same pattern.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Resource</th><th>Acquired in constructor</th><th>Released in destructor</th></tr></thead>
+          <tbody>
+            <tr><td>Heap memory</td><td><code>new[]</code> / allocator</td><td><code>delete[]</code> / deallocate</td></tr>
+            <tr><td>File handle</td><td><code>fopen</code> / <code>ifstream</code> open</td><td><code>fclose</code> / stream close</td></tr>
+            <tr><td>DirectX 11 buffer</td><td><code>CreateBuffer</code></td><td><code>Release()</code> on the COM object</td></tr>
+            <tr><td>Std container</td><td><code>std::vector</code> ctor</td><td><code>std::vector</code> dtor</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>When we reach DirectX, every device, buffer, and shader is a reference-counted COM object that must be released. We will wrap those in RAII types (Microsoft even ships <code>Microsoft::WRL::ComPtr</code> for exactly this) so that a <code>Mesh</code> or <code>Texture</code> component owns its GPU resources and releases them automatically when the component is destroyed. Our future <strong>Transform</strong> and <strong>Mesh</strong> components will be RAII objects through and through.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Prefer the library's RAII types</div><p>You rarely need raw <code>new</code>/<code>delete</code>. Reach for <code>std::vector</code> to own an array and <code>std::unique_ptr</code> to own a single heap object. They implement RAII correctly, including the tricky copy and move rules, so you get safe ownership for free. We wrote a raw buffer above only to see the mechanism up close.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <strong>constructor</strong> runs at creation and puts the object into a valid state; you can overload it for default and parameterized creation.</li>
+            <li>A <strong>member initializer list</strong> (<code>: x(px), y(py)</code>) initializes members directly and is required for references, <code>const</code> members, and types without a default constructor. Members initialize in declaration order.</li>
+            <li>A <strong>destructor</strong> (<code>~ClassName</code>) runs automatically at the end of an object's lifetime and is where cleanup belongs.</li>
+            <li><strong>RAII</strong> ties a resource's lifetime to an object's: acquire in the constructor, release in the destructor, and cleanup becomes automatic and leak-proof.</li>
+            <li>Writing a resource-releasing destructor triggers the <strong>Rule of Three</strong> — handle copying too, or avoid copying the object for now.</li>
+            <li>Standard types like <code>std::vector</code> and <code>std::unique_ptr</code> are RAII, and our DirectX engine will wrap every GPU resource the same way.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

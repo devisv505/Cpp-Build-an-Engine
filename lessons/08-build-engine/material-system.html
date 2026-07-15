@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A Material &amp; Shader System — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build reusable Shader and Material classes in C++ and Direct3D 11 to decouple your engine's meshes from how they are drawn.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>A Material &amp; Shader System</h1>
+
+        <p class="lead">
+          Last lesson we loaded real meshes into vertex and index buffers. But a mesh is just
+          <em>shape</em> — it says nothing about colour, texture, or lighting. In every serious engine
+          (Unity, Unreal, our own) the <strong>how it looks</strong> is a separate object from the
+          <strong>what it is</strong>. In this lesson we build two small classes, <code>Shader</code> and
+          <code>Material</code>, that give us exactly that separation and set us up for a real render loop.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why an engine keeps geometry separate from shading, and what a "material" really is.</li>
+            <li>How to wrap a compiled vertex shader, pixel shader, and input layout in one reusable <code>Shader</code> class.</li>
+            <li>How a <code>Material</code> stores parameters (a colour, a texture) and uploads them to a constant buffer.</li>
+            <li>How <code>Bind()</code> arms the whole pipeline before a mesh's draw call.</li>
+          </ul>
+        </div>
+
+        <h2>Why separate the mesh from how it's drawn</h2>
+        <p>
+          A cube mesh is a fixed list of positions, normals and texture coordinates. That same cube might
+          appear a hundred times in a scene: one glowing red, one wrapped in a wooden crate texture, one
+          tinted blue. If shading lived inside the mesh, we'd need a hundred copies of the same geometry.
+          That's wasteful and it's the wrong mental model.
+        </p>
+        <p>
+          Instead we split responsibilities. A <strong>Shader</strong> is the <em>program</em> that runs on the
+          GPU — a vertex shader plus a pixel shader plus the input layout that describes our vertex format.
+          A <strong>Material</strong> picks a shader and fills in its <em>knobs</em>: a base colour, a texture,
+          later on roughness or metalness. Many materials can share one shader; many objects can share one
+          material. The mesh, meanwhile, knows nothing about any of this — it just supplies geometry.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="20" y="70" width="120" height="60" rx="8"/>
+              <text x="80" y="105" text-anchor="middle" font-size="15" stroke="none" fill="currentColor">Mesh</text>
+              <rect x="240" y="20" width="130" height="50" rx="8" stroke="#4aa8ff"/>
+              <text x="305" y="50" text-anchor="middle" font-size="14" stroke="none" fill="#4aa8ff">Material (red)</text>
+              <rect x="240" y="130" width="130" height="50" rx="8" stroke="#4aa8ff"/>
+              <text x="305" y="160" text-anchor="middle" font-size="14" stroke="none" fill="#4aa8ff">Material (crate)</text>
+              <rect x="460" y="75" width="120" height="50" rx="8"/>
+              <text x="520" y="105" text-anchor="middle" font-size="15" stroke="none" fill="currentColor">Shader</text>
+              <path d="M370 45 H420 V90 H455" stroke="#4aa8ff"/>
+              <path d="M370 155 H420 V110 H455" stroke="#4aa8ff"/>
+            </svg>
+          </div>
+          <figcaption>One shader, reused by several materials. The mesh is drawn independently of both.</figcaption>
+        </figure>
+
+        <h2>The Shader class</h2>
+        <p>
+          Back in the shaders and constant-buffers lessons we compiled HLSL by hand and called
+          <code>VSSetShader</code> / <code>PSSetShader</code> inline. Let's package that up. The class holds three
+          COM objects and exposes a single <code>Bind()</code> that sets them all on the device context. We use
+          <code>Microsoft::WRL::ComPtr</code> so the GPU resources release themselves automatically.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Shader.h">#pragma once
+#include &lt;d3d11.h&gt;
+#include &lt;d3dcompiler.h&gt;
+#include &lt;wrl/client.h&gt;          // Microsoft::WRL::ComPtr
+#include &lt;string&gt;
+
+using Microsoft::WRL::ComPtr;
+
+// Bundles a compiled vertex shader, pixel shader and the input
+// layout that describes our vertex format. One Bind() arms the pipeline.
+class Shader
+{
+public:
+    bool Load(ID3D11Device* device,
+              const std::wstring&amp; vsPath,
+              const std::wstring&amp; psPath,
+              const D3D11_INPUT_ELEMENT_DESC* layout,
+              UINT layoutCount);
+
+    void Bind(ID3D11DeviceContext* context) const;
+
+private:
+    ComPtr&lt;ID3D11VertexShader&gt; m_vs;
+    ComPtr&lt;ID3D11PixelShader&gt;  m_ps;
+    ComPtr&lt;ID3D11InputLayout&gt;  m_inputLayout;
+};</code></pre>
+
+        <p>
+          The implementation compiles both HLSL files, creates the shader objects, and — importantly — builds
+          the input layout <em>from the vertex shader's bytecode</em> so Direct3D can verify our vertex format
+          matches what the shader expects.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Shader.cpp">#include "Shader.h"
+
+// Helper: compile one .hlsl file to GPU bytecode.
+static bool CompileFile(const std::wstring&amp; path, const char* entry,
+                        const char* target, ComPtr&lt;ID3DBlob&gt;&amp; outBlob)
+{
+    ComPtr&lt;ID3DBlob&gt; errors;
+    HRESULT hr = D3DCompileFromFile(
+        path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
+        entry, target, D3DCOMPILE_ENABLE_STRICTNESS, 0,
+        &amp;outBlob, &amp;errors);
+
+    if (FAILED(hr)) {
+        if (errors)   // the compiler writes human-readable messages here
+            OutputDebugStringA((const char*)errors-&gt;GetBufferPointer());
+        return false;
+    }
+    return true;
+}
+
+bool Shader::Load(ID3D11Device* device,
+                  const std::wstring&amp; vsPath,
+                  const std::wstring&amp; psPath,
+                  const D3D11_INPUT_ELEMENT_DESC* layout,
+                  UINT layoutCount)
+{
+    ComPtr&lt;ID3DBlob&gt; vsBlob, psBlob;
+    if (!CompileFile(vsPath, "main", "vs_5_0", vsBlob)) return false;
+    if (!CompileFile(psPath, "main", "ps_5_0", psBlob)) return false;
+
+    // Create the shader objects from their compiled bytecode.
+    if (FAILED(device-&gt;CreateVertexShader(
+            vsBlob-&gt;GetBufferPointer(), vsBlob-&gt;GetBufferSize(),
+            nullptr, &amp;m_vs)))
+        return false;
+
+    if (FAILED(device-&gt;CreatePixelShader(
+            psBlob-&gt;GetBufferPointer(), psBlob-&gt;GetBufferSize(),
+            nullptr, &amp;m_ps)))
+        return false;
+
+    // The input layout is validated against the vertex-shader signature.
+    if (FAILED(device-&gt;CreateInputLayout(
+            layout, layoutCount,
+            vsBlob-&gt;GetBufferPointer(), vsBlob-&gt;GetBufferSize(),
+            &amp;m_inputLayout)))
+        return false;
+
+    return true;
+}
+
+void Shader::Bind(ID3D11DeviceContext* context) const
+{
+    context-&gt;IASetInputLayout(m_inputLayout.Get());
+    context-&gt;VSSetShader(m_vs.Get(), nullptr, 0);
+    context-&gt;PSSetShader(m_ps.Get(), nullptr, 0);
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Compile once, bind many</div>
+            <p>Compiling HLSL is slow, so call <code>Load()</code> during start-up, never inside the render loop. <code>Bind()</code> is the cheap per-frame call — it just points the pipeline at objects that already exist.</p>
+          </div>
+        </div>
+
+        <h2>The Material class</h2>
+        <p>
+          A material owns a shared pointer to a <code>Shader</code> plus the data that customises it. We keep a
+          CPU-side struct, <code>Constants</code>, that mirrors a GPU constant buffer exactly, along with an
+          optional texture (a shader-resource view, or SRV) and a sampler. Using
+          <code>std::shared_ptr&lt;Shader&gt;</code> lets dozens of materials reference the same compiled program
+          without owning or duplicating it.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Material.h">#pragma once
+#include &lt;d3d11.h&gt;
+#include &lt;wrl/client.h&gt;
+#include &lt;DirectXMath.h&gt;
+#include &lt;memory&gt;
+#include "Shader.h"
+
+using Microsoft::WRL::ComPtr;
+
+// A Material = a Shader + the parameters that make one surface look
+// different from another (a tint colour and an optional texture).
+class Material
+{
+public:
+    // Mirrored in a GPU constant buffer. Keep it 16-byte aligned to
+    // match HLSL's packing rules (one float4 is exactly 16 bytes).
+    struct Constants
+    {
+        DirectX::XMFLOAT4 baseColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+    };
+
+    bool Create(ID3D11Device* device, std::shared_ptr&lt;Shader&gt; shader);
+
+    void SetColor(const DirectX::XMFLOAT4&amp; c)            { m_constants.baseColor = c; }
+    void SetTexture(ComPtr&lt;ID3D11ShaderResourceView&gt; t)  { m_texture = t; }
+
+    // Arm shader, upload params, bind texture + sampler. Call before Draw.
+    void Bind(ID3D11DeviceContext* context);
+
+private:
+    std::shared_ptr&lt;Shader&gt;           m_shader;
+    Constants                        m_constants;
+    ComPtr&lt;ID3D11Buffer&gt;             m_cbuffer;
+    ComPtr&lt;ID3D11ShaderResourceView&gt; m_texture;
+    ComPtr&lt;ID3D11ShaderResourceView&gt; m_defaultTex;   // 1x1 white fallback
+    ComPtr&lt;ID3D11SamplerState&gt;       m_sampler;
+};</code></pre>
+
+        <p>
+          <code>Create()</code> allocates a dynamic constant buffer (so we can rewrite it every frame) and a
+          sampler. <code>Bind()</code> is where the magic happens: it arms the shader, copies our parameters into
+          the GPU buffer, and binds both the buffer and the texture before we draw.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Material.cpp">#include "Material.h"
+
+bool Material::Create(ID3D11Device* device, std::shared_ptr&lt;Shader&gt; shader)
+{
+    m_shader = std::move(shader);
+
+    // Dynamic constant buffer so we can rewrite it each frame with Map().
+    D3D11_BUFFER_DESC cbd = {};
+    cbd.ByteWidth      = sizeof(Constants);   // must be a multiple of 16
+    cbd.Usage          = D3D11_USAGE_DYNAMIC;
+    cbd.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
+    cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(device-&gt;CreateBuffer(&amp;cbd, nullptr, &amp;m_cbuffer)))
+        return false;
+
+    // A linear, wrapping sampler shared by this material's textures.
+    D3D11_SAMPLER_DESC sd = {};
+    sd.Filter         = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sd.AddressU       = D3D11_TEXTURE_ADDRESS_WRAP;
+    sd.AddressV       = D3D11_TEXTURE_ADDRESS_WRAP;
+    sd.AddressW       = D3D11_TEXTURE_ADDRESS_WRAP;
+    sd.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    sd.MaxLOD         = D3D11_FLOAT32_MAX;
+    if (FAILED(device-&gt;CreateSamplerState(&amp;sd, &amp;m_sampler)))
+        return false;
+
+    // A 1x1 opaque-white texture used when a material has no texture of its
+    // own. Sampling white means texel * baseColor leaves the colour untouched.
+    const UINT white = 0xFFFFFFFF;
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width            = td.Height = 1;
+    td.MipLevels        = td.ArraySize = 1;
+    td.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage            = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA srd = {};
+    srd.pSysMem     = &amp;white;
+    srd.SysMemPitch = sizeof(white);
+    ComPtr&lt;ID3D11Texture2D&gt; tex;
+    if (FAILED(device-&gt;CreateTexture2D(&amp;td, &amp;srd, &amp;tex)))
+        return false;
+    if (FAILED(device-&gt;CreateShaderResourceView(tex.Get(), nullptr, &amp;m_defaultTex)))
+        return false;
+
+    return true;
+}
+
+void Material::Bind(ID3D11DeviceContext* context)
+{
+    // 1) Activate the pipeline program (VS + PS + input layout).
+    m_shader-&gt;Bind(context);
+
+    // 2) Push the latest CPU-side parameters into the GPU buffer.
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    if (SUCCEEDED(context-&gt;Map(m_cbuffer.Get(), 0,
+            D3D11_MAP_WRITE_DISCARD, 0, &amp;mapped)))
+    {
+        memcpy(mapped.pData, &amp;m_constants, sizeof(Constants));
+        context-&gt;Unmap(m_cbuffer.Get(), 0);
+    }
+
+    // 3) Bind material params to slot b1 (b0 stays free for the per-object
+    //    transform we'll add with the Transform component next lesson).
+    ID3D11Buffer* cbs[] = { m_cbuffer.Get() };
+    context-&gt;PSSetConstantBuffers(1, 1, cbs);
+
+    // 4) Bind the texture + sampler. Fall back to the 1x1 white texture so an
+    //    untextured material samples white and shows its baseColor alone.
+    ID3D11ShaderResourceView* srvs[]  = { m_texture ? m_texture.Get() : m_defaultTex.Get() };
+    ID3D11SamplerState*       samps[] = { m_sampler.Get() };
+    context-&gt;PSSetShaderResources(0, 1, srvs);
+    context-&gt;PSSetSamplers(0, 1, samps);
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Constant buffers must be 16-byte aligned</div>
+            <p>Direct3D requires a constant buffer's size to be a multiple of 16 bytes. A single <code>float4</code> is exactly 16, so we're fine here — but the moment you add a lone <code>float</code>, pad the struct up to the next multiple of 16 or your data will read back scrambled.</p>
+          </div>
+        </div>
+
+        <h3>The matching pixel shader</h3>
+        <p>
+          The CPU struct and the HLSL <code>cbuffer</code> must agree on layout and register. We bind our material
+          data to slot <code>b1</code>, sample the texture from <code>t0</code>, and multiply the two so the colour
+          tints the texture. Sample a white pixel if you want the texture untouched, or use the colour alone when
+          there's no texture bound.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Lit_PS.hlsl">// Per-material parameters — matches Material::Constants on the CPU side.
+cbuffer MaterialConstants : register(b1)
+{
+    float4 baseColor;
+};
+
+Texture2D    albedo : register(t0);
+SamplerState samp   : register(s0);
+
+struct PSInput
+{
+    float4 position : SV_POSITION;
+    float2 uv       : TEXCOORD0;
+};
+
+float4 main(PSInput input) : SV_TARGET
+{
+    float4 texel = albedo.Sample(samp, input.uv);
+    return texel * baseColor;    // tint the sampled texture
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Register slots are a contract</div>
+            <p>The <code>register(b1)</code>, <code>register(t0)</code> and <code>register(s0)</code> numbers in HLSL must line up with the slot numbers you pass to <code>PSSetConstantBuffers</code>, <code>PSSetShaderResources</code> and <code>PSSetSamplers</code>. We reserve <code>b0</code> for transforms so materials never collide with per-object data.</p>
+          </div>
+        </div>
+
+        <h2>Putting it together</h2>
+        <p>
+          Now the payoff. One shader backs two materials, and one mesh is drawn twice with completely different
+          looks. Notice the mesh's <code>Draw()</code> is identical both times — it has no idea a material exists.
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">// One shared shader can back any number of materials.
+auto litShader = std::make_shared&lt;Shader&gt;();
+litShader-&gt;Load(device, L"Lit_VS.hlsl", L"Lit_PS.hlsl",
+                layout, _countof(layout));
+
+// Two materials that shade the same geometry differently.
+Material red, crate;
+red.Create(device, litShader);
+red.SetColor({ 1.0f, 0.2f, 0.2f, 1.0f });   // plain red tint
+
+crate.Create(device, litShader);
+crate.SetTexture(crateSRV);                  // textured, white tint
+
+// The mesh knows nothing about colour or textures.
+red.Bind(context);
+cubeMesh.Draw(context);
+
+crate.Bind(context);
+cubeMesh.Draw(context);   // same mesh, a completely different look</code></pre>
+
+        <p>
+          This is the exact pattern Unity's <code>Material</code> and Unreal's material instances use under the
+          hood: a shared program, per-instance parameters, bound just before the draw call. With shape and shading
+          now cleanly separated, the last missing piece is <em>where</em> each object sits in the world — its
+          position, rotation and scale. That's the Transform component, and it's next.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>An engine separates geometry (the mesh) from appearance (shader + material) so one mesh can be drawn many ways.</li>
+            <li>A <code>Shader</code> bundles a vertex shader, pixel shader and input layout; its <code>Bind()</code> arms all three in one call.</li>
+            <li>A <code>Material</code> references a shared shader and stores parameters — a colour and an optional texture SRV.</li>
+            <li>Material <code>Bind()</code> maps parameters into a 16-byte-aligned constant buffer at slot <code>b1</code>, then binds the texture and sampler.</li>
+            <li>Register numbers in HLSL must match the slots you set on the context; we keep <code>b0</code> free for the upcoming Transform.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

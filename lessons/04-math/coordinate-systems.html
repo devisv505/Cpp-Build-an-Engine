@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coordinate Systems &amp; Spaces — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn X/Y/Z axes, left- vs right-handed coordinates, and the local to world to view to clip to screen pipeline that drives all rendering math.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Coordinate Systems &amp; Spaces</h1>
+
+        <p class="lead">Before we can move a single triangle on screen, we need a shared language for <em>where things are</em>. That language is coordinate systems: three axes, a handedness convention, and a chain of "spaces" every vertex passes through on its way from your model file to a pixel. Getting this mental model right now will save you from the classic beginner nightmare where your model renders inside-out, mirrored, or invisible behind the camera.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What the X, Y, and Z axes represent in 3D space and how positive directions are chosen.</li>
+            <li>The difference between left-handed (DirectX) and right-handed coordinate systems, and why mixing them breaks things.</li>
+            <li>The five spaces a vertex travels through: local &rarr; world &rarr; view &rarr; clip &rarr; screen.</li>
+            <li>How units work and why you should pick "1 unit = 1 meter" for your engine.</li>
+          </ul>
+        </div>
+
+        <h2>Three axes, one origin</h2>
+
+        <p>A 3D coordinate system is just three number lines that meet at right angles at a single point called the <strong>origin</strong> (0, 0, 0). Every position in the world is described by how far you travel along each axis from that origin:</p>
+
+        <ul>
+          <li><strong>X</strong> — conventionally left/right (positive X points right).</li>
+          <li><strong>Y</strong> — conventionally down/up (positive Y points up).</li>
+          <li><strong>Z</strong> — conventionally the "into or out of the screen" axis (depth).</li>
+        </ul>
+
+        <p>A position is written as a triple like <code>(3, 1, -5)</code>, meaning 3 units right, 1 unit up, and 5 units along the negative Z direction. That's all a vertex's position really is — three numbers. We'll formalize these triples as vectors in the next lesson; for now, just hold the picture of three rulers meeting at a corner.</p>
+
+        <h2>Handedness: left vs right</h2>
+
+        <p>Here is the subtle part. We agreed X points right and Y points up — but which way does <em>positive Z</em> point? There are two consistent answers, and they are mirror images of each other. This is called the <strong>handedness</strong> of the coordinate system, because you can model each one with a hand.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 220" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <!-- Left-handed -->
+              <g transform="translate(150,120)">
+                <line x1="0" y1="0" x2="90" y2="0" stroke="#4aa8ff"/>
+                <polygon points="90,0 80,-5 80,5" fill="#4aa8ff" stroke="#4aa8ff"/>
+                <text x="98" y="5" stroke="none" fill="currentColor" font-size="14">+X</text>
+                <line x1="0" y1="0" x2="0" y2="-80"/>
+                <polygon points="0,-80 -5,-70 5,-70" fill="currentColor"/>
+                <text x="-8" y="-90" stroke="none" fill="currentColor" font-size="14">+Y</text>
+                <line x1="0" y1="0" x2="-55" y2="45"/>
+                <polygon points="-55,45 -46,42 -50,52" fill="currentColor"/>
+                <text x="-85" y="60" stroke="none" fill="currentColor" font-size="14">+Z (in)</text>
+                <text x="-70" y="95" stroke="none" fill="currentColor" font-size="15" font-weight="600">Left-handed (DirectX)</text>
+              </g>
+              <!-- Right-handed -->
+              <g transform="translate(430,120)">
+                <line x1="0" y1="0" x2="90" y2="0" stroke="#4aa8ff"/>
+                <polygon points="90,0 80,-5 80,5" fill="#4aa8ff" stroke="#4aa8ff"/>
+                <text x="98" y="5" stroke="none" fill="currentColor" font-size="14">+X</text>
+                <line x1="0" y1="0" x2="0" y2="-80"/>
+                <polygon points="0,-80 -5,-70 5,-70" fill="currentColor"/>
+                <text x="-8" y="-90" stroke="none" fill="currentColor" font-size="14">+Y</text>
+                <line x1="0" y1="0" x2="55" y2="45"/>
+                <polygon points="55,45 46,42 50,52" fill="currentColor"/>
+                <text x="60" y="60" stroke="none" fill="currentColor" font-size="14">+Z (out)</text>
+                <text x="-55" y="95" stroke="none" fill="currentColor" font-size="15" font-weight="600">Right-handed (OpenGL)</text>
+              </g>
+            </svg>
+          </div>
+          <figcaption>Same X and Y, but +Z flips direction. DirectX is left-handed by convention; OpenGL is right-handed.</figcaption>
+        </figure>
+
+        <p>The trick with your hands: point your thumb along +X and your index finger along +Y. Your remaining middle finger points along +Z. Do it with your <strong>left</strong> hand and +Z points away from you, into the screen — that's DirectX's default. Do it with your <strong>right</strong> hand and +Z points back toward you, out of the screen — that's the traditional OpenGL convention.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Why this bites people</div>
+            <p>If you import a model authored for a right-handed tool (like Blender) into a left-handed DirectX engine without converting, it can appear mirrored, and triangles that should face you may face away and get culled — making the surface vanish. Pick <strong>one</strong> handedness for your engine and convert everything to it on import.</p>
+          </div>
+        </div>
+
+        <p>DirectXMath, the math library we'll build on, gives you both variants of the important functions. The <code>*LH</code> suffix means left-handed; <code>*RH</code> means right-handed. Because we're building a DirectX engine, we'll standardize on <strong>left-handed</strong> throughout:</p>
+
+        <pre><code class="language-cpp" data-file="handedness.cpp">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+int main()
+{
+    // A camera at (0, 2, -5) looking at the origin, with +Y as "up".
+    XMVECTOR eye    = XMVectorSet(0.0f, 2.0f, -5.0f, 0.0f);
+    XMVECTOR target = XMVectorSet(0.0f, 0.0f,  0.0f, 0.0f);
+    XMVECTOR up     = XMVectorSet(0.0f, 1.0f,  0.0f, 0.0f);
+
+    // Left-handed view + projection to match DirectX conventions.
+    XMMATRIX view = XMMatrixLookAtLH(eye, target, up);
+
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(
+        XMConvertToRadians(60.0f), // vertical field of view
+        16.0f / 9.0f,              // aspect ratio (width / height)
+        0.1f,                      // near clip plane distance
+        1000.0f);                  // far clip plane distance
+
+    // Mixing XMMatrixLookAtRH here with a LH projection would flip depth
+    // and hand you a scene that renders backwards. Stay consistent!
+    (void)view; (void)proj;
+    return 0;
+}</code></pre>
+
+        <h2>The journey of a vertex: five spaces</h2>
+
+        <p>A single vertex position is never absolute. The same corner of a cube has different coordinates depending on which <strong>space</strong> you measure it in. Rendering is really the process of walking a vertex through a chain of spaces, applying one transform at each step, until it lands on a pixel.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 640 120" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" font-size="13">
+              <g stroke="none" fill="currentColor" text-anchor="middle">
+                <rect x="10"  y="40" width="90" height="40" rx="6" fill="none" stroke="#4aa8ff"/>
+                <text x="55"  y="65">Local</text>
+                <rect x="140" y="40" width="90" height="40" rx="6" fill="none" stroke="#4aa8ff"/>
+                <text x="185" y="65">World</text>
+                <rect x="270" y="40" width="90" height="40" rx="6" fill="none" stroke="#4aa8ff"/>
+                <text x="315" y="65">View</text>
+                <rect x="400" y="40" width="90" height="40" rx="6" fill="none" stroke="#4aa8ff"/>
+                <text x="445" y="65">Clip</text>
+                <rect x="530" y="40" width="90" height="40" rx="6" fill="none" stroke="#4aa8ff"/>
+                <text x="575" y="65">Screen</text>
+              </g>
+              <g stroke="#4aa8ff">
+                <line x1="100" y1="60" x2="140" y2="60"/><polygon points="140,60 132,56 132,64" fill="#4aa8ff"/>
+                <line x1="230" y1="60" x2="270" y2="60"/><polygon points="270,60 262,56 262,64" fill="#4aa8ff"/>
+                <line x1="360" y1="60" x2="400" y2="60"/><polygon points="400,60 392,56 392,64" fill="#4aa8ff"/>
+                <line x1="490" y1="60" x2="530" y2="60"/><polygon points="530,60 522,56 522,64" fill="#4aa8ff"/>
+              </g>
+            </svg>
+          </div>
+          <figcaption>The transform pipeline. World, View, and Projection matrices do the heavy lifting; the GPU handles the last step.</figcaption>
+        </figure>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Space</th><th>Origin is…</th><th>Set by</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Local</strong> (object/model)</td><td>The model's own pivot</td><td>The artist / model file</td></tr>
+              <tr><td><strong>World</strong></td><td>The scene's global origin</td><td>World matrix (position, rotation, scale)</td></tr>
+              <tr><td><strong>View</strong> (camera/eye)</td><td>The camera</td><td>View matrix</td></tr>
+              <tr><td><strong>Clip</strong></td><td>Normalized cube around the camera</td><td>Projection matrix</td></tr>
+              <tr><td><strong>Screen</strong> (window)</td><td>A corner of the window, in pixels</td><td>Viewport (GPU does this)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Local space</h3>
+        <p>When a modeler builds a spaceship, its vertices are stored relative to the ship's own origin — maybe centered on the cockpit. That never changes, no matter where the ship flies. This is <strong>local space</strong>, and it's exactly what our future <code>Transform</code> component will describe: "here is a mesh in its own space, and here is where/how to place it in the world."</p>
+
+        <h3>World space</h3>
+        <p>To place the ship into a scene alongside other objects, we multiply each vertex by a <strong>world matrix</strong> that bakes in its position, rotation, and scale. Now every object shares one common origin — the world's — so they can be compared, lit, and collided.</p>
+
+        <h3>View space</h3>
+        <p>The <strong>view matrix</strong> re-expresses the whole world relative to the camera, as if the camera sat at the origin looking down +Z. Nothing physically moves; we just change the frame of reference so "in front of the camera" becomes easy to reason about.</p>
+
+        <h3>Clip space</h3>
+        <p>The <strong>projection matrix</strong> applies perspective (distant things shrink) and maps everything into a standardized volume. After the GPU divides by the W component, visible points land inside a cube where X and Y run from -1 to +1 and Z (in DirectX) runs from 0 to 1. Anything outside is <em>clipped</em> away — hence the name.</p>
+
+        <h3>Screen space</h3>
+        <p>Finally the GPU's <strong>viewport</strong> stretches that -1..+1 range to actual pixel coordinates of your window. This last step you get for free.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">One matrix per stage</div>
+            <p>In practice we multiply the three matrices once on the CPU into a single <code>WorldViewProjection</code> (WVP) matrix and hand that to the vertex shader. The shader then does one matrix-times-vector multiply per vertex. You'll write exactly this shader in the DirectX module.</p>
+          </div>
+        </div>
+
+        <p>Here's the conceptual chain expressed in DirectXMath. Notice how the vertex is transformed by each matrix in order:</p>
+
+        <pre><code class="language-cpp" data-file="spaces.cpp">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+// Take a vertex given in LOCAL space and walk it all the way to CLIP space.
+XMVECTOR VertexToClip(FXMVECTOR localPos,
+                      CXMMATRIX world,   // local  -&gt; world
+                      CXMMATRIX view,    // world  -&gt; view
+                      CXMMATRIX proj)    // view   -&gt; clip
+{
+    // Combine the three transforms once (order matters: W, then V, then P).
+    XMMATRIX wvp = world * view * proj;
+
+    // A position uses w = 1 so translation applies. We&apos;ll cover the
+    // reason for that 4th component when we reach matrices.
+    XMVECTOR clipPos = XMVector4Transform(localPos, wvp);
+    return clipPos; // GPU later divides by clipPos.w to reach screen space
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">DirectXMath multiplies left-to-right</div>
+            <p>DirectXMath uses row-vector conventions, so you read <code>world * view * proj</code> in the same order the vertex travels. Many textbooks (and HLSL written column-major) show the reverse order. Don't panic when you see it flipped — it's the same idea seen from the other convention.</p>
+          </div>
+        </div>
+
+        <h2>Units: pick meters and never look back</h2>
+
+        <p>A coordinate like <code>(0, 1.8, 0)</code> is meaningless until you decide what "1" means. The number itself has no built-in unit — <em>you</em> assign one and stay consistent everywhere: meshes, camera distances, physics, light ranges. The overwhelmingly common choice, and the one we'll use for our engine, is <strong>1 unit = 1 meter</strong>.</p>
+
+        <ul>
+          <li>A person is ~1.8 units tall.</li>
+          <li>A room is ~3 units to the ceiling.</li>
+          <li>The near clip plane at 0.1 means "don't draw anything closer than 10 cm."</li>
+        </ul>
+
+        <p>Choosing meters up front makes physics (gravity ≈ 9.81 units/s²), lighting falloff, and imported assets all agree without magic fudge factors. Mismatched scales are a leading cause of "why is my model a speck?" or "why is it a mountain?" confusion.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>3D positions are triples measured along the X (right), Y (up), and Z (depth) axes from a shared origin.</li>
+            <li>Handedness fixes which way +Z points; DirectX is left-handed, so we use the <code>*LH</code> DirectXMath functions and stay consistent.</li>
+            <li>A vertex travels through five spaces — local &rarr; world &rarr; view &rarr; clip &rarr; screen — driven by the World, View, and Projection matrices.</li>
+            <li>We combine those into one WVP matrix per object and let the vertex shader apply it.</li>
+            <li>Adopt "1 unit = 1 meter" everywhere to keep rendering, physics, and imported assets in agreement.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

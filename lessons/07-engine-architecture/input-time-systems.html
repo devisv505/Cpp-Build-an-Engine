@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Input &amp; Time as Engine Services — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Wrap Win32 keyboard, mouse and the clock behind clean Input and Time services your game code can query every frame.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Input &amp; Time as Engine Services</h1>
+
+        <p class="lead">Your game loop is running and drawing to the screen, but right now nothing responds to the player. In this lesson we build two small but essential engine services: an <strong>Input</strong> class that turns raw Win32 messages into simple questions like &ldquo;is W held down?&rdquo;, and a <strong>Time</strong> class that tells every system how much time passed since the last frame. Getting these abstractions right early is what lets the rest of the engine stay clean and platform-independent.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why gameplay code should talk to <em>services</em>, not raw Win32 messages</li>
+            <li>How to record key and mouse state and expose <code>IsKeyDown</code>, <code>IsKeyPressed</code> and mouse delta</li>
+            <li>The &ldquo;current vs. previous frame&rdquo; trick that powers edge-detection</li>
+            <li>How a <code>Time</code> service computes <code>DeltaTime</code>, <code>TotalTime</code> and a frame count</li>
+            <li>Where these services plug into the game loop you built earlier</li>
+          </ul>
+        </div>
+
+        <h2>Why wrap the platform at all?</h2>
+        <p>Windows delivers input through the message queue. Every key press arrives as a <code>WM_KEYDOWN</code>, every release as <code>WM_KEYUP</code>, and the mouse fires <code>WM_MOUSEMOVE</code> and friends. That is fine for <em>collecting</em> input, but it is a terrible thing to sprinkle throughout gameplay code. If a <code>PlayerController</code> reaches directly into Win32, it becomes impossible to test, impossible to port to another platform, and it can only ask questions at the exact moment a message arrives — not &ldquo;is the key down right now, this frame?&rdquo;</p>
+
+        <p>The fix is a classic engine pattern: hide the platform behind a <strong>service</strong>. Gameplay code asks the service simple, frame-oriented questions. The service is the only thing that knows Win32 exists. Unity does this with its <code>Input</code> class; Unreal does it with its input subsystem. We will do the same, just smaller.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Think in frames, not events</div><p>Gameplay usually wants &ldquo;is jump held?&rdquo; or &ldquo;was jump pressed this frame?&rdquo;. A service that snapshots state per frame answers both cleanly, without every system subscribing to raw messages.</p></div>
+        </div>
+
+        <h2>Current vs. previous state</h2>
+        <p>The single most useful idea here is keeping <strong>two</strong> snapshots of the keyboard: the state <em>this</em> frame and the state <em>last</em> frame. Comparing them lets us answer three different questions from the same data:</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Question</th><th>Logic</th><th>Use case</th></tr></thead>
+            <tbody>
+              <tr><td><code>IsKeyDown</code></td><td>down this frame</td><td>continuous movement (hold W to walk)</td></tr>
+              <tr><td><code>IsKeyPressed</code></td><td>down now, up last frame</td><td>one-shot actions (jump, fire, toggle menu)</td></tr>
+              <tr><td><code>IsKeyReleased</code></td><td>up now, down last frame</td><td>charge-and-release, letting go of a button</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>A Windows virtual-key code (like <code>'W'</code> or <code>VK_SPACE</code>) is just a number from 0 to 255, so a fixed array of booleans is all the storage we need. Each frame we copy &ldquo;current&rdquo; into &ldquo;previous&rdquo;, then keep updating &ldquo;current&rdquo; from incoming messages.</p>
+
+        <h2>The Input service</h2>
+        <p>Here is a compact but complete sketch. The window procedure calls <code>OnKeyDown</code>/<code>OnKeyUp</code> as messages arrive; the game loop calls <code>NewFrame()</code> exactly once per frame, <em>before</em> pumping messages.</p>
+
+        <pre><code class="language-cpp" data-file="Input.h">#pragma once
+#include &lt;array&gt;
+#include &lt;cstdint&gt;
+
+// A tiny input service. Gameplay code queries it; only the window
+// layer feeds it raw Win32 events. Nothing else touches the OS.
+class Input {
+public:
+    // Called once per frame, before we process the message queue.
+    // Snapshots "current" into "previous" so edge detection works.
+    void NewFrame() {
+        m_prevKeys = m_keys;          // copy the whole array
+        m_mouseDeltaX = 0;            // deltas are per-frame
+        m_mouseDeltaY = 0;
+    }
+
+    // --- Fed by the window procedure (WM_KEYDOWN / WM_KEYUP) ---
+    void OnKeyDown(uint8_t vk) { m_keys[vk] = true;  }
+    void OnKeyUp(uint8_t vk)   { m_keys[vk] = false; }
+
+    // WM_MOUSEMOVE gives absolute client coords; we accumulate a delta.
+    void OnMouseMove(int x, int y) {
+        m_mouseDeltaX += x - m_mouseX;
+        m_mouseDeltaY += y - m_mouseY;
+        m_mouseX = x;
+        m_mouseY = y;
+    }
+    void OnMouseButton(int button, bool down) {
+        if (button &gt;= 0 &amp;&amp; button &lt; 3) m_mouseButtons[button] = down;
+    }
+
+    // --- Queried by gameplay ---
+    bool IsKeyDown(uint8_t vk)     const { return m_keys[vk]; }
+    // Down now, but was up last frame = a fresh press this frame.
+    bool IsKeyPressed(uint8_t vk)  const { return m_keys[vk] &amp;&amp; !m_prevKeys[vk]; }
+    bool IsKeyReleased(uint8_t vk) const { return !m_keys[vk] &amp;&amp; m_prevKeys[vk]; }
+
+    bool IsMouseButtonDown(int button) const {
+        return (button &gt;= 0 &amp;&amp; button &lt; 3) &amp;&amp; m_mouseButtons[button];
+    }
+    int MouseDeltaX() const { return m_mouseDeltaX; }
+    int MouseDeltaY() const { return m_mouseDeltaY; }
+
+private:
+    std::array&lt;bool, 256&gt; m_keys{};      // current frame
+    std::array&lt;bool, 256&gt; m_prevKeys{};  // previous frame
+    std::array&lt;bool, 3&gt;   m_mouseButtons{};
+    int m_mouseX = 0, m_mouseY = 0;      // last known position
+    int m_mouseDeltaX = 0, m_mouseDeltaY = 0;
+};</code></pre>
+
+        <p>Wiring it into the window procedure is a handful of cases. The <code>WPARAM</code> already carries the virtual-key code, and <code>lParam</code> packs the mouse position:</p>
+
+        <pre><code class="language-cpp" data-file="WndProc.cpp">// g_input is our single Input instance owned by the engine.
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_KEYDOWN:   g_input.OnKeyDown(static_cast&lt;uint8_t&gt;(wParam)); return 0;
+    case WM_KEYUP:     g_input.OnKeyUp(static_cast&lt;uint8_t&gt;(wParam));   return 0;
+    case WM_MOUSEMOVE:
+        g_input.OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        return 0;
+    case WM_LBUTTONDOWN: g_input.OnMouseButton(0, true);  return 0;
+    case WM_LBUTTONUP:   g_input.OnMouseButton(0, false); return 0;
+    case WM_DESTROY:     PostQuitMessage(0);              return 0;
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Call NewFrame at the right moment</div><p>Call <code>NewFrame()</code> <strong>before</strong> you pump messages each frame. If you call it after, you wipe out the &ldquo;previous&rdquo; snapshot that <code>IsKeyPressed</code> depends on, and one-shot actions will fire every frame the key is held. <code>GET_X_LPARAM</code> lives in <code>&lt;windowsx.h&gt;</code>.</p></div>
+        </div>
+
+        <h2>The Time service</h2>
+        <p>Almost every system needs to know how much real time elapsed since the last frame — that is <strong>delta time</strong>. Multiply movement by delta time and your game runs at the same speed whether the machine renders 60 or 240 frames per second. We measure it with <code>&lt;chrono&gt;</code>, the standard C++ high-resolution clock, so there is no Win32 in this file at all.</p>
+
+        <pre><code class="language-cpp" data-file="Time.h">#pragma once
+#include &lt;chrono&gt;
+#include &lt;cstdint&gt;
+
+// Owns the engine clock. Call Tick() once per frame; everyone else
+// just reads DeltaTime()/TotalTime().
+class Time {
+public:
+    Time() {
+        auto now = Clock::now();
+        m_start = now;
+        m_lastFrame = now;
+    }
+
+    // Advance the clock by one frame.
+    void Tick() {
+        auto now = Clock::now();
+        // Duration in seconds as a float — perfect for gameplay math.
+        m_deltaTime = std::chrono::duration&lt;float&gt;(now - m_lastFrame).count();
+        m_totalTime = std::chrono::duration&lt;float&gt;(now - m_start).count();
+        m_lastFrame = now;
+        ++m_frameCount;
+    }
+
+    float    DeltaTime()  const { return m_deltaTime; }  // seconds since last frame
+    float    TotalTime()  const { return m_totalTime; }  // seconds since startup
+    uint64_t FrameCount() const { return m_frameCount; }
+
+private:
+    using Clock = std::chrono::steady_clock; // monotonic: never jumps backwards
+    Clock::time_point m_start;
+    Clock::time_point m_lastFrame;
+    float    m_deltaTime = 0.0f;
+    float    m_totalTime = 0.0f;
+    uint64_t m_frameCount = 0;
+};</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Why steady_clock?</div><p>We use <code>steady_clock</code> instead of <code>system_clock</code> because it is monotonic — it cannot be dragged backwards by the user changing the system time or by an NTP sync. Time going negative for a frame would send everything in your engine flying.</p></div>
+        </div>
+
+        <h2>Plugging into the game loop</h2>
+        <p>Remember the loop skeleton from the game-loop lesson? The two services slot straight in. Notice the order: reset input, drain messages (which feed input), advance time, then update and render using the fresh data.</p>
+
+        <pre><code class="language-cpp" data-file="EngineLoop.cpp">Input g_input;
+Time  g_time;
+
+void RunFrame() {
+    g_input.NewFrame();            // 1. snapshot previous, clear deltas
+
+    MSG msg;
+    while (PeekMessage(&amp;msg, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&amp;msg);    // 2. WndProc feeds g_input here
+        DispatchMessage(&amp;msg);
+    }
+
+    g_time.Tick();                 // 3. compute delta time for this frame
+    float dt = g_time.DeltaTime();
+
+    // 4. Gameplay: clean, platform-free, testable.
+    if (g_input.IsKeyPressed(VK_SPACE))
+        Jump();                    // fires exactly once per press
+
+    if (g_input.IsKeyDown('W'))
+        MoveForward(5.0f * dt);    // frame-rate independent movement
+
+    Render();
+}</code></pre>
+
+        <p>Look at how little the gameplay code knows. It never mentions <code>WM_KEYDOWN</code>, never touches <code>chrono</code>, never sees a Windows handle. When we build the component system in the next module, a <code>Transform</code> component can advance its position by <code>velocity * Time::DeltaTime()</code> and read <code>Input</code> without any idea that Windows is underneath. That is exactly the seam that would let us swap in a different platform layer later without rewriting a single line of game logic.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 170" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="20" y="60" width="120" height="48" rx="8"/>
+              <text x="80" y="89" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Win32 messages</text>
+              <rect x="240" y="60" width="120" height="48" rx="8"/>
+              <text x="300" y="82" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Input / Time</text>
+              <text x="300" y="99" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">(services)</text>
+              <rect x="460" y="60" width="120" height="48" rx="8"/>
+              <text x="520" y="89" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Gameplay</text>
+              <path d="M140 84 L236 84"/><path d="M228 78 L236 84 L228 90"/>
+              <path d="M360 84 L456 84"/><path d="M448 78 L456 84 L448 90"/>
+            </svg>
+          </div>
+          <figcaption>The services are the only bridge between the platform and your game code.</figcaption>
+        </figure>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't scatter Win32 into gameplay</div><p>The moment a component calls <code>GetAsyncKeyState</code> or reads the message queue directly, you have punched a hole through the abstraction. Keep every OS call on the platform side of the services, or the whole benefit collapses.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Services hide platform details so gameplay code stays clean, testable and portable.</li>
+            <li><code>Input</code> keeps a current and previous key snapshot; <code>NewFrame()</code> copies current into previous each frame before messages are pumped.</li>
+            <li><code>IsKeyDown</code> is for held keys; <code>IsKeyPressed</code>/<code>IsKeyReleased</code> detect the edge using the previous snapshot. Mouse delta is accumulated per frame and reset in <code>NewFrame()</code>.</li>
+            <li><code>Time</code> uses <code>std::chrono::steady_clock</code> to expose <code>DeltaTime</code>, <code>TotalTime</code> and <code>FrameCount</code>; multiply motion by delta time for frame-rate independence.</li>
+            <li>In the loop: <code>NewFrame()</code> &rarr; pump messages &rarr; <code>Tick()</code> &rarr; update &amp; render — gameplay only ever talks to the services.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

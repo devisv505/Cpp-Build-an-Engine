@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Entity-Component-System — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn the Entity-Component-System (ECS) pattern: entities as ids, components as data, systems as logic — and why data-oriented design wins at scale.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Entity-Component-System</h1>
+
+        <p class="lead">In the last lesson we met Unreal's Actor model, where each object owns its logic through virtual methods. Now we flip the whole idea inside-out. <strong>Entity-Component-System</strong> (ECS) is the architecture behind engines like Unity DOTS, Bevy, and countless high-performance simulations. It splits your game world into three plain, separate pieces — ids, data, and logic — and in doing so unlocks the kind of cache-friendly, massively-parallel performance that a classic object graph struggles to reach.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What entities, components, and systems really are in ECS</li>
+            <li>Why data-oriented design and cache locality make ECS fast</li>
+            <li>How ECS contrasts with the OOP GameObject-Component model — the trade-offs of each</li>
+            <li>A concrete <code>Position</code> + <code>Velocity</code> + <code>MovementSystem</code> example</li>
+            <li>Why our engine will still use the classic GameObject model (for now)</li>
+          </ul>
+        </div>
+
+        <h2>The three letters, one idea at a time</h2>
+
+        <p>The whole pattern is in its name. Let's take each part in turn and keep it concrete.</p>
+
+        <h3>Entities are just ids</h3>
+        <p>An <strong>entity</strong> is not an object. It has no fields, no methods, no behaviour. It is simply a unique number — an id — that acts as a label. Entity <code>42</code> might be the player, entity <code>7</code> a bullet, entity <code>9001</code> a particle. On its own the id means nothing; its meaning comes entirely from which components are attached to it.</p>
+
+        <h3>Components are plain data</h3>
+        <p>A <strong>component</strong> is a small bundle of data with <em>no logic inside it</em>. A <code>Position</code> is just <code>{ x, y, z }</code>. A <code>Velocity</code> is just <code>{ dx, dy, dz }</code>. A <code>Health</code> is just an <code>int</code>. Components are typically plain structs — no virtual methods, no inheritance, no behaviour. They are pure state.</p>
+
+        <h3>Systems are the logic</h3>
+        <p>A <strong>system</strong> is a function that runs over every entity that has a particular <em>set</em> of components. A <code>MovementSystem</code> asks the world: "give me every entity that has both a <code>Position</code> and a <code>Velocity</code>," then loops over exactly those and updates the positions. The system is where all the behaviour lives, and it operates on data in bulk.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">The mental model</div>
+            <p>Think of ECS as a spreadsheet. Each <strong>row</strong> is an entity. Each <strong>column</strong> is a component type. A <strong>system</strong> is a query that selects the rows where certain columns are filled in, then processes just those rows.</p>
+          </div>
+        </div>
+
+        <h2>Why do it this way? Data-oriented design</h2>
+
+        <p>ECS is the flagship example of <strong>data-oriented design</strong>: organise your program around how data is laid out in memory and how the CPU actually reads it, rather than around tidy real-world "objects." To see why that matters, we need to talk about the cache.</p>
+
+        <p>Your CPU is astonishingly fast, but main memory (RAM) is slow by comparison. To hide that gap, the CPU keeps small, very fast caches and pulls memory in chunks called <strong>cache lines</strong> (typically 64 bytes). When you read one byte, the hardware grabs the whole surrounding line. If the <em>next</em> thing you need is already in that line, it is nearly free. If it is somewhere else in RAM, you pay a <strong>cache miss</strong> — potentially hundreds of wasted cycles.</p>
+
+        <p>Now imagine 100,000 moving objects. In a classic engine each object is heap-allocated and scattered across memory, and each holds a lot of unrelated data (mesh pointers, names, flags). To update positions you chase pointers all over RAM, dragging in 64 bytes each time to use maybe 12. In ECS, all the <code>Position</code> components live packed together in one contiguous array, and all the <code>Velocity</code> components in another. The <code>MovementSystem</code> marches straight down those arrays. Almost every read is a cache hit.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg">
+              <text x="10" y="24" font-size="13" stroke="none" fill="currentColor">OOP: objects scattered, mixed data</text>
+              <rect x="10" y="36" width="70" height="34" rx="4"/>
+              <rect x="130" y="36" width="70" height="34" rx="4"/>
+              <rect x="250" y="36" width="70" height="34" rx="4"/>
+              <rect x="470" y="36" width="70" height="34" rx="4"/>
+              <path d="M80 53 H130 M200 53 H250 M320 53 H470" stroke-dasharray="4 4" stroke="#4aa8ff"/>
+              <text x="14" y="57" font-size="10" stroke="none" fill="currentColor">pos+mesh</text>
+              <text x="134" y="57" font-size="10" stroke="none" fill="currentColor">pos+mesh</text>
+              <text x="254" y="57" font-size="10" stroke="none" fill="currentColor">pos+mesh</text>
+              <text x="474" y="57" font-size="10" stroke="none" fill="currentColor">pos+mesh</text>
+
+              <text x="10" y="120" font-size="13" stroke="none" fill="currentColor">ECS: positions packed contiguously</text>
+              <rect x="10" y="132" width="46" height="34" rx="4" stroke="#4aa8ff"/>
+              <rect x="56" y="132" width="46" height="34" rx="4" stroke="#4aa8ff"/>
+              <rect x="102" y="132" width="46" height="34" rx="4" stroke="#4aa8ff"/>
+              <rect x="148" y="132" width="46" height="34" rx="4" stroke="#4aa8ff"/>
+              <rect x="194" y="132" width="46" height="34" rx="4" stroke="#4aa8ff"/>
+              <rect x="240" y="132" width="46" height="34" rx="4" stroke="#4aa8ff"/>
+              <text x="20" y="153" font-size="10" stroke="none" fill="currentColor">pos</text>
+              <text x="66" y="153" font-size="10" stroke="none" fill="currentColor">pos</text>
+              <text x="112" y="153" font-size="10" stroke="none" fill="currentColor">pos</text>
+              <text x="158" y="153" font-size="10" stroke="none" fill="currentColor">pos</text>
+              <text x="204" y="153" font-size="10" stroke="none" fill="currentColor">pos</text>
+              <text x="250" y="153" font-size="10" stroke="none" fill="currentColor">pos</text>
+            </svg>
+          </div>
+          <figcaption>Scattered objects cause cache misses; packed component arrays stream through the cache.</figcaption>
+        </figure>
+
+        <p>Because systems process homogeneous arrays with no branching per object, this layout is also friendly to the compiler's auto-vectorization (SIMD) and trivially parallelizable across threads. That is the real source of ECS's reputation for speed.</p>
+
+        <h2>A concrete example</h2>
+
+        <p>Let's build the smallest ECS that shows the shape of the idea: two data-only components and one system. This is a teaching model — a real ECS library adds sparse sets or archetypes to make the queries fast — but every core idea is here.</p>
+
+        <pre><code class="language-cpp" data-file="mini_ecs.cpp">#include &lt;cstdint&gt;
+#include &lt;vector&gt;
+#include &lt;iostream&gt;
+#include &lt;optional&gt;
+
+// An entity is nothing but an id.
+using Entity = std::uint32_t;
+
+// Components are plain data. No methods, no logic.
+struct Position { float x = 0.0f, y = 0.0f, z = 0.0f; };
+struct Velocity { float x = 0.0f, y = 0.0f, z = 0.0f; };
+
+// A tiny world: parallel arrays indexed by entity id.
+// std::optional lets an entity "not have" a component.
+struct World {
+    std::vector&lt;std::optional&lt;Position&gt;&gt; positions;
+    std::vector&lt;std::optional&lt;Velocity&gt;&gt; velocities;
+
+    Entity create() {
+        Entity e = static_cast&lt;Entity&gt;(positions.size());
+        positions.emplace_back();   // starts empty (nullopt)
+        velocities.emplace_back();
+        return e;
+    }
+};
+
+// The MovementSystem: pure logic. It runs over every entity that
+// has BOTH a Position and a Velocity, and integrates motion.
+void MovementSystem(World&amp; world, float dt) {
+    for (std::size_t e = 0; e &lt; world.positions.size(); ++e) {
+        auto&amp; pos = world.positions[e];
+        auto&amp; vel = world.velocities[e];
+        if (pos &amp;&amp; vel) {            // does this entity match the query?
+            pos-&gt;x += vel-&gt;x * dt;  // p = p + v * dt
+            pos-&gt;y += vel-&gt;y * dt;
+            pos-&gt;z += vel-&gt;z * dt;
+        }
+    }
+}
+
+int main() {
+    World world;
+
+    Entity ball = world.create();
+    world.positions[ball] = Position{0.0f, 0.0f, 0.0f};
+    world.velocities[ball] = Velocity{1.0f, 2.0f, 0.0f};
+
+    Entity wall = world.create();
+    world.positions[wall] = Position{5.0f, 0.0f, 0.0f};
+    // The wall has NO Velocity, so MovementSystem simply skips it.
+
+    for (int frame = 0; frame &lt; 3; ++frame) {
+        MovementSystem(world, 0.5f); // dt = half a second
+    }
+
+    const Position&amp; p = *world.positions[ball];
+    std::cout &lt;&lt; "ball is at (" &lt;&lt; p.x &lt;&lt; ", " &lt;&lt; p.y &lt;&lt; ", " &lt;&lt; p.z &lt;&lt; ")\n";
+    // After 3 steps of dt=0.5: (1.5, 3.0, 0.0)
+    return 0;
+}</code></pre>
+
+        <p>Notice how the <code>MovementSystem</code> never knew about "balls" or "walls." It only knew about the <em>components</em>. Give any entity a <code>Position</code> and a <code>Velocity</code> and it will move — a projectile, a leaf, a camera. Behaviour is composed by adding data, not by writing new classes. That is the heart of ECS.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Tag components</div>
+            <p>Because behaviour is driven by which components an entity has, empty structs are useful too. A <code>struct Player{};</code> with no fields is a <strong>tag</strong> — a system can query for it to find "all players." You compose gameplay by mixing data components and tag components.</p>
+          </div>
+        </div>
+
+        <h2>ECS vs. the GameObject-Component model</h2>
+
+        <p>The classic model most beginners meet — Unity's <code>MonoBehaviour</code>, or the Actor model from the previous lesson — is often called <strong>OOP GameObject-Component</strong>. There, a <code>GameObject</code> owns a list of components, and each component carries <em>both</em> its data and its own <code>Update()</code> logic. It is object-oriented: state and behaviour live together.</p>
+
+        <p>ECS keeps the word "component" but changes its meaning completely: components hold data <em>only</em>, and all logic is pulled out into systems. Here is how the two compare.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Aspect</th><th>GameObject-Component (OOP)</th><th>Entity-Component-System</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Component contains</td><td>Data <em>and</em> behaviour (<code>Update()</code>)</td><td>Data only (plain structs)</td></tr>
+              <tr><td>Logic lives in</td><td>The components themselves</td><td>Separate systems</td></tr>
+              <tr><td>Memory layout</td><td>Objects scattered on the heap</td><td>Components packed in arrays</td></tr>
+              <tr><td>Cache behaviour</td><td>Many misses, pointer chasing</td><td>Streams through cache</td></tr>
+              <tr><td>Scales to 100k+ objects</td><td>Struggles</td><td>Excels</td></tr>
+              <tr><td>Easy to read &amp; debug</td><td>Very — maps to intuition</td><td>Harder — logic is spread out</td></tr>
+              <tr><td>Parallelism</td><td>Awkward</td><td>Natural</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>When ECS wins</h3>
+        <p>ECS shines when you have <strong>many, many similar entities</strong> and performance matters: bullet-hell shooters, RTS games with thousands of units, particle and physics simulations, large open worlds. The bigger and more uniform the crowd, the more the cache-friendly layout pays off.</p>
+
+        <h3>When the OOP model wins</h3>
+        <p>The GameObject model wins on <strong>clarity</strong>. For a few hundred richly-varied objects, each with unique behaviour, an <code>Actor::Update()</code> you can read top-to-bottom is far easier to reason about than logic scattered across a dozen systems and a query engine. Most gameplay code is not performance-bound; it is human-bound.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't cargo-cult ECS</div>
+            <p>A common beginner trap is reaching for a full ECS on day one because it is "what fast engines use." Real ECS libraries are complex, and a naive hand-rolled one (like our <code>std::optional</code> arrays above) is often <em>slower</em> than plain objects. Adopt ECS when a profiler tells you a hot loop over many entities is the bottleneck — not before.</p>
+          </div>
+        </div>
+
+        <h2>What our engine will do</h2>
+
+        <p><strong>Our engine will use the classic GameObject-Component model, not ECS.</strong> That is a deliberate teaching choice. The GameObject model maps cleanly to how a beginner pictures a game world — "a thing that has a transform, a mesh, and some behaviour" — and it keeps the code readable while you are still learning C++, DirectX, and engine architecture all at once.</p>
+
+        <p>You are not giving up performance you need. A learning engine rendering a scene of dozens or hundreds of objects will be limited by the GPU and by DirectX draw calls long before component memory layout matters. And nothing here is wasted: in the next lesson we build the <code>Transform</code> and scene hierarchy on top of that GameObject, and the ideas you just learned — separating data from logic, thinking about memory layout — will make you a sharper engine programmer no matter which model you use.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Both, eventually</div>
+            <p>Mature engines are rarely purely one or the other. Unity ships its classic GameObject model <em>and</em> the ECS-based DOTS stack, and teams mix them. Learning the GameObject model first gives you the vocabulary to appreciate ECS when you meet it in the wild.</p>
+          </div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><strong>Entities</strong> are just ids; <strong>components</strong> are plain data with no logic; <strong>systems</strong> are functions that run over every entity holding a given set of components.</li>
+            <li>ECS is <strong>data-oriented design</strong>: packing components into contiguous arrays keeps the CPU cache full, which is why it scales to tens of thousands of entities and parallelizes naturally.</li>
+            <li>The <code>MovementSystem</code> example showed logic driven by <em>which components an entity has</em> — the wall stayed put simply because it had no <code>Velocity</code>.</li>
+            <li>The OOP GameObject-Component model bundles data and behaviour together: clearer and easier to debug, but slower at massive scale.</li>
+            <li><strong>Our engine uses the GameObject model for clarity</strong> — the right call for a learning project where the GPU, not memory layout, is the real bottleneck.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building, Running &amp; Debugging — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Master Visual Studio's Debug/Release configs, F5 vs Ctrl+F5, breakpoints, stepping, and the Watch and Call Stack windows.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Building, Running &amp; Debugging</h1>
+
+        <p class="lead">In the last lesson you compiled and ran your very first program. Now let's turn the crank properly: understand what actually happens when you press the green arrow, learn the difference between a Debug and a Release build, and pick up the single most important skill for engine work — using the debugger to freeze a running program and inspect it from the inside. Once your engine starts moving objects around in 3D, the debugger is how you'll find out why that object teleported to the wrong place.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What the <strong>Debug</strong> and <strong>Release</strong> configurations do, and why we build for the <strong>x64</strong> platform.</li>
+            <li>The difference between <strong>Start Debugging</strong> (<kbd>F5</kbd>) and <strong>Start Without Debugging</strong> (<kbd>Ctrl</kbd> + <kbd>F5</kbd>).</li>
+            <li>How to set a <strong>breakpoint</strong> and step through code with <kbd>F10</kbd> and <kbd>F11</kbd>.</li>
+            <li>How to inspect variables with the <strong>Autos</strong> and <strong>Watch</strong> windows, and read the <strong>Call Stack</strong>.</li>
+          </ul>
+        </div>
+
+        <h2>Configurations and platforms</h2>
+        <p>Look at the toolbar across the top of Visual Studio. You'll see two dropdowns sitting next to the green run button. The first is the <strong>configuration</strong> (usually <code>Debug</code> or <code>Release</code>), and the second is the <strong>platform</strong> (<code>x64</code> or <code>x86</code>). Together they decide how your code is compiled.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Configuration</th><th>Optimizations</th><th>Debug info</th><th>Use it for</th></tr></thead><tbody>
+          <tr><td><strong>Debug</strong></td><td>Off</td><td>Full</td><td>Writing and fixing code day to day.</td></tr>
+          <tr><td><strong>Release</strong></td><td>On (fast)</td><td>Minimal</td><td>Shipping, benchmarking, measuring real performance.</td></tr>
+        </tbody></table></div>
+
+        <p>In a <strong>Debug</strong> build the compiler keeps a faithful, one-to-one map between your source lines and the machine code, and it does not rearrange anything. That is exactly what lets the debugger stop on line 12 and show you the real value of every variable. A <strong>Release</strong> build turns the optimizer loose: it inlines functions, reorders instructions, and deletes variables it can compute at compile time. Your engine will run several times faster in Release — but stepping through it feels like reading a book with random pages torn out, because the code no longer matches your source line-for-line.</p>
+
+        <p>For the platform, always choose <strong>x64</strong>. That means a 64-bit program, which is the modern default and what DirectX 11 game code targets. The older <code>x86</code> (32-bit) setting caps your addressable memory at roughly 4&nbsp;GB and has no upside for us. Set the dropdowns to <strong>Debug</strong> / <strong>x64</strong> now and leave them there for most of this course.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">A build config is not a code change</div><p>Switching from Debug to Release does not edit a single line of your source. It only changes the compiler's instructions. The same <code>main.cpp</code> produces two different executables.</p></div></div>
+
+        <h2>Two ways to run: F5 vs Ctrl+F5</h2>
+        <p>There are two commands to launch your program, and the difference matters more than beginners expect.</p>
+        <ul>
+          <li><strong>Start Debugging</strong> — <kbd>F5</kbd>. Runs your program <em>attached</em> to the debugger. Breakpoints work, you can pause and inspect, and if the program crashes the debugger catches it and shows you the exact line.</li>
+          <li><strong>Start Without Debugging</strong> — <kbd>Ctrl</kbd> + <kbd>F5</kbd>. Runs your program on its own, with no debugger attached. It's faster to launch and, for console programs, Visual Studio helpfully keeps the window open with a "Press any key to close…" prompt at the end.</li>
+        </ul>
+        <p>Use <kbd>Ctrl</kbd> + <kbd>F5</kbd> when you just want to see the output. Use <kbd>F5</kbd> the moment something misbehaves and you want to look inside. There's also <strong>Build Solution</strong> (<kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd>), which compiles without running — handy for checking that everything still compiles after a big edit.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Breakpoints do nothing under Ctrl+F5</div><p>If you set a breakpoint and it never triggers, you probably launched with <kbd>Ctrl</kbd> + <kbd>F5</kbd>. Breakpoints only work when the debugger is attached, so use <kbd>F5</kbd>.</p></div></div>
+
+        <h2>Setting a breakpoint</h2>
+        <p>A <strong>breakpoint</strong> tells the debugger: "when execution reaches this line, freeze everything so I can look around." You set one by clicking in the grey margin to the left of a line number, or by placing your cursor on the line and pressing <kbd>F9</kbd>. A red dot appears. Let's use a small program with a deliberate bug so there's something to investigate.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+
+// Adds up the numbers in a list and returns the average.
+double average(const std::vector&lt;int&gt;&amp; values)
+{
+    int sum = 0;
+    for (int i = 0; i &lt;= values.size(); ++i)  // BUG: &lt;= walks one past the end
+    {
+        sum += values[i];
+    }
+    return static_cast&lt;double&gt;(sum) / values.size();
+}
+
+int main()
+{
+    std::vector&lt;int&gt; scores { 10, 20, 30, 40 };
+
+    double result = average(scores);          // set a breakpoint on this line
+
+    std::cout &lt;&lt; "Average: " &lt;&lt; result &lt;&lt; '\n';
+    return 0;
+}</code></pre>
+
+        <p>Set a breakpoint on the <code>double result = average(scores);</code> line and press <kbd>F5</kbd>. The program builds, launches, and stops on that line before running it. A yellow arrow in the margin marks the <strong>next</strong> statement to execute. Nothing after that arrow has happened yet — the program is frozen, waiting for you.</p>
+
+        <h2>Stepping through code</h2>
+        <p>Once you're stopped, you drive the program forward one piece at a time. The two commands you'll use constantly:</p>
+        <ul>
+          <li><strong>Step Over</strong> — <kbd>F10</kbd>. Executes the current line completely and stops on the next one. If the line calls a function, that whole function runs without you having to walk through it.</li>
+          <li><strong>Step Into</strong> — <kbd>F11</kbd>. If the current line calls a function you wrote, this dives <em>inside</em> it and stops on its first line. Use it to follow a call down into the code.</li>
+        </ul>
+        <p>There's also <strong>Step Out</strong> (<kbd>Shift</kbd> + <kbd>F11</kbd>), which runs the rest of the current function and pops you back to whoever called it, and <strong>Continue</strong> (<kbd>F5</kbd> again), which resumes at full speed until the next breakpoint.</p>
+        <p>With the arrow on our breakpoint, press <kbd>F11</kbd> to step into <code>average</code>. You land on its first line. Now keep pressing <kbd>F10</kbd> to walk through the loop one iteration at a time and watch what happens to <code>i</code> and <code>sum</code>.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Step Over first, Step Into when curious</div><p>Most of the time you want <kbd>F10</kbd> — you trust <code>std::cout</code> and don't need to walk through the standard library. Reach for <kbd>F11</kbd> only when you suspect the bug lives inside a function <em>you</em> wrote.</p></div></div>
+
+        <h2>Inspecting variables: Autos and Watch</h2>
+        <p>While execution is paused, two windows show you the program's live state (both are under <strong>Debug &rsaquo; Windows</strong> if you don't see them):</p>
+        <ul>
+          <li>The <strong>Autos</strong> window automatically lists the variables used on or near the current line. You don't configure it — it just follows along.</li>
+          <li>The <strong>Watch</strong> window is yours to fill. Type any variable name or even an expression like <code>values.size()</code> or <code>sum + 1</code> and it re-evaluates every time you step. You can also hover your mouse over a variable in the editor to see its value in a tooltip.</li>
+        </ul>
+        <p>Step through our loop and watch <code>i</code>. On the last iteration <code>i</code> becomes <code>4</code>, but <code>scores</code> only has valid indices <code>0</code> through <code>3</code>. The condition <code>i &lt;= values.size()</code> let the loop run one step too far. In the Watch window <code>values.size()</code> reads <code>4</code>, so <code>values[4]</code> reads memory that doesn't belong to the vector — undefined behavior. The fix is to use <code>&lt;</code> instead of <code>&lt;=</code>:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">for (int i = 0; i &lt; values.size(); ++i)  // stop before size(), indices 0..3
+{
+    sum += values[i];
+}</code></pre>
+
+        <p>The debugger didn't fix the bug — <em>you</em> did — but it showed you the exact iteration where reality diverged from what you expected. That's the whole game: make the invisible visible.</p>
+
+        <h2>Reading the Call Stack</h2>
+        <p>The <strong>Call Stack</strong> window answers the question "how did I get here?" It lists the chain of function calls that led to the current line, most recent on top. When we're stopped inside <code>average</code>, the stack looks like this:</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 160" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg">
+          <rect x="150" y="20" width="300" height="40" rx="6" stroke="#4aa8ff"/>
+          <text x="300" y="45" text-anchor="middle" fill="#4aa8ff" font-family="monospace" font-size="14" stroke="none">average()  &#8592; you are here</text>
+          <line x1="300" y1="60" x2="300" y2="80" stroke="#4aa8ff"/>
+          <rect x="150" y="80" width="300" height="40" rx="6"/>
+          <text x="300" y="105" text-anchor="middle" fill="currentColor" font-family="monospace" font-size="14" stroke="none">main()</text>
+          <text x="300" y="145" text-anchor="middle" fill="currentColor" font-size="12" stroke="none">Top = current call, bottom = program entry.</text>
+        </svg></div><figcaption>The call stack: <code>main</code> called <code>average</code>, so <code>average</code> sits on top.</figcaption></figure>
+
+        <p>Double-click any frame to jump to that function's code and see its local variables in Autos — without losing your place. This becomes invaluable in engine work, where a single frame update might call <code>Scene::Update</code>, which calls each component's <code>Update</code>, which calls into your math library. When something crashes deep in that chain, the call stack is the trail of breadcrumbs back to the line in <em>your</em> code that started it.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why this matters for the engine</div><p>An engine runs thousands of times per second and you can't <code>std::cout</code> your way through all of it. When a mesh renders black or a transform explodes to <code>NaN</code>, you'll set a breakpoint, freeze one frame, and read the exact values feeding your DirectX draw call. Getting fluent with the debugger now pays off on every lesson that follows.</p></div></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><strong>Debug</strong> builds are unoptimized and fully debuggable; <strong>Release</strong> builds are fast but hard to step through. Build for the <strong>x64</strong> platform.</li>
+            <li><kbd>F5</kbd> runs <em>with</em> the debugger (breakpoints work); <kbd>Ctrl</kbd> + <kbd>F5</kbd> runs without it and keeps the console window open.</li>
+            <li>Click the margin or press <kbd>F9</kbd> to set a breakpoint; use <kbd>F10</kbd> to step over and <kbd>F11</kbd> to step into your functions.</li>
+            <li>Read live values in the <strong>Autos</strong> and <strong>Watch</strong> windows, and use the <strong>Call Stack</strong> to trace how execution reached the current line.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

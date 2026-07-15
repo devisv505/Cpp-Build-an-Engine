@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scope, Lifetime &amp; the Stack — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Understand local vs global scope, block scope, the call stack, automatic lifetime, and variable shadowing in C++.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Scope, Lifetime &amp; the Stack</h1>
+        <p class="lead">You already know how to write functions and pass values into them. But <em>where</em> can a variable be used, and <em>how long</em> does it stay alive? Answering that is the difference between confident C++ and mysterious crashes. In this lesson we map out scope, the call stack, and automatic lifetime — the same rules that will govern every local variable in our engine's update loop.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The difference between local, global, and block <strong>scope</strong></li>
+            <li>How the <strong>call stack</strong> stores each function call in its own stack frame</li>
+            <li>What <strong>automatic storage duration</strong> means for a variable's lifetime</li>
+            <li>How <strong>variable shadowing</strong> works and why it can bite you</li>
+            <li>Why we'll eventually need the <strong>heap</strong> for data that must outlive its scope</li>
+          </ul>
+        </div>
+
+        <h2>What is scope?</h2>
+        <p><strong>Scope</strong> is the region of your source code where a name is visible and usable. If you try to use a variable outside its scope, the compiler simply doesn't know what you mean — the name doesn't exist there. C++ decides scope by looking at the pair of curly braces <code>{ }</code> that surround a declaration.</p>
+        <p>There are three kinds you'll meet constantly:</p>
+        <ul>
+          <li><strong>Local scope</strong> — a variable declared inside a function. It exists only within that function.</li>
+          <li><strong>Block scope</strong> — a variable declared inside any <code>{ }</code> block (an <code>if</code>, a <code>for</code> loop, or a bare block). It exists only inside that block.</li>
+          <li><strong>Global scope</strong> — a variable declared outside every function. It's visible everywhere in the file after its declaration.</li>
+        </ul>
+
+        <pre><code class="language-cpp" data-file="scope.cpp">#include &lt;iostream&gt;
+
+int g_frameCount = 0;   // global scope: visible to every function below
+
+void tick() {
+    int local = 5;      // local scope: only exists inside tick()
+    g_frameCount++;     // fine — the global is visible here
+
+    if (local &gt; 3) {
+        int bonus = 10; // block scope: only exists inside this if-block
+        std::cout &lt;&lt; local + bonus &lt;&lt; "\n";
+    }
+    // std::cout &lt;&lt; bonus; // ERROR: 'bonus' is out of scope here
+}
+
+int main() {
+    tick();
+    // std::cout &lt;&lt; local; // ERROR: 'local' belongs to tick(), not main()
+    std::cout &lt;&lt; g_frameCount &lt;&lt; "\n";
+    return 0;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Avoid globals when you can</div>
+            <p>Globals like <code>g_frameCount</code> are visible everywhere, which sounds convenient but makes code hard to reason about — any function can change them at any time. In our engine we'll prefer passing data explicitly or storing it in objects. Reach for a global only for genuinely shared, rarely-changing state.</p>
+          </div>
+        </div>
+
+        <h2>Block scope in detail</h2>
+        <p>Every pair of braces creates a fresh scope. This includes loops, where a variable declared in the loop header lives only for the duration of the loop:</p>
+
+        <pre><code class="language-cpp" data-file="block.cpp">for (int i = 0; i &lt; 3; ++i) {
+    int square = i * i;   // 'square' is created fresh each iteration
+    std::cout &lt;&lt; square &lt;&lt; " ";
+}
+// both 'i' and 'square' are gone here — the loop's scope ended</code></pre>
+
+        <p>You can even open a bare block just to limit a variable's reach. This is a good habit: the tighter a variable's scope, the fewer places it can be misused, and the easier your code is to read.</p>
+
+        <h2>The call stack and stack frames</h2>
+        <p>When your program calls a function, C++ needs somewhere to keep that function's local variables. It uses a region of memory called the <strong>stack</strong>. Each function call gets its own slice of the stack — a <strong>stack frame</strong> — holding its parameters and local variables.</p>
+        <p>Frames stack up like a pile of plates. When <code>main</code> calls <code>update</code>, and <code>update</code> calls <code>length</code>, three frames are live at once. As each function returns, its frame is popped off the top, and its locals vanish instantly. This last-on, first-off behaviour is exactly why it's called a stack.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 220" fill="none" stroke="#4aa8ff" stroke-width="2" font-family="monospace" font-size="13">
+              <text x="300" y="20" fill="#4aa8ff" stroke="none" text-anchor="middle">The call stack (grows downward)</text>
+              <rect x="180" y="40" width="240" height="40" rx="4"/>
+              <text x="300" y="65" fill="currentColor" stroke="none" text-anchor="middle">main()  — frameCount</text>
+              <rect x="180" y="90" width="240" height="40" rx="4"/>
+              <text x="300" y="115" fill="currentColor" stroke="none" text-anchor="middle">update()  — dt, speed</text>
+              <rect x="180" y="140" width="240" height="40" rx="4"/>
+              <text x="300" y="165" fill="currentColor" stroke="none" text-anchor="middle">length()  — x, y  (top)</text>
+              <path d="M120 50 L120 170" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M114 160 L120 172 L126 160" stroke="currentColor" stroke-width="1.5"/>
+              <text x="90" y="115" fill="currentColor" stroke="none" text-anchor="middle" transform="rotate(-90 90 115)">deeper calls</text>
+            </svg>
+          </div>
+          <figcaption>Each active call owns a frame. <code>length()</code> is on top; when it returns, its frame is popped and <code>x</code>, <code>y</code> disappear.</figcaption>
+        </figure>
+
+        <pre><code class="language-cpp" data-file="stack.cpp">#include &lt;iostream&gt;
+#include &lt;cmath&gt;
+
+// A tiny helper — imagine this is a method on our future Vector2 type.
+float length(float x, float y) {
+    float sum = x * x + y * y;   // 'sum' lives in length()'s frame
+    return std::sqrt(sum);
+}
+
+void update(float dt) {
+    float speed = length(3.0f, 4.0f);  // pushes a length() frame, then pops it
+    std::cout &lt;&lt; "speed=" &lt;&lt; speed &lt;&lt; " dt=" &lt;&lt; dt &lt;&lt; "\n";
+}
+
+int main() {
+    update(0.016f);   // ~one frame at 60 FPS
+    return 0;         // main()'s frame is the last to pop
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">The stack is fast and finite</div>
+            <p>Pushing and popping frames is extremely cheap — it's just moving a pointer. That speed is why locals are the default. But the stack is small (often a megabyte or so), which is why very deep recursion or huge local arrays can cause a <strong>stack overflow</strong>. Big or long-lived data belongs on the heap instead.</p>
+          </div>
+        </div>
+
+        <h2>Automatic storage duration and lifetime</h2>
+        <p><strong>Lifetime</strong> is <em>when</em> a variable exists at runtime, as opposed to scope, which is <em>where</em> its name is visible in the code. Local variables have <strong>automatic storage duration</strong>: they are automatically created when execution reaches their declaration, and automatically destroyed when their enclosing block ends. You don't manage this by hand — hence "automatic."</p>
+        <p>This automatic cleanup is one of C++'s best features. When an object with a destructor goes out of scope, its destructor runs right then, releasing whatever it held. We'll lean on this heavily later for smart pointers and resource-owning classes.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Concept</th><th>Question it answers</th><th>Example</th></tr></thead>
+            <tbody>
+              <tr><td>Scope</td><td>Where is the name visible?</td><td>Inside <code>update()</code> only</td></tr>
+              <tr><td>Lifetime</td><td>When does it exist at runtime?</td><td>From declaration to end of block</td></tr>
+              <tr><td>Storage duration</td><td>Who manages create/destroy?</td><td>Automatic (the stack)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Never return the address of a local</div>
+            <p>Because a local dies when its function returns, returning a pointer or reference to it hands the caller a <strong>dangling</strong> reference to memory that no longer belongs to anyone. Reading it is undefined behaviour — it may look fine, then corrupt data later.</p>
+          </div>
+        </div>
+
+        <pre><code class="language-cpp" data-file="dangling.cpp">int* makeBad() {
+    int value = 42;
+    return &amp;value;   // BUG: 'value' is destroyed the moment we return
+}                    // the returned pointer is now dangling
+
+int makeGood() {
+    int value = 42;
+    return value;    // fine — we return a COPY of the value, not its address
+}</code></pre>
+
+        <h2>Variable shadowing</h2>
+        <p>When an inner scope declares a variable with the same name as one in an outer scope, the inner name <strong>shadows</strong> the outer one. Inside the inner block, the name refers to the inner variable; the outer one is hidden but not destroyed — it comes back into view once the inner scope ends.</p>
+
+        <pre><code class="language-cpp" data-file="shadow.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int health = 100;
+    std::cout &lt;&lt; health &lt;&lt; "\n";   // 100
+
+    {
+        int health = 30;          // shadows the outer 'health'
+        std::cout &lt;&lt; health &lt;&lt; "\n"; // 30 — the inner one
+    }
+
+    std::cout &lt;&lt; health &lt;&lt; "\n";   // 100 again — outer is back in view
+    return 0;
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Turn on shadowing warnings</div>
+            <p>Accidental shadowing is a classic source of "why isn't my value changing?" bugs. Enable <code>-Wshadow</code> (GCC/Clang) or <code>/W4</code> (MSVC) so the compiler flags it. In our engine we'll keep member variables and locals clearly named — a common convention is an <code>m_</code> prefix for members — to avoid ambiguity entirely.</p>
+          </div>
+        </div>
+
+        <h2>Looking ahead: the heap</h2>
+        <p>Automatic, stack-based storage is perfect for short-lived values, but it has a hard limit: a local cannot outlive the function that created it. Yet a real engine is full of data that must persist across many frames — the list of every entity in a scene, textures loaded from disk, meshes uploaded to the GPU. That data needs a different home: the <strong>heap</strong>, where memory lives until we explicitly (or via smart pointers) release it.</p>
+        <p>We'll dive into the heap, <code>new</code>/<code>delete</code>, and smart pointers in the memory module. For now, the key mental model is this: <em>stack = automatic and scope-bound; heap = manual and long-lived.</em> Knowing which one a piece of data belongs on is a skill you'll use in every system we build.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><strong>Scope</strong> is where a name is visible; it's defined by <code>{ }</code> braces — local, block, or global.</li>
+            <li>Each function call gets a <strong>stack frame</strong> on the call stack, holding its parameters and locals; frames pop off when the function returns.</li>
+            <li>Locals have <strong>automatic storage duration</strong> — created at their declaration, destroyed when their block ends.</li>
+            <li>Returning the address of a local produces a <strong>dangling</strong> pointer — never do it.</li>
+            <li>An inner variable can <strong>shadow</strong> an outer one of the same name; enable compiler warnings to catch accidental cases.</li>
+            <li>Data that must outlive its scope belongs on the <strong>heap</strong>, which we'll cover in the memory module.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

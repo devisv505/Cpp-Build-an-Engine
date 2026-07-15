@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Creating a Win32 Window — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Register a WNDCLASSEX, call CreateWindowEx, and show your first Win32 window — the render surface DirectX will draw into.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Creating a Win32 Window</h1>
+
+        <p class="lead">Every game needs a window to draw into, and on Windows that means talking to the Win32 API. Before DirectX can render a single triangle, we need a live window and its <strong>handle</strong>. In this lesson you'll register a window class, create a real window, and put it on screen — laying the exact foundation our engine's platform layer will sit on.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What the Win32 API is and why <code>wWinMain</code> replaces <code>main</code> for GUI apps</li>
+            <li>How to fill and register a <code>WNDCLASSEX</code> with <code>RegisterClassEx</code></li>
+            <li>How to create a window with <code>CreateWindowEx</code> and control its look with styles</li>
+            <li>What an <code>HWND</code> and an <code>HINSTANCE</code> handle actually are</li>
+            <li>Why this window becomes our DirectX render surface</li>
+          </ul>
+        </div>
+
+        <h2>The Win32 API and handles</h2>
+        <p>The <strong>Win32 API</strong> is the C-style interface the Windows operating system exposes for creating windows, handling input, drawing, and much more. It has been around for decades, so it looks a little old-fashioned — lots of capitalised type names and functions that take many parameters — but it is rock solid and it is exactly what DirectX expects to attach to.</p>
+
+        <p>The most important idea in Win32 is the <strong>handle</strong>. A handle is an opaque number that identifies a resource owned by the operating system. You never look inside it; you just pass it back to Windows when you want to act on that resource. Two handles show up constantly:</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Handle</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>HINSTANCE</code></td><td>Identifies <em>your running program</em> (its module) in memory. Windows hands it to you at startup.</td></tr>
+            <tr><td><code>HWND</code></td><td>Identifies a specific <em>window</em>. This is the value DirectX needs later to create its swap chain.</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Handles are just IDs</div><p>Think of an <code>HWND</code> like a coat-check ticket. The ticket is not the coat — but hand it back and Windows returns the right one. You'll store the <code>HWND</code> in our engine's <code>Window</code> class and pass it around whenever something needs to talk to the window.</p></div></div>
+
+        <h2>The entry point: wWinMain</h2>
+        <p>A console program starts at <code>main</code>. A Windows GUI program starts at <code>WinMain</code> instead — or, for wide (Unicode) strings, <code>wWinMain</code>. We'll use the wide version everywhere, because modern Windows is Unicode and DirectX examples assume it. Its signature is fixed by Windows:</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>What it is</th></tr></thead>
+          <tbody>
+            <tr><td><code>hInstance</code></td><td>Your program's module handle.</td></tr>
+            <tr><td><code>hPrevInstance</code></td><td>Always <code>nullptr</code> on modern Windows (a 16-bit relic). Ignore it.</td></tr>
+            <tr><td><code>lpCmdLine</code></td><td>The command-line arguments as a wide string.</td></tr>
+            <tr><td><code>nCmdShow</code></td><td>A hint for how to show the window (normal, minimised, maximised).</td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Step 1 — Register a window class</h2>
+        <p>Before you can create a window, you must describe what <em>kind</em> of window it is by filling a <code>WNDCLASSEX</code> structure and registering it. The class ties together an icon, a cursor, a background, and — most importantly — a <strong>window procedure</strong>: the function Windows calls whenever something happens to the window. We'll build a real message loop in the next lesson; for now we supply a minimal procedure that just lets Windows do the default thing and handles the close message.</p>
+
+        <h2>Step 2 — Create and show the window</h2>
+        <p><code>CreateWindowEx</code> is the workhorse. It takes the class name you registered, a title, a set of <strong>style</strong> flags that control borders and buttons, a position, a size, and your <code>HINSTANCE</code>. It returns the new <code>HWND</code>. Then <code>ShowWindow</code> makes it visible and <code>UpdateWindow</code> forces an initial paint.</p>
+
+        <p>Here is a complete, compilable program that puts a window on screen:</p>
+
+        <pre><code class="language-cpp" data-file="WinMain.cpp">// Build (MSVC): compile as a Windows app, not a console app.
+#include &lt;windows.h&gt;
+
+// The window procedure: Windows calls this for every message.
+// We handle destruction and defer everything else to Windows.
+LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_DESTROY:
+        PostQuitMessage(0); // tell our (future) message loop to exit
+        return 0;
+    default:
+        return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+}
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
+                    PWSTR lpCmdLine, int nCmdShow)
+{
+    const wchar_t* kClassName = L"EngineWindowClass";
+
+    // 1) Describe and register the window class.
+    WNDCLASSEX wc = {};                       // zero-initialise every field
+    wc.cbSize        = sizeof(WNDCLASSEX);
+    wc.style         = CS_HREDRAW | CS_VREDRAW; // repaint on resize
+    wc.lpfnWndProc   = WndProc;                 // our message handler
+    wc.hInstance     = hInstance;               // owning module
+    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = kClassName;
+
+    if (!RegisterClassEx(&amp;wc))
+    {
+        MessageBox(nullptr, L"Failed to register window class.",
+                   L"Error", MB_ICONERROR);
+        return -1;
+    }
+
+    // 2) Create the window. WS_OVERLAPPEDWINDOW gives a normal
+    //    title bar, border, and minimise/maximise/close buttons.
+    HWND hWnd = CreateWindowEx(
+        0,                            // extended styles (none)
+        kClassName,                   // class we just registered
+        L"Learn C++ &amp; DirectX",       // title-bar text
+        WS_OVERLAPPEDWINDOW,          // window style
+        CW_USEDEFAULT, CW_USEDEFAULT, // x, y position
+        1280, 720,                    // width, height in pixels
+        nullptr,                      // no parent window
+        nullptr,                      // no menu
+        hInstance,                    // owning module
+        nullptr);                     // no extra creation data
+
+    if (hWnd == nullptr)
+    {
+        MessageBox(nullptr, L"Failed to create window.",
+                   L"Error", MB_ICONERROR);
+        return -1;
+    }
+
+    // 3) Show it and force the first paint.
+    ShowWindow(hWnd, nCmdShow);
+    UpdateWindow(hWnd);
+
+    // A real app pumps messages here — that's the next lesson.
+    // For now, keep the window alive until the user closes it.
+    MSG msg = {};
+    while (GetMessage(&amp;msg, nullptr, 0, 0) &gt; 0)
+    {
+        TranslateMessage(&amp;msg);
+        DispatchMessage(&amp;msg);
+    }
+
+    return static_cast&lt;int&gt;(msg.wParam);
+}</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Zero-initialise your structs</div><p>Writing <code>WNDCLASSEX wc = {};</code> sets every field to zero first, so any field you forget has a safe default. Win32 structs are large, and a stray uninitialised member is a classic source of crashes.</p></div></div>
+
+        <h3>Understanding the styles</h3>
+        <p>The <code>WS_OVERLAPPEDWINDOW</code> value is a bundle of flags OR-ed together: a caption bar, a thick sizing border, a system menu, and the minimise/maximise buttons. That is the standard desktop-app look. If you later want a borderless full-screen game window, you'll swap this for <code>WS_POPUP</code> — but a normal resizable window is perfect while we develop the engine.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Client size vs. window size</div><p>The 1280×720 you pass is the <em>whole</em> window, including the border and title bar — so the drawable <strong>client area</strong> is a bit smaller. When we wire up DirectX we'll use <code>AdjustWindowRect</code> (or read the real client size with <code>GetClientRect</code>) so the back buffer matches the pixels we can actually draw into.</p></div></div>
+
+        <h2>Building as a Windows app, not a console app</h2>
+        <p>Because we use <code>wWinMain</code> instead of <code>main</code>, the linker must target the <strong>Windows subsystem</strong>. In a Visual Studio project this is a project setting; from the command line you pass it to the linker:</p>
+
+        <pre><code class="language-powershell" data-file="build.ps1">cl /EHsc /std:c++17 WinMain.cpp /link /SUBSYSTEM:WINDOWS user32.lib</code></pre>
+
+        <p>If you accidentally build as a console app, you'll get a linker error complaining it can't find <code>WinMain</code> or <code>main</code> — that's the tell-tale sign the subsystem is wrong.</p>
+
+        <h2>Why this matters for DirectX</h2>
+        <p>That <code>HWND</code> is not just a pretty rectangle. When we initialise Direct3D 11, the swap chain description (<code>DXGI_SWAP_CHAIN_DESC</code>) has an <code>OutputWindow</code> field, and we hand it exactly this handle. The window <em>is</em> our render surface: DirectX fills a back buffer and then "presents" it to this window. Everything visual our engine ever does ends up here.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Where this goes in the engine</div><p>We'll wrap all of this in a small <code>Window</code> class that owns the <code>HWND</code> and exposes its width and height. The rest of the engine — renderer, input, the game loop — will simply ask the <code>Window</code> for its handle. Keeping platform code in one place is exactly how Unity and Unreal isolate the operating system from the game.</p></div></div>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 170" fill="none" stroke="#4aa8ff" stroke-width="2">
+          <rect x="30" y="55" width="150" height="60" rx="6"/>
+          <text x="105" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">RegisterClassEx</text>
+          <rect x="225" y="55" width="150" height="60" rx="6"/>
+          <text x="300" y="83" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">CreateWindowEx</text>
+          <text x="300" y="101" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">returns HWND</text>
+          <rect x="420" y="55" width="150" height="60" rx="6"/>
+          <text x="495" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">ShowWindow</text>
+          <path d="M180 85 H225" stroke-linecap="round"/>
+          <path d="M215 78 l10 7 l-10 7" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M375 85 H420" stroke-linecap="round"/>
+          <path d="M410 78 l10 7 l-10 7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg></div><figcaption>The three steps from a described window class to a visible window.</figcaption></figure>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The Win32 API creates windows on Windows, and everything is referenced through opaque <strong>handles</strong> like <code>HINSTANCE</code> (your program) and <code>HWND</code> (a window).</li>
+            <li>GUI programs start at <code>wWinMain</code>, which receives the <code>HINSTANCE</code> and a show-command hint.</li>
+            <li>Fill a <code>WNDCLASSEX</code> (including a window procedure) and register it with <code>RegisterClassEx</code> before creating anything.</li>
+            <li><code>CreateWindowEx</code> builds the window and returns its <code>HWND</code>; styles like <code>WS_OVERLAPPEDWINDOW</code> control its appearance; <code>ShowWindow</code> and <code>UpdateWindow</code> put it on screen.</li>
+            <li>Build with the <code>/SUBSYSTEM:WINDOWS</code> linker setting, and remember the <code>HWND</code> is the render surface DirectX will draw into.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

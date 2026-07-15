@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Engine Build Tracker — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Every lesson carries one hands-on task. Complete them in order and you will have built MiniEngine — your own component-based DirectX 11 engine.">
+  <link rel="stylesheet" href="css/styles.css">
+  <style>.landing-main{padding-top:var(--header-h);}</style>
+</head>
+<body class="landing">
+  <div id="app">
+    <main class="tracker-main">
+      <section class="tracker-hero">
+        <span class="kicker">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+          Project · MiniEngine
+        </span>
+        <h1>Engine <span class="grad">Build Tracker</span></h1>
+        <p>Every lesson ends with one hands-on task. Done in order, they stack into a real, Unity-style DirectX&nbsp;11 engine — from an empty window to a spinning, textured cube driven by your own GameObject–Component system.</p>
+      </section>
+
+      <div class="tracker-progress">
+        <div class="ring" id="ring"><span id="ring-pct">0%</span></div>
+        <div class="tp-body">
+          <h3 id="tp-title">0 of 0 tasks complete</h3>
+          <p id="tp-sub">Start with Task&nbsp;#1 and check them off as you build. Your progress is saved in this browser.</p>
+        </div>
+        <button class="tp-reset" id="tp-reset">Reset progress</button>
+      </div>
+
+      <div class="tracker-list" id="tracker-list"></div>
+
+      <div class="tracker-finish">
+        <h3>🏁 The finish line</h3>
+        <p>Finish the final task and you'll have a working, component-based DirectX&nbsp;11 engine you built yourself — complete with Unity-style scripting and multiplayer networking, and the foundations to take it toward lighting, physics and an editor.</p>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <p><a href="index.html">← Back to the course</a> · Tasks are saved locally and shared with each lesson's task box.</p>
+    </footer>
+  </div>
+
+  <script src="js/curriculum.js"></script>
+  <script src="js/tasks.js"></script>
+  <script src="js/main.js"></script>
+  <script>
+  (function () {
+    var KEY = "cppdx-tasks";
+    var CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+    function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+    function getDone(){ try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch(e){ return {}; } }
+    function save(d){ try { localStorage.setItem(KEY, JSON.stringify(d)); } catch(e){} }
+
+    var list = document.getElementById("tracker-list");
+    var done = getDone();
+
+    window.CURRICULUM.forEach(function (mod) {
+      var tasks = mod.lessons.map(function (l) { return window.TASKS_BY_ID[mod.num + "-" + l.slug]; }).filter(Boolean);
+      if (!tasks.length) return;
+      var wrap = document.createElement("div");
+      wrap.className = "tmod";
+      var rows = "";
+      mod.lessons.forEach(function (l) {
+        var t = window.TASKS_BY_ID[mod.num + "-" + l.slug];
+        if (!t) return;
+        var isDone = !!done[t.id];
+        var diffClass = "diff-" + String(t.diff).replace(/[^A-Za-z]/g, "");
+        var href = mod.dir + "/" + l.slug + ".html";
+        rows +=
+          '<div class="trow' + (isDone ? " done" : "") + '" data-id="' + t.id + '">' +
+            '<div class="trow-box" role="checkbox" aria-checked="' + isDone + '" tabindex="0">' + CHECK + '</div>' +
+            '<div class="trow-main">' +
+              '<div class="trow-top">' +
+                '<span class="trow-num">Task ' + t.n + '</span>' +
+                '<span class="trow-title">' + esc(t.title) + '</span>' +
+                '<span class="task-badge ' + diffClass + '">' + esc(t.diff) + '</span>' +
+                '<span class="task-builds">' + esc(t.builds) + '</span>' +
+              '</div>' +
+              '<div class="trow-brief">' + esc(t.brief) + '</div>' +
+              '<div class="trow-meta">' +
+                '<span class="trow-deliver"><strong>Deliverable:</strong> ' + esc(t.deliverable) + '</span>' +
+                '<a class="trow-lesson" href="' + href + '">Open lesson →</a>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+      });
+      wrap.innerHTML =
+        '<div class="tmod-head"><span class="tmod-num">' + mod.num + '</span>' +
+        '<h2>' + mod.title + '</h2><span class="tmod-count">' + tasks.length + ' tasks</span></div>' + rows;
+      list.appendChild(wrap);
+    });
+
+    function updateProgress() {
+      var d = getDone();
+      var total = window.TASK_TOTAL;
+      var n = 0;
+      window.TASKS.forEach(function (t) { if (d[t.id]) n++; });
+      var pct = Math.round((n / total) * 100);
+      document.getElementById("ring").style.setProperty("--p", pct);
+      document.getElementById("ring-pct").textContent = pct + "%";
+      document.getElementById("tp-title").textContent = n + " of " + total + " tasks complete";
+      var sub = document.getElementById("tp-sub");
+      if (n === 0) sub.textContent = "Start with Task #1 and check them off as you build. Your progress is saved in this browser.";
+      else if (n === total) sub.innerHTML = "🎉 You built MiniEngine — every task complete. Time to extend it!";
+      else {
+        var next = window.TASKS.find(function (t) { return !d[t.id]; });
+        sub.innerHTML = "Next up: <strong>Task " + next.n + " — " + esc(next.title) + "</strong>.";
+      }
+    }
+
+    function toggle(row) {
+      var id = row.getAttribute("data-id");
+      var d = getDone();
+      var nowDone = !d[id];
+      if (nowDone) d[id] = true; else delete d[id];
+      save(d);
+      row.classList.toggle("done", nowDone);
+      row.querySelector(".trow-box").setAttribute("aria-checked", nowDone);
+      updateProgress();
+    }
+
+    list.addEventListener("click", function (e) {
+      var box = e.target.closest(".trow-box");
+      if (box) { toggle(box.closest(".trow")); }
+    });
+    list.addEventListener("keydown", function (e) {
+      if ((e.key === " " || e.key === "Enter") && e.target.classList.contains("trow-box")) {
+        e.preventDefault(); toggle(e.target.closest(".trow"));
+      }
+    });
+
+    document.getElementById("tp-reset").addEventListener("click", function () {
+      if (!confirm("Reset all task progress? This can't be undone.")) return;
+      save({});
+      document.querySelectorAll(".trow").forEach(function (r) {
+        r.classList.remove("done");
+        r.querySelector(".trow-box").setAttribute("aria-checked", "false");
+      });
+      updateProgress();
+    });
+
+    updateProgress();
+  })();
+  </script>
+</body>
+</html>

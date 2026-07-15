@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Subsystems &amp; the Main Loop — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn the core engine subsystems and the Initialize, loop, Shutdown lifecycle that drives every frame of your engine.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Subsystems &amp; the Main Loop</h1>
+
+        <p class="lead">In the last lesson we defined what an engine actually is: a bundle of reusable systems that turn code and assets into an interactive experience. Now we give that idea a shape. An engine is a small set of <strong>subsystems</strong> — Renderer, Input, Time, ResourceManager, Scene — owned by a single <strong>Engine</strong> object, and driven by one central <strong>main loop</strong> that ticks every subsystem in order, frame after frame. Get this skeleton right and everything else we build for the rest of the course slots neatly into it.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The five core subsystems every engine needs and what each one owns</li>
+            <li>Why a single <code>Engine</code> object should own and outlive all of them</li>
+            <li>The lifecycle: <strong>Initialize</strong> &rarr; loop(<strong>ProcessInput</strong> &rarr; <strong>Update</strong> &rarr; <strong>Render</strong>) &rarr; <strong>Shutdown</strong></li>
+            <li>How the main loop drives each subsystem in a fixed order every frame</li>
+            <li>A C++ skeleton for the <code>Engine</code> class you'll flesh out over the coming modules</li>
+          </ul>
+        </div>
+
+        <h2>The core subsystems</h2>
+        <p>A subsystem is a self-contained slice of the engine with one clear job. Keeping each concern separate means you can reason about, test, and replace one piece without disturbing the rest. We start with five that nearly every engine has — Unity and Unreal have the same responsibilities, just under different names.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Subsystem</th><th>Responsibility</th><th>Called each frame in</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Time</strong></td><td>Measures how long the last frame took (<em>delta time</em>) and tracks total elapsed time.</td><td>start of the loop</td></tr>
+              <tr><td><strong>Input</strong></td><td>Reads keyboard and mouse state so gameplay can ask "is W held?"</td><td>ProcessInput</td></tr>
+              <tr><td><strong>Scene</strong></td><td>Holds the objects in the world and advances their logic.</td><td>Update</td></tr>
+              <tr><td><strong>Renderer</strong></td><td>Wraps DirectX 11 and draws the scene to the screen.</td><td>Render</td></tr>
+              <tr><td><strong>ResourceManager</strong></td><td>Loads and caches meshes, textures and shaders so they load once, not per-frame.</td><td>on demand (not every frame)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Notice that not every subsystem runs every frame. The <code>ResourceManager</code> mostly works during loading; the <code>Renderer</code> and <code>Scene</code> are the workhorses of the per-frame loop. That distinction is important — it tells us where to spend our performance budget later.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Delta time, in one sentence</div><p>Delta time is the number of seconds the previous frame took. Multiplying movement by it (<code>position += speed * dt</code>) keeps your game running at the same real-world speed whether the machine draws 30 or 300 frames per second.</p></div>
+        </div>
+
+        <h2>One owner: the Engine object</h2>
+        <p>If subsystems were scattered global variables, their creation order and lifetime would be a constant source of bugs. Instead we give them a single owner: an <code>Engine</code> (sometimes called <code>Application</code>) object created in <code>main()</code>. The Engine constructs each subsystem, hands them to each other where needed, runs the loop, and tears everything down in the right order when the program ends.</p>
+
+        <p>We express ownership with <code>std::unique_ptr</code> — the smart pointer you met earlier. Each subsystem is heap-allocated and owned by exactly one Engine; when the Engine is destroyed, its members are destroyed automatically in reverse order of declaration. No manual <code>delete</code>, no leaks.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 260" fill="none" stroke="currentColor" stroke-width="2" font-family="sans-serif" font-size="13">
+              <rect x="20" y="20" width="120" height="220" rx="10" stroke="#4aa8ff"/>
+              <text x="80" y="46" text-anchor="middle" fill="#4aa8ff" stroke="none" font-weight="bold">Engine</text>
+              <text x="80" y="66" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">owns all</text>
+              <g stroke="#4aa8ff">
+                <rect x="200" y="28" width="150" height="34" rx="6"/>
+                <rect x="200" y="72" width="150" height="34" rx="6"/>
+                <rect x="200" y="116" width="150" height="34" rx="6"/>
+                <rect x="200" y="160" width="150" height="34" rx="6"/>
+                <rect x="200" y="204" width="150" height="34" rx="6"/>
+              </g>
+              <g fill="currentColor" stroke="none" text-anchor="middle">
+                <text x="275" y="50">Time</text>
+                <text x="275" y="94">Input</text>
+                <text x="275" y="138">Scene</text>
+                <text x="275" y="182">Renderer</text>
+                <text x="275" y="226">ResourceManager</text>
+              </g>
+              <g stroke="#4aa8ff">
+                <line x1="140" y1="45" x2="200" y2="45"/>
+                <line x1="140" y1="89" x2="200" y2="89"/>
+                <line x1="140" y1="133" x2="200" y2="133"/>
+                <line x1="140" y1="177" x2="200" y2="177"/>
+                <line x1="140" y1="221" x2="200" y2="221"/>
+              </g>
+              <path d="M420 90 h150" stroke="#4aa8ff"/>
+              <text x="495" y="82" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">per frame</text>
+              <text x="495" y="130" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">ProcessInput</text>
+              <text x="495" y="150" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">Update</text>
+              <text x="495" y="170" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">Render</text>
+            </svg>
+          </div>
+          <figcaption>One Engine object owns every subsystem and drives them each frame.</figcaption>
+        </figure>
+
+        <h2>The lifecycle</h2>
+        <p>Every engine follows the same three-phase lifecycle. It is worth memorising, because it never changes no matter how big the engine grows:</p>
+
+        <ol>
+          <li><strong>Initialize</strong> — create the window, spin up DirectX, load startup resources, build the scene. Runs <em>once</em>.</li>
+          <li><strong>The loop</strong> — repeat <strong>ProcessInput &rarr; Update &rarr; Render</strong> until the user quits. Runs thousands of times per second.</li>
+          <li><strong>Shutdown</strong> — release GPU resources, close the window, free memory. Runs <em>once</em>.</li>
+        </ol>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Order matters — both ways</div><p>Subsystems must initialize in dependency order (the Renderer needs a window before it can create a DirectX device) and shut down in the <em>reverse</em> order. Destroying the window while the GPU still references it is a classic crash. Owning everything in a single <code>Engine</code> makes this ordering explicit and reliable.</p></div>
+        </div>
+
+        <h3>Why input, update, render — in that order?</h3>
+        <p>The order inside the loop is not arbitrary. Each stage feeds the next:</p>
+        <ul>
+          <li><strong>ProcessInput</strong> snapshots the keyboard and mouse so the whole frame sees one consistent input state.</li>
+          <li><strong>Update</strong> advances game logic using that input and this frame's delta time — moving objects, running physics, ticking timers.</li>
+          <li><strong>Render</strong> draws the world <em>after</em> it has been updated, so the picture on screen reflects the newest state.</li>
+        </ul>
+        <p>Reading input after updating, or rendering before updating, would make objects lag one frame behind reality. Input &rarr; Update &rarr; Render keeps everything in sync.</p>
+
+        <h2>The Engine class skeleton</h2>
+        <p>Here is the shape of the <code>Engine</code> class we'll grow across the rest of the course. This is a <em>sketch</em> — the subsystem types are forward-declared and there's no real implementation yet — but the structure is exactly what we'll build on. Read it top to bottom and match it against the lifecycle above.</p>
+
+        <pre><code class="language-cpp" data-file="Engine.h">#pragma once
+#include &lt;memory&gt;   // std::unique_ptr
+
+// Forward declarations: we only need pointers here, not full definitions,
+// so the real headers stay out of this file. Faster builds, fewer includes.
+class Time;
+class Input;
+class Scene;
+class Renderer;
+class ResourceManager;
+
+class Engine {
+public:
+    Engine();
+    ~Engine();               // out-of-line so unique_ptr can see full types
+
+    // Boots every subsystem. Returns false if any step fails.
+    bool Initialize();
+
+    // Runs the main loop until the user quits, then tears everything down.
+    void Run();
+
+private:
+    // --- the three loop stages, called once per frame ---
+    void ProcessInput();     // snapshot keyboard / mouse
+    void Update(float dt);   // advance game logic by dt seconds
+    void Render();           // draw the scene via DirectX
+
+    void Shutdown();         // release subsystems in reverse order
+
+    // The Engine OWNS every subsystem. Declaration order below is also
+    // construction order; destruction happens in reverse automatically.
+    std::unique_ptr&lt;Time&gt;            m_time;
+    std::unique_ptr&lt;Input&gt;           m_input;
+    std::unique_ptr&lt;ResourceManager&gt; m_resources;
+    std::unique_ptr&lt;Renderer&gt;        m_renderer;
+    std::unique_ptr&lt;Scene&gt;           m_scene;
+
+    bool m_running = false;  // set true in Initialize, false to exit the loop
+};
+</code></pre>
+
+        <p>And the heart of it all — the loop itself. Notice how <code>Run()</code> reads like the lifecycle diagram written in code:</p>
+
+        <pre><code class="language-cpp" data-file="Engine.cpp">void Engine::Run() {
+    m_running = true;
+
+    // Keep looping until something asks us to stop.
+    while (m_running) {
+        // 1) Time first: how long did the previous frame take?
+        float dt = m_time-&gt;Tick();   // e.g. 0.016f at ~60 FPS
+
+        // 2) Read this frame's input as a single consistent snapshot.
+        ProcessInput();
+
+        // 3) Advance all game logic by dt seconds.
+        Update(dt);
+
+        // 4) Draw the freshly-updated world to the screen.
+        Render();
+    }
+
+    // Loop exited: clean everything up in the right order.
+    Shutdown();
+}
+
+void Engine::Update(float dt) {
+    // The Scene ticks every object it owns, passing delta time down.
+    m_scene-&gt;Update(dt);
+}
+
+void Engine::Render() {
+    m_renderer-&gt;BeginFrame();     // clear the back buffer
+    m_renderer-&gt;DrawScene(*m_scene);
+    m_renderer-&gt;EndFrame();       // present the swap chain
+}
+</code></pre>
+
+        <p>Your <code>main.cpp</code> then becomes refreshingly small — it just creates the Engine, initializes it, and hands control to the loop:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include "Engine.h"
+
+int main() {
+    Engine engine;                 // subsystems created here
+
+    if (!engine.Initialize())      // window + DirectX + resources
+        return -1;                 // bail out if boot failed
+
+    engine.Run();                  // loop until quit, then Shutdown()
+
+    return 0;                      // Engine destructor frees everything
+}
+</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Why declare the destructor even though it does "nothing"?</div><p>When members are <code>std::unique_ptr</code> to forward-declared types, the compiler needs the full type to generate their destruction code. Declaring <code>~Engine()</code> in the header and <em>defining</em> it in the <code>.cpp</code> (where the real headers are included) puts that generated code somewhere the types are complete. Leaving it out gives a confusing "incomplete type" error — a very common beginner trap.</p></div>
+        </div>
+
+        <h2>Where this is heading</h2>
+        <p>Right now the subsystems are empty shells, but the architecture is real. Over the next modules we'll fill each one in: DirectX 11 device and swap chain inside <code>Renderer</code>, a high-resolution timer inside <code>Time</code>, keyboard and mouse handling inside <code>Input</code>. In the very next lesson we crack open <code>Scene</code> and introduce the <strong>GameObject–Component model</strong> — the same pattern Unity uses — which is what those objects the Scene updates each frame will actually be built from.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>An engine is a set of focused <strong>subsystems</strong> — Time, Input, Scene, Renderer, ResourceManager — each with one job.</li>
+            <li>A single <strong>Engine</strong> object owns every subsystem via <code>std::unique_ptr</code>, guaranteeing correct construction and destruction order.</li>
+            <li>The lifecycle is <strong>Initialize</strong> (once) &rarr; loop of <strong>ProcessInput &rarr; Update &rarr; Render</strong> (every frame) &rarr; <strong>Shutdown</strong> (once).</li>
+            <li>The loop order keeps input, logic, and the drawn image in sync; <strong>delta time</strong> from <code>Time</code> makes movement frame-rate independent.</li>
+            <li>The <code>Engine</code> skeleton and tiny <code>main()</code> we sketched are the scaffold we'll fill in for the rest of the course.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

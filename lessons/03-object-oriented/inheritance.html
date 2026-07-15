@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inheritance — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn C++ inheritance: base and derived classes, the is-a relationship, protected members, and calling base constructors to reuse behavior.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Inheritance</h1>
+
+        <p class="lead">Last lesson you learned to lock a class down with encapsulation and <code>const</code>. Now we take the next step: building new classes <em>on top of</em> existing ones. Inheritance lets a class absorb the data and behavior of another and then add its own. This is the exact mechanism engines like Unity and Unreal use to say "a Transform, a MeshRenderer, and a RigidBody are all Components" — and it is how we will structure our own engine.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to define a <strong>base class</strong> and a <strong>derived class</strong> with public inheritance</li>
+            <li>What the <strong>is-a relationship</strong> means and when inheritance is the right tool</li>
+            <li>The difference between <code>private</code>, <code>protected</code>, and <code>public</code> access for subclasses</li>
+            <li>How to call a <strong>base constructor</strong> from a derived class</li>
+            <li>How this sets up a shared <code>Component</code> base class for our engine</li>
+          </ul>
+        </div>
+
+        <h2>The is-a relationship</h2>
+
+        <p>Inheritance answers one question: "Is this new thing a <em>kind of</em> that existing thing?" If the honest answer is <strong>yes, X is a Y</strong>, inheritance may fit. A <code>Dog</code> is an <code>Animal</code>. A <code>Button</code> is a <code>Widget</code>. In our engine, a <code>Transform</code> is a <code>Component</code>, and a <code>MeshRenderer</code> is a <code>Component</code> too.</p>
+
+        <p>When you write <code>class Dog : public Animal</code>, the <code>Dog</code> automatically receives every member of <code>Animal</code>: its data, and its functions. You did not copy-paste anything — the base part lives inside every derived object. We call <code>Animal</code> the <strong>base class</strong> (or parent), and <code>Dog</code> the <strong>derived class</strong> (or child).</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Is-a, not has-a</div><p>If you catch yourself saying "has a" instead of "is a", reach for a member variable instead. A <code>Car</code> <em>has an</em> <code>Engine</code>, so <code>Engine</code> is a member of <code>Car</code>, not a base class of it. Getting this distinction right keeps designs clean.</p></div>
+        </div>
+
+        <h2>A first base and derived class</h2>
+
+        <p>Let's make a small, complete program. We'll build a base <code>Animal</code> that stores a name and can <code>describe()</code> itself, then derive a <code>Dog</code> that adds barking. Notice that <code>Dog</code> uses <code>name</code> and <code>describe()</code> without redefining them.</p>
+
+        <pre><code class="language-cpp" data-file="animals.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+class Animal {
+public:
+    // The base constructor sets shared state.
+    Animal(const std::string&amp; name, int legs)
+        : m_name(name), m_legs(legs) {}
+
+    void describe() const {
+        std::cout &lt;&lt; m_name &lt;&lt; " has " &lt;&lt; m_legs &lt;&lt; " legs.\n";
+    }
+
+protected:
+    std::string m_name;   // protected: derived classes may read/write this
+    int m_legs;
+
+private:
+    int m_secretId = 0;   // private: NOT visible to derived classes
+};
+
+// "Dog is an Animal" -&gt; public inheritance.
+class Dog : public Animal {
+public:
+    Dog(const std::string&amp; name)
+        : Animal(name, 4) {}   // call the base constructor first
+
+    void bark() const {
+        // m_name is accessible because it is protected in Animal.
+        std::cout &lt;&lt; m_name &lt;&lt; " says: Woof!\n";
+    }
+};
+
+int main() {
+    Dog rex("Rex");
+    rex.describe();  // inherited from Animal
+    rex.bark();      // added by Dog
+    return 0;
+}</code></pre>
+
+        <p>Running this prints:</p>
+
+        <pre><code class="language-console">Rex has 4 legs.
+Rex says: Woof!</code></pre>
+
+        <p><code>Dog</code> never declared <code>m_name</code>, <code>m_legs</code>, or <code>describe()</code> — it inherited all three. It only added <code>bark()</code>. That is reuse without duplication, which is the whole point.</p>
+
+        <h2>protected: the middle ground</h2>
+
+        <p>You already know <code>public</code> (anyone can touch it) and <code>private</code> (only the class itself). Inheritance adds a third level: <code>protected</code>. A protected member is hidden from outside code, exactly like private, but it <em>is</em> visible to derived classes.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Access</th><th>Same class</th><th>Derived class</th><th>Outside code</th></tr></thead>
+          <tbody>
+            <tr><td><code>public</code></td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+            <tr><td><code>protected</code></td><td>Yes</td><td>Yes</td><td>No</td></tr>
+            <tr><td><code>private</code></td><td>Yes</td><td>No</td><td>No</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>In the example above, <code>Dog::bark()</code> could read <code>m_name</code> because it was <code>protected</code>. If we had left it <code>private</code>, the compiler would reject <code>bark()</code> with an error like "m_name is a private member of Animal". Keep members <code>private</code> by default; promote them to <code>protected</code> only when a subclass genuinely needs direct access.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't over-expose</div><p>Making everything <code>protected</code> so subclasses can reach it feels convenient but leaks your internal layout to every child class. That coupling makes the base hard to change later. Prefer a small <code>protected</code> helper function over a pile of <code>protected</code> data.</p></div>
+        </div>
+
+        <h2>Calling the base constructor</h2>
+
+        <p>A derived object is built in two stages: first the base part, then the derived part. Because the base part must be fully constructed before the derived body runs, you initialize it in the derived constructor's <strong>member initializer list</strong> — the part after the colon.</p>
+
+        <pre><code class="language-cpp" data-file="constructor.cpp">Dog(const std::string&amp; name)
+    : Animal(name, 4)   // 1. construct the Animal base with these arguments
+{
+    // 2. Dog-specific setup would go here (the body runs second)
+}</code></pre>
+
+        <p>If <code>Animal</code> had a default constructor (one taking no arguments), you could omit this and the compiler would call it for you. But our <code>Animal</code> requires a name and a leg count, so we <em>must</em> pass them explicitly. Forgetting to do this is a common early error:</p>
+
+        <pre><code class="language-console">error: constructor for 'Dog' must explicitly initialize the
+       base class 'Animal' which does not have a default constructor</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Order of construction</div><p>Bases are always constructed before members, and both happen before the constructor body. Destruction runs in the exact reverse order: derived first, then base. You get this correct automatically as long as you pass the base its arguments.</p></div>
+        </div>
+
+        <h2>Sharing behavior across the hierarchy</h2>
+
+        <p>The real payoff is that shared behavior lives in one place. Add a method to the base, and every derived class gets it instantly. Suppose we give <code>Animal</code> a <code>sleep()</code> function:</p>
+
+        <pre><code class="language-cpp" data-file="shared.cpp">class Animal {
+public:
+    Animal(const std::string&amp; name, int legs)
+        : m_name(name), m_legs(legs) {}
+
+    void describe() const {
+        std::cout &lt;&lt; m_name &lt;&lt; " has " &lt;&lt; m_legs &lt;&lt; " legs.\n";
+    }
+
+    // New shared behavior — every derived class gets it for free.
+    void sleep() const {
+        std::cout &lt;&lt; m_name &lt;&lt; " is sleeping...\n";
+    }
+
+protected:
+    std::string m_name;
+    int m_legs;
+};
+
+class Cat : public Animal {
+public:
+    Cat(const std::string&amp; name) : Animal(name, 4) {}
+    void purr() const { std::cout &lt;&lt; m_name &lt;&lt; " purrs.\n"; }
+};
+
+int main() {
+    Cat c("Milo");
+    c.describe();  // from Animal
+    c.sleep();     // from Animal, added later — no change to Cat needed
+    c.purr();      // from Cat
+}</code></pre>
+
+        <p>We never touched <code>Cat</code>, yet <code>Milo</code> can now sleep. Multiply that across a dozen component types and you can feel how much duplication inheritance saves.</p>
+
+        <h2>Foreshadowing: a Component base class</h2>
+
+        <p>Here is where this pays off for our engine. In a component-based design, a game object (often called an <em>entity</em>) is a lightweight container that holds a list of components. Each component is a small piece of behavior or data. A <code>Transform</code> stores position; a <code>MeshRenderer</code> stores what to draw. They are all different, but they are all <strong>a Component</strong> — the textbook is-a relationship.</p>
+
+        <p>So we give them a common base:</p>
+
+        <pre><code class="language-cpp" data-file="component.cpp">#include &lt;string&gt;
+
+// The shared base for every component in our engine.
+class Component {
+public:
+    Component(const std::string&amp; name) : m_name(name) {}
+
+    const std::string&amp; name() const { return m_name; }
+    bool isEnabled() const { return m_enabled; }
+    void setEnabled(bool on) { m_enabled = on; }
+
+protected:
+    std::string m_name;      // derived components can read their own name
+    bool m_enabled = true;
+};
+
+// A Transform IS A Component.
+class Transform : public Component {
+public:
+    Transform() : Component("Transform") {}
+
+    void setPosition(float x, float y, float z) {
+        m_x = x; m_y = y; m_z = z;
+    }
+
+private:
+    float m_x = 0.0f, m_y = 0.0f, m_z = 0.0f;
+};
+
+// A MeshRenderer IS A Component too.
+class MeshRenderer : public Component {
+public:
+    MeshRenderer() : Component("MeshRenderer") {}
+    // ...mesh and material data will live here later
+};</code></pre>
+
+        <p>Every component now shares a name and an enabled flag, and each derived type calls <code>Component</code>'s constructor to pass its own label. Later we will store many different components together and ask each one to update itself. Doing that cleanly needs one more tool — <code>virtual</code> functions — which is exactly the next lesson.</p>
+
+        <figure><div class="figure-box">
+          <svg viewBox="0 0 600 220" fill="none" stroke="#4aa8ff" stroke-width="2">
+            <rect x="220" y="20" width="160" height="46" rx="8"/>
+            <text x="300" y="48" fill="currentColor" stroke="none" font-size="16" text-anchor="middle" font-family="sans-serif">Component</text>
+            <rect x="60" y="150" width="150" height="46" rx="8"/>
+            <text x="135" y="178" fill="currentColor" stroke="none" font-size="15" text-anchor="middle" font-family="sans-serif">Transform</text>
+            <rect x="225" y="150" width="150" height="46" rx="8"/>
+            <text x="300" y="178" fill="currentColor" stroke="none" font-size="15" text-anchor="middle" font-family="sans-serif">MeshRenderer</text>
+            <rect x="390" y="150" width="150" height="46" rx="8"/>
+            <text x="465" y="178" fill="currentColor" stroke="none" font-size="15" text-anchor="middle" font-family="sans-serif">RigidBody</text>
+            <path d="M300 66 L135 150"/>
+            <path d="M300 66 L300 150"/>
+            <path d="M300 66 L465 150"/>
+          </svg>
+        </div><figcaption>Each concrete component is-a Component, inheriting shared state and behavior.</figcaption></figure>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Keep hierarchies shallow</div><p>Deep chains (<code>A : B : C : D</code>) get hard to reason about fast. Real engines keep the tree flat: one <code>Component</code> base and many direct children. When in doubt, favor composition (an object holding other objects) over tall inheritance towers.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Inheritance models an <strong>is-a</strong> relationship: <code>class Dog : public Animal</code> makes <code>Dog</code> a kind of <code>Animal</code>.</li>
+            <li>A derived class inherits the base's data and functions, then adds its own — reuse without duplication.</li>
+            <li><code>protected</code> members are hidden from outside code but visible to derived classes; keep members <code>private</code> unless a subclass truly needs them.</li>
+            <li>Call the base constructor in the derived class's member initializer list; the base part is built first.</li>
+            <li>We built a <code>Component</code> base that <code>Transform</code> and <code>MeshRenderer</code> derive from — the backbone of our engine, ready for <code>virtual</code> functions next.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

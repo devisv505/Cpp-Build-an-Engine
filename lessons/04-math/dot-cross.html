@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dot &amp; Cross Products — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Master the dot and cross products in 3D: angles, projection, lighting with N·L, surface normals, handedness, and clean C++ code for your engine.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Dot &amp; Cross Products</h1>
+
+        <p class="lead">Last lesson you learned that a vector is just a bundle of numbers describing a direction and length in 3D. On their own, vectors are quiet. The moment they start <em>talking to each other</em> — through the dot product and the cross product — you get the two most important operations in all of real-time graphics. These two little formulas power lighting, camera direction, surface normals, and the coordinate frames every engine is built on. Get comfortable with them here and the rest of the math module will feel easy.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to compute the <strong>dot product</strong> and read its sign to tell facing from perpendicular from opposite.</li>
+            <li>How the dot product relates to the <strong>angle between vectors</strong> and to <strong>projection</strong>.</li>
+            <li>How diffuse lighting uses the classic <strong>N·L</strong> term.</li>
+            <li>How the <strong>cross product</strong> builds a perpendicular vector for surface normals and coordinate frames.</li>
+            <li>Why <strong>handedness</strong> matters, and how DirectX's left-handed convention affects your results.</li>
+          </ul>
+        </div>
+
+        <h2>The dot product</h2>
+
+        <p>The dot product takes two vectors and returns a single number (a scalar). For vectors <code>a</code> and <code>b</code> the formula is beautifully simple — multiply matching components and add:</p>
+
+        <pre><code class="language-text">a · b = a.x*b.x + a.y*b.y + a.z*b.z</code></pre>
+
+        <p>That number by itself looks unremarkable, but it hides a second identity that makes it powerful:</p>
+
+        <pre><code class="language-text">a · b = |a| * |b| * cos(θ)</code></pre>
+
+        <p>Here <code>|a|</code> and <code>|b|</code> are the lengths (magnitudes) of the vectors and <code>θ</code> is the angle between them. So the dot product bundles together <em>how long</em> the vectors are and <em>how aligned</em> they are. If you first <strong>normalize</strong> both vectors (make them length 1, which you saw last lesson), the lengths drop out and you are left with just <code>cos(θ)</code> — a value from -1 to 1 that tells you the angle directly.</p>
+
+        <h3>Reading the sign</h3>
+
+        <p>Because cosine is positive for small angles and negative for large ones, the <em>sign</em> of the dot product is an instant direction test:</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Dot product</th><th>Angle</th><th>Meaning</th></tr></thead><tbody>
+          <tr><td><strong>&gt; 0</strong></td><td>less than 90°</td><td>Vectors point the same general way (facing).</td></tr>
+          <tr><td><strong>= 0</strong></td><td>exactly 90°</td><td>Vectors are perpendicular (orthogonal).</td></tr>
+          <tr><td><strong>&lt; 0</strong></td><td>more than 90°</td><td>Vectors point roughly opposite.</td></tr>
+        </tbody></table></div>
+
+        <p>This is how a game checks "is the enemy in front of me?" — take the vector from you to the enemy, dot it with your forward vector, and if the result is positive the enemy is somewhere ahead.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">A vector dotted with itself</div><p>Notice that <code>a · a</code> equals <code>a.x² + a.y² + a.z²</code>, which is exactly the length squared. That is why we often use <code>a · a</code> to compare lengths without paying for a square root.</p></div></div>
+
+        <h3>A worked example</h3>
+
+        <p>Let <code>a = (1, 0, 0)</code> and <code>b = (1, 1, 0)</code>. The dot product is <code>1*1 + 0*1 + 0*0 = 1</code>. The length of <code>a</code> is 1 and the length of <code>b</code> is <code>√2 ≈ 1.414</code>. So <code>cos(θ) = 1 / (1 * 1.414) ≈ 0.707</code>, which means <code>θ = 45°</code>. That matches our intuition: <code>b</code> points diagonally up-right, exactly 45° off the x-axis.</p>
+
+        <h3>Projection</h3>
+
+        <p>The dot product also answers "how much of vector <code>a</code> lies along the direction of <code>b</code>?" If <code>b</code> is a unit vector, then <code>a · b</code> is the signed length of <code>a</code>'s shadow onto <code>b</code>. Scale <code>b</code> by that number and you get the <strong>projection</strong> of <code>a</code> onto <code>b</code>. We will use this later to slide a character along a wall or to split velocity into "into the surface" and "along the surface" parts.</p>
+
+        <h2>Dot product in code</h2>
+
+        <p>Let's extend the small <code>Vec3</code> type from last lesson with a dot product and a couple of helpers. This is real, compilable C++17.</p>
+
+        <pre><code class="language-cpp" data-file="dot.cpp">#include &lt;iostream&gt;
+#include &lt;cmath&gt;
+
+struct Vec3 {
+    float x = 0, y = 0, z = 0;
+};
+
+// Dot product: multiply matching components and sum.
+float dot(const Vec3&amp; a, const Vec3&amp; b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+float length(const Vec3&amp; v) {
+    return std::sqrt(dot(v, v));   // |v| = sqrt(v · v)
+}
+
+// Return a unit-length copy (guard against divide-by-zero).
+Vec3 normalize(const Vec3&amp; v) {
+    float len = length(v);
+    if (len &lt; 1e-6f) return {0, 0, 0};
+    return { v.x / len, v.y / len, v.z / len };
+}
+
+// Angle between two vectors, in degrees.
+float angleDeg(const Vec3&amp; a, const Vec3&amp; b) {
+    float c = dot(normalize(a), normalize(b));
+    // Clamp to avoid tiny floating-point overshoot past ±1.
+    c = std::fmax(-1.0f, std::fmin(1.0f, c));
+    return std::acos(c) * (180.0f / 3.14159265f);
+}
+
+int main() {
+    Vec3 a{1, 0, 0};
+    Vec3 b{1, 1, 0};
+
+    std::cout &lt;&lt; "dot   = " &lt;&lt; dot(a, b)      &lt;&lt; "\n"; // 1
+    std::cout &lt;&lt; "angle = " &lt;&lt; angleDeg(a, b) &lt;&lt; " deg\n"; // ~45
+    return 0;
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Clamp before acos</div><p>Floating-point rounding can make a normalized dot product come back as <code>1.0000001</code>. Feeding that to <code>std::acos</code> returns <code>NaN</code>. Always clamp the value to the range [-1, 1] first, as the code above does.</p></div></div>
+
+        <h2>Lighting: the N·L term</h2>
+
+        <p>Here is where the dot product earns its keep. The most common lighting model, <strong>Lambert diffuse</strong>, says a surface is brightest when it faces the light head-on and dims to zero as it turns away. "Facing the light" is exactly an angle test — and we already know the tool for that.</p>
+
+        <p>Take <code>N</code>, the surface <strong>normal</strong> (a unit vector pointing straight out of the surface), and <code>L</code>, a unit vector pointing <em>toward</em> the light. The brightness is:</p>
+
+        <pre><code class="language-text">diffuse = max(0, N · L)</code></pre>
+
+        <p>When the surface points right at the light, <code>N · L = 1</code> (full brightness). At 90° it is 0 (the light grazes the surface). Past 90° the dot goes negative, meaning the surface is turned away — and the <code>max(0, …)</code> clamps it to darkness so we never get negative light. You will write this exact line in HLSL when we reach the shaders module. Here it is:</p>
+
+        <pre><code class="language-hlsl" data-file="diffuse.hlsl">// Pixel shader snippet: classic Lambert diffuse lighting.
+float3 N = normalize(input.worldNormal);   // surface normal
+float3 L = normalize(lightPos - input.worldPos); // toward the light
+
+float ndotl = saturate(dot(N, L));  // saturate = clamp to [0,1]
+float3 color = albedo * lightColor * ndotl;</code></pre>
+
+        <p>That single <code>dot(N, L)</code> is the heart of nearly every lighting shader ever written. When our engine later feeds normals into a shader, this is what makes surfaces look three-dimensional instead of flat.</p>
+
+        <h2>The cross product</h2>
+
+        <p>The dot product turns two vectors into a number. The <strong>cross product</strong> does something different: it turns two vectors into a <em>third vector</em> that is <strong>perpendicular to both</strong> of them. That property is exactly what we need to build surface normals and coordinate axes.</p>
+
+        <pre><code class="language-text">a × b = ( a.y*b.z - a.z*b.y,
+          a.z*b.x - a.x*b.z,
+          a.x*b.y - a.y*b.x )</code></pre>
+
+        <p>The length of the result also carries meaning: <code>|a × b| = |a| * |b| * sin(θ)</code>. It is largest when the vectors are perpendicular and zero when they are parallel (parallel vectors span no area, so there is no unique perpendicular).</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 220" fill="none" stroke="currentColor" stroke-width="2">
+          <!-- origin -->
+          <circle cx="120" cy="170" r="4" fill="currentColor" stroke="none"/>
+          <!-- a to the right -->
+          <line x1="120" y1="170" x2="320" y2="170" stroke="#4aa8ff"/>
+          <polygon points="320,170 308,164 308,176" fill="#4aa8ff" stroke="none"/>
+          <text x="330" y="175" stroke="none" fill="#4aa8ff" font-size="18">a</text>
+          <!-- b up-right -->
+          <line x1="120" y1="170" x2="250" y2="70" stroke="#4aa8ff"/>
+          <polygon points="250,70 246,84 258,80" fill="#4aa8ff" stroke="none"/>
+          <text x="255" y="60" stroke="none" fill="#4aa8ff" font-size="18">b</text>
+          <!-- a x b straight up (perpendicular) -->
+          <line x1="120" y1="170" x2="120" y2="40"/>
+          <polygon points="120,40 114,54 126,54" fill="currentColor" stroke="none"/>
+          <text x="128" y="40" stroke="none" fill="currentColor" font-size="18">a × b</text>
+        </svg></div><figcaption>The cross product a × b points perpendicular to the plane that a and b lie in.</figcaption></figure>
+
+        <h3>Handedness</h3>
+
+        <p>There are always two perpendicular directions — straight up or straight down. Which one the cross product picks is decided by <strong>handedness</strong>. With the standard formula and a <strong>right-handed</strong> system, point the fingers of your right hand along <code>a</code> and curl them toward <code>b</code>; your thumb points along <code>a × b</code>.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">DirectX is left-handed</div><p>Direct3D conventionally uses a <strong>left-handed</strong> coordinate system (with +Z going into the screen), while much math you read online assumes right-handed. The cross-product formula itself doesn't change, but the direction you interpret as "outward" can flip. If your normals or triangle winding come out inside-out, handedness is the usual culprit — we'll pin down our engine's convention when we set up the camera.</p></div></div>
+
+        <h3>Surface normals from a triangle</h3>
+
+        <p>Every triangle in a mesh has three corner positions. To find the normal — the direction the face points — take two edges of the triangle and cross them. That is literally how mesh normals are generated.</p>
+
+        <pre><code class="language-cpp" data-file="cross.cpp">#include &lt;iostream&gt;
+#include &lt;cmath&gt;
+
+struct Vec3 { float x = 0, y = 0, z = 0; };
+
+Vec3 operator-(const Vec3&amp; a, const Vec3&amp; b) {
+    return { a.x - b.x, a.y - b.y, a.z - b.z };
+}
+
+float dot(const Vec3&amp; a, const Vec3&amp; b) {
+    return a.x*b.x + a.y*b.y + a.z*b.z;
+}
+
+// Cross product: result is perpendicular to both a and b.
+Vec3 cross(const Vec3&amp; a, const Vec3&amp; b) {
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x
+    };
+}
+
+Vec3 normalize(const Vec3&amp; v) {
+    float len = std::sqrt(dot(v, v));
+    if (len &lt; 1e-6f) return {0, 0, 0};
+    return { v.x / len, v.y / len, v.z / len };
+}
+
+// Face normal of the triangle (p0, p1, p2).
+Vec3 triangleNormal(const Vec3&amp; p0, const Vec3&amp; p1, const Vec3&amp; p2) {
+    Vec3 edge1 = p1 - p0;
+    Vec3 edge2 = p2 - p0;
+    return normalize(cross(edge1, edge2));
+}
+
+int main() {
+    // A triangle lying flat in the XZ plane.
+    Vec3 p0{0, 0, 0};
+    Vec3 p1{1, 0, 0};
+    Vec3 p2{0, 0, 1};
+
+    Vec3 n = triangleNormal(p0, p1, p2);
+    std::cout &lt;&lt; "normal = ("
+              &lt;&lt; n.x &lt;&lt; ", " &lt;&lt; n.y &lt;&lt; ", " &lt;&lt; n.z &lt;&lt; ")\n";
+    // Expect (0, -1, 0): perpendicular to the flat triangle.
+    return 0;
+}</code></pre>
+
+        <p>Run it and the normal comes out as <code>(0, -1, 0)</code> — straight down, perpendicular to a triangle that lies flat. Swap the order of the two edges (cross <code>edge2</code> with <code>edge1</code>) and the normal flips to <code>(0, 1, 0)</code>. That flip is handedness in action, and it is why the <strong>winding order</strong> of your triangle vertices matters when the engine decides which side of a face is "front".</p>
+
+        <h3>Building a coordinate frame</h3>
+
+        <p>The cross product's other superpower is constructing a full set of perpendicular axes from a single direction. Given a forward vector and a rough "up" hint, one cross product gives you a right vector, and a second cross gives you a clean up vector — three mutually perpendicular axes. This is exactly the recipe a camera or a <strong>Transform component</strong> uses to know its own orientation, and we'll build it directly on top of these operations in the next module.</p>
+
+        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">Cross product is not commutative</div><p>Order matters: <code>a × b = -(b × a)</code>. Swapping the operands reverses the result. Contrast this with the dot product, where <code>a · b = b · a</code>. Mixing up the order is one of the most common sources of inverted normals and mirrored coordinate frames — pick a convention and stick to it.</p></div></div>
+
+        <h2>Dot vs. cross at a glance</h2>
+
+        <div class="table-wrap"><table><thead><tr><th></th><th>Dot product</th><th>Cross product</th></tr></thead><tbody>
+          <tr><td>Result</td><td>A single number (scalar)</td><td>A new vector</td></tr>
+          <tr><td>Tells you</td><td>Alignment / angle</td><td>A perpendicular direction</td></tr>
+          <tr><td>Order</td><td><code>a · b = b · a</code></td><td><code>a × b = -(b × a)</code></td></tr>
+          <tr><td>Zero when</td><td>Vectors are perpendicular</td><td>Vectors are parallel</td></tr>
+          <tr><td>Used for</td><td>Lighting (N·L), facing tests, projection</td><td>Surface normals, coordinate frames</td></tr>
+        </tbody></table></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The <strong>dot product</strong> is <code>a.x*b.x + a.y*b.y + a.z*b.z</code> and also equals <code>|a||b|cos(θ)</code>; its sign tells you facing (+), perpendicular (0), or opposite (−).</li>
+            <li>Normalizing first turns the dot product into <code>cos(θ)</code>, giving you the angle and enabling <strong>projection</strong>.</li>
+            <li>Diffuse lighting is just <code>max(0, N · L)</code> — the single most important line in shading.</li>
+            <li>The <strong>cross product</strong> produces a vector perpendicular to both inputs, used for triangle <strong>normals</strong> and coordinate frames; its length is <code>|a||b|sin(θ)</code>.</li>
+            <li><strong>Handedness</strong> and operand order decide which way the result points — DirectX is left-handed, so watch your winding order and conventions.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

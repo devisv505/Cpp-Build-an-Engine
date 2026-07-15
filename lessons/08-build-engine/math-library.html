@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building a Small Math Library — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Design thin, ergonomic Vector3, Vector4, and Matrix types that wrap DirectXMath so your engine and game code stay clean and readable.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Building a Small Math Library</h1>
+
+        <p class="lead">Every engine runs on math: positions, rotations, and the matrices that turn a 3D model into pixels on screen. In the last lesson we abstracted the renderer so our game code never touches a raw device pointer. Now we'll do the same for math — building thin, friendly <code>Vector3</code> and <code>Matrix</code> types so your gameplay code reads like English while DirectXMath quietly does the heavy lifting underneath.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why we wrap DirectXMath instead of using <code>XMFLOAT3</code> and <code>XMMATRIX</code> everywhere</li>
+            <li>How to build a header-only <code>Vector3</code> with operators and helpers like <code>Length</code> and <code>Normalize</code></li>
+            <li>How to build a <code>Matrix</code> type with factory helpers: <code>Translation</code>, <code>Rotation</code>, <code>Scale</code>, <code>LookAt</code>, and <code>Perspective</code></li>
+            <li>How to combine them to build a world matrix — the exact thing our future <code>Transform</code> component needs</li>
+          </ul>
+        </div>
+
+        <h2>Why not just use DirectXMath directly?</h2>
+
+        <p>DirectXMath is fast and correct, but it was designed for performance, not for comfort. It splits its types into two families: <strong>storage types</strong> like <code>XMFLOAT3</code> that hold plain floats, and <strong>calculation types</strong> like <code>XMVECTOR</code> that live in SIMD registers. You constantly convert between them with functions like <code>XMLoadFloat3</code> and <code>XMStoreFloat3</code>. That's great for a tight inner loop, but it makes everyday gameplay code noisy and hard to read.</p>
+
+        <p>Look at what adding two positions costs in raw DirectXMath:</p>
+
+        <pre><code class="language-cpp" data-file="raw_xm.cpp">// The verbose reality of raw DirectXMath for a simple add
+XMFLOAT3 a{1, 2, 3};
+XMFLOAT3 b{4, 5, 6};
+
+XMVECTOR va = XMLoadFloat3(&amp;a);   // load into SIMD register
+XMVECTOR vb = XMLoadFloat3(&amp;b);
+XMVECTOR vr = XMVectorAdd(va, vb); // do the math
+
+XMFLOAT3 result;
+XMStoreFloat3(&amp;result, vr);        // store back to memory</code></pre>
+
+        <p>Five lines to add two vectors. Multiply that across an entire game and you drown in boilerplate. What we <em>want</em> is <code>Vector3 result = a + b;</code>. So we'll build a small wrapper layer that gives us that ergonomics while still using DirectXMath under the hood for the actual arithmetic.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">The wrapper strategy</div><p>Store data as the simple <code>XMFLOAT</code> types (so a <code>Vector3</code> is just three floats you can put in a component). Load into <code>XMVECTOR</code> only for the duration of a single operation, then store the result back. The conversions become an implementation detail your game code never sees.</p></div>
+        </div>
+
+        <h2>A header-only Vector3</h2>
+
+        <p>Because these types are small and used everywhere, we make the library <strong>header-only</strong>: everything lives in <code>.h</code> files with functions marked <code>inline</code>. There's no <code>.cpp</code> to compile separately, and the compiler can inline the tiny operations away completely. Here's a compact but complete <code>Vector3</code>.</p>
+
+        <pre><code class="language-cpp" data-file="Vector3.h">#pragma once
+#include &lt;DirectXMath.h&gt;
+
+namespace engine {
+
+// A friendly 3D vector. Stores plain floats so it can live inside
+// components, yet delegates real math to DirectXMath.
+struct Vector3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+
+    Vector3() = default;
+    Vector3(float x, float y, float z) : x(x), y(y), z(z) {}
+
+    // Convert to/from the DirectXMath SIMD vector. Kept private-ish
+    // by convention: game code should not need these.
+    DirectX::XMVECTOR Load() const {
+        DirectX::XMFLOAT3 f{ x, y, z };
+        return DirectX::XMLoadFloat3(&amp;f);
+    }
+    static Vector3 Store(DirectX::XMVECTOR v) {
+        DirectX::XMFLOAT3 f;
+        DirectX::XMStoreFloat3(&amp;f, v);
+        return Vector3{ f.x, f.y, f.z };
+    }
+
+    float Length() const {
+        return DirectX::XMVectorGetX(DirectX::XMVector3Length(Load()));
+    }
+
+    Vector3 Normalized() const {
+        return Store(DirectX::XMVector3Normalize(Load()));
+    }
+};
+
+// --- Operators: this is the whole point of the wrapper ---
+inline Vector3 operator+(const Vector3&amp; a, const Vector3&amp; b) {
+    return { a.x + b.x, a.y + b.y, a.z + b.z };
+}
+inline Vector3 operator-(const Vector3&amp; a, const Vector3&amp; b) {
+    return { a.x - b.x, a.y - b.y, a.z - b.z };
+}
+inline Vector3 operator*(const Vector3&amp; v, float s) {
+    return { v.x * s, v.y * s, v.z * s };
+}
+
+// Dot and cross products delegate to DirectXMath.
+inline float Dot(const Vector3&amp; a, const Vector3&amp; b) {
+    return DirectX::XMVectorGetX(DirectX::XMVector3Dot(a.Load(), b.Load()));
+}
+inline Vector3 Cross(const Vector3&amp; a, const Vector3&amp; b) {
+    return Vector3::Store(DirectX::XMVector3Cross(a.Load(), b.Load()));
+}
+
+} // namespace engine</code></pre>
+
+        <p>Notice the simple operations like <code>operator+</code> just add floats directly — no need to bounce through SIMD for three additions. We only reach for DirectXMath when the operation genuinely benefits, like <code>XMVector3Normalize</code>, which does a square root and division. This keeps things both fast and readable.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Left-handed, row-major</div><p>DirectXMath uses a <strong>left-handed</strong> coordinate system (the +Z axis points away from you into the screen) and <strong>row-major</strong> matrices, where you multiply as <code>world = scale * rotation * translation</code>. We'll stay consistent with those conventions throughout the engine so nothing gets mirrored or flipped.</p></div>
+        </div>
+
+        <h2>A Matrix type with factory helpers</h2>
+
+        <p>Now the matrix. A <code>Matrix</code> is a 4×4 grid of floats used to transform points. Rather than wrapping every operation, we give it a clean storage member and a set of <strong>static factory functions</strong> that build the common transforms an engine needs. This is the ergonomic sweet spot: <code>Matrix::Translation(pos)</code> reads far better than a bare <code>XMMatrixTranslation</code> call buried in game logic.</p>
+
+        <pre><code class="language-cpp" data-file="Matrix.h">#pragma once
+#include &lt;DirectXMath.h&gt;
+#include "Vector3.h"
+
+namespace engine {
+
+// A 4x4 transform matrix. Stores an XMFLOAT4X4 (16 plain floats)
+// and exposes factory helpers plus multiplication.
+struct Matrix {
+    DirectX::XMFLOAT4X4 m;
+
+    Matrix() { DirectX::XMStoreFloat4x4(&amp;m, DirectX::XMMatrixIdentity()); }
+    explicit Matrix(DirectX::FXMMATRIX xm) { DirectX::XMStoreFloat4x4(&amp;m, xm); }
+
+    DirectX::XMMATRIX Load() const { return DirectX::XMLoadFloat4x4(&amp;m); }
+
+    // --- Factory helpers: the engine's public vocabulary ---
+    static Matrix Identity() { return Matrix{}; }
+
+    static Matrix Translation(const Vector3&amp; t) {
+        return Matrix{ DirectX::XMMatrixTranslation(t.x, t.y, t.z) };
+    }
+
+    static Matrix Scale(const Vector3&amp; s) {
+        return Matrix{ DirectX::XMMatrixScaling(s.x, s.y, s.z) };
+    }
+
+    // Rotation from Euler angles given in radians (pitch, yaw, roll).
+    static Matrix Rotation(const Vector3&amp; eulerRadians) {
+        return Matrix{ DirectX::XMMatrixRotationRollPitchYaw(
+            eulerRadians.x, eulerRadians.y, eulerRadians.z) };
+    }
+
+    // A view matrix looking from 'eye' toward 'target'.
+    static Matrix LookAt(const Vector3&amp; eye, const Vector3&amp; target,
+                         const Vector3&amp; up) {
+        return Matrix{ DirectX::XMMatrixLookAtLH(
+            eye.Load(), target.Load(), up.Load()) };
+    }
+
+    // A perspective projection. fovY in radians.
+    static Matrix Perspective(float fovY, float aspect,
+                              float nearZ, float farZ) {
+        return Matrix{ DirectX::XMMatrixPerspectiveFovLH(
+            fovY, aspect, nearZ, farZ) };
+    }
+};
+
+// Matrix multiply. Row-major order: 'a' is applied before 'b'.
+inline Matrix operator*(const Matrix&amp; a, const Matrix&amp; b) {
+    return Matrix{ DirectX::XMMatrixMultiply(a.Load(), b.Load()) };
+}
+
+// Transform a position (a point, so w = 1) by a matrix.
+inline Vector3 TransformPoint(const Matrix&amp; m, const Vector3&amp; p) {
+    return Vector3::Store(
+        DirectX::XMVector3TransformCoord(p.Load(), m.Load()));
+}
+
+} // namespace engine</code></pre>
+
+        <p>The <code>explicit Matrix(FXMMATRIX)</code> constructor lets our factories hand back an <code>XMMATRIX</code> result and have it stored automatically. The <code>Load()</code> method does the reverse for operations. Everything else — <code>Translation</code>, <code>LookAt</code>, <code>Perspective</code> — is a one-line, self-documenting wrapper around the correct DirectXMath call.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Radians, not degrees</div><p>Every DirectXMath angle is in <strong>radians</strong>. A 90-degree field of view is <code>90.0f * XM_PI / 180.0f</code>, not <code>90.0f</code>. Passing degrees is one of the most common beginner bugs — your camera ends up zoomed to an extreme or your objects spin far too fast. Consider adding a tiny <code>ToRadians</code> helper to catch yourself.</p></div>
+        </div>
+
+        <h2>Putting it together: building a world matrix</h2>
+
+        <p>Here's the payoff. Every object in a 3D scene has a <strong>world matrix</strong> that places it in the world: first scale it, then rotate it, then move it into position. With our library, that whole idea becomes three readable lines — and this is exactly the calculation our <code>Transform</code> component will do next lesson.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;cstdio&gt;
+#include "Matrix.h"
+
+using namespace engine;
+
+int main() {
+    // An object's transform, expressed in friendly engine types.
+    Vector3 position{ 5.0f, 0.0f, 10.0f };
+    Vector3 rotation{ 0.0f, DirectX::XM_PIDIV4, 0.0f }; // 45 deg yaw
+    Vector3 scale{ 2.0f, 2.0f, 2.0f };
+
+    // Build the world matrix: scale, then rotate, then translate.
+    Matrix world = Matrix::Scale(scale)
+                 * Matrix::Rotation(rotation)
+                 * Matrix::Translation(position);
+
+    // Where does the object's local origin end up in world space?
+    Vector3 worldOrigin = TransformPoint(world, Vector3{ 0, 0, 0 });
+    std::printf("World origin: (%.2f, %.2f, %.2f)\n",
+                worldOrigin.x, worldOrigin.y, worldOrigin.z);
+
+    // A camera looking at the object, and a projection matrix.
+    Matrix view = Matrix::LookAt(
+        Vector3{ 0, 3, -8 },   // eye
+        position,              // look at the object
+        Vector3{ 0, 1, 0 });   // up
+
+    float aspect = 1280.0f / 720.0f;
+    Matrix proj = Matrix::Perspective(DirectX::XM_PIDIV4, aspect, 0.1f, 100.0f);
+
+    // The combined transform a vertex shader will use.
+    Matrix worldViewProj = world * view * proj;
+    (void)worldViewProj; // ready to upload to a constant buffer
+
+    return 0;
+}</code></pre>
+
+        <p>The game code above never once mentions <code>XMVECTOR</code>, <code>XMLoadFloat3</code>, or <code>XMMatrixMultiply</code>. It speaks in <code>Vector3</code>, <code>Matrix</code>, <code>Scale</code>, <code>Rotation</code>, and <code>LookAt</code> — a vocabulary any beginner can read. That <code>worldViewProj</code> matrix at the end is precisely what we'll pack into a constant buffer and send to a shader, keeping the boundary between "engine math" and "GPU details" crisp.</p>
+
+        <h3>Quick reference of what we built</h3>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Helper</th><th>Builds</th><th>Backed by</th></tr></thead>
+          <tbody>
+            <tr><td><code>Matrix::Translation(v)</code></td><td>Move by a vector</td><td><code>XMMatrixTranslation</code></td></tr>
+            <tr><td><code>Matrix::Rotation(euler)</code></td><td>Rotate (pitch/yaw/roll)</td><td><code>XMMatrixRotationRollPitchYaw</code></td></tr>
+            <tr><td><code>Matrix::Scale(v)</code></td><td>Resize per-axis</td><td><code>XMMatrixScaling</code></td></tr>
+            <tr><td><code>Matrix::LookAt(e,t,u)</code></td><td>Camera view matrix</td><td><code>XMMatrixLookAtLH</code></td></tr>
+            <tr><td><code>Matrix::Perspective(...)</code></td><td>Projection matrix</td><td><code>XMMatrixPerspectiveFovLH</code></td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Keep it thin</div><p>Resist the urge to reimplement matrix multiplication or normalization by hand "to understand it." DirectXMath is already tested, SIMD-accelerated, and correct. Our job is only to give it friendlier names. A thin wrapper is a feature, not a shortcut.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Raw DirectXMath is fast but verbose because it splits storage types (<code>XMFLOAT3</code>) from SIMD calculation types (<code>XMVECTOR</code>); a thin wrapper gives us clean, readable game code.</li>
+            <li>We built a header-only <code>Vector3</code> that stores plain floats, provides <code>+</code>, <code>-</code>, <code>*</code>, and delegates heavier work like <code>Normalize</code>, <code>Dot</code>, and <code>Cross</code> to DirectXMath.</li>
+            <li>Our <code>Matrix</code> stores an <code>XMFLOAT4X4</code> and exposes factory helpers — <code>Translation</code>, <code>Rotation</code>, <code>Scale</code>, <code>LookAt</code>, and <code>Perspective</code> — plus a <code>*</code> operator.</li>
+            <li>Combining <code>Scale * Rotation * Translation</code> yields a world matrix in three readable lines, with no raw XM types leaking into game code — the foundation for next lesson's <code>Transform</code> component.</li>
+            <li>Remember the conventions: left-handed, row-major, and angles always in radians.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

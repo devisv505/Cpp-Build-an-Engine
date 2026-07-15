@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A TCP Client &amp; Server — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build a minimal Winsock TCP echo client and server in C++ to make connections concrete before adding real-time networking to MiniEngine.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>A TCP Client &amp; Server</h1>
+
+        <p class="lead">In the last lesson you initialized Winsock and learned what a socket <em>is</em>. Now we make it real: two small programs that actually talk to each other. We'll build a TCP <strong>echo server</strong> that repeats back whatever it receives, and a <strong>client</strong> that connects, sends a greeting, and prints the reply. This is the "hello world" of networking, and it's the foundation the MiniEngine networking layer will grow from.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The server call sequence: <code>socket</code> → <code>bind</code> → <code>listen</code> → <code>accept</code> → <code>recv</code>/<code>send</code>.</li>
+            <li>The client call sequence: <code>socket</code> → <code>connect</code> → <code>send</code> → <code>recv</code>.</li>
+            <li>How to fill a <code>sockaddr_in</code> with a port and an address using <code>inet_pton</code>.</li>
+            <li>Why <code>accept</code> and <code>recv</code> <strong>block</strong>, and how to check every call for errors with <code>WSAGetLastError</code>.</li>
+            <li>Why TCP is a byte <strong>stream</strong> — message boundaries are not preserved, so you must frame your own messages.</li>
+          </ul>
+        </div>
+
+        <h2>The shape of a TCP conversation</h2>
+
+        <p>TCP is <strong>connection-oriented</strong>. Before any data flows, the two sides perform a handshake and establish a reliable, ordered channel. One side plays the <strong>server</strong>: it picks a port, waits, and answers whoever knocks. The other side plays the <strong>client</strong>: it reaches out to a specific address and port. Once connected, the link is symmetric — either side can <code>send</code> and <code>recv</code>.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 210" fill="none" stroke="currentColor" stroke-width="1.5" font-family="system-ui, sans-serif" font-size="13">
+              <text x="90" y="24" text-anchor="middle" fill="#4aa8ff" stroke="none" font-weight="bold">SERVER</text>
+              <text x="510" y="24" text-anchor="middle" fill="#4aa8ff" stroke="none" font-weight="bold">CLIENT</text>
+              <line x1="90" y1="34" x2="90" y2="196" stroke="#4aa8ff"/>
+              <line x1="510" y1="34" x2="510" y2="196" stroke="#4aa8ff"/>
+              <text x="90" y="58" text-anchor="middle" stroke="none" fill="currentColor">listen()</text>
+              <text x="90" y="82" text-anchor="middle" stroke="none" fill="currentColor">accept() blocks…</text>
+              <text x="510" y="58" text-anchor="middle" stroke="none" fill="currentColor">connect()</text>
+              <line x1="500" y1="70" x2="100" y2="70" stroke="#4aa8ff" marker-end="url(#a)"/>
+              <text x="300" y="64" text-anchor="middle" stroke="none" fill="currentColor">SYN handshake</text>
+              <text x="510" y="112" text-anchor="middle" stroke="none" fill="currentColor">send("hello")</text>
+              <line x1="500" y1="124" x2="100" y2="124" stroke="currentColor" marker-end="url(#a)"/>
+              <text x="90" y="150" text-anchor="middle" stroke="none" fill="currentColor">recv() then send()</text>
+              <line x1="100" y1="162" x2="500" y2="162" stroke="currentColor" marker-end="url(#a)"/>
+              <text x="300" y="186" text-anchor="middle" stroke="none" fill="currentColor">echo travels back</text>
+              <defs>
+                <marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#4aa8ff" stroke="none"/></marker>
+              </defs>
+            </svg>
+          </div>
+          <figcaption>The server waits inside <code>accept</code> until a client's <code>connect</code> completes the handshake.</figcaption>
+        </figure>
+
+        <h2>The server</h2>
+
+        <p>The server's job is to <strong>own a port</strong> and hand back a fresh socket for each client that connects. Read the five steps below, then we'll walk through the code.</p>
+
+        <ol>
+          <li><code>socket()</code> — create a listening socket.</li>
+          <li><code>bind()</code> — claim a local address and port so the OS routes incoming connections to us.</li>
+          <li><code>listen()</code> — mark the socket as passive; it will now queue incoming connections.</li>
+          <li><code>accept()</code> — <strong>block</strong> until a client connects, then return a <em>new</em> socket dedicated to that client.</li>
+          <li><code>recv()</code> / <code>send()</code> — talk over the client socket, then <code>closesocket()</code>.</li>
+        </ol>
+
+        <pre><code class="language-cpp" data-file="server.cpp">// server.cpp — a minimal TCP echo server (Winsock2)
+#include &lt;winsock2.h&gt;
+#include &lt;ws2tcpip.h&gt;   // for inet_ntop
+#include &lt;cstdio&gt;
+#include &lt;string&gt;
+
+#pragma comment(lib, "ws2_32.lib")   // link the Winsock library
+
+constexpr unsigned short PORT = 27015;
+
+int main() {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &amp;wsa) != 0) {
+        printf("WSAStartup failed: %d\n", WSAGetLastError());
+        return 1;
+    }
+
+    // 1) Create a TCP socket (IPv4, stream, TCP).
+    SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listenSock == INVALID_SOCKET) {
+        printf("socket failed: %d\n", WSAGetLastError());
+        WSACleanup();
+        return 1;
+    }
+
+    // 2) Describe the local address to bind to.
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;   // accept on any local interface
+    addr.sin_port = htons(PORT);         // host-to-network byte order!
+
+    if (bind(listenSock, (sockaddr*)&amp;addr, sizeof(addr)) == SOCKET_ERROR) {
+        printf("bind failed: %d\n", WSAGetLastError());
+        closesocket(listenSock);
+        WSACleanup();
+        return 1;
+    }
+
+    // 3) Start listening. SOMAXCONN = a reasonable backlog queue length.
+    if (listen(listenSock, SOMAXCONN) == SOCKET_ERROR) {
+        printf("listen failed: %d\n", WSAGetLastError());
+        closesocket(listenSock);
+        WSACleanup();
+        return 1;
+    }
+    printf("Listening on port %d ...\n", PORT);
+
+    // 4) Block until a client connects. accept() returns a NEW socket
+    //    just for that client; listenSock keeps listening.
+    sockaddr_in clientAddr{};
+    int clientLen = sizeof(clientAddr);
+    SOCKET clientSock = accept(listenSock, (sockaddr*)&amp;clientAddr, &amp;clientLen);
+    if (clientSock == INVALID_SOCKET) {
+        printf("accept failed: %d\n", WSAGetLastError());
+        closesocket(listenSock);
+        WSACleanup();
+        return 1;
+    }
+
+    char ip[INET_ADDRSTRLEN]{};
+    inet_ntop(AF_INET, &amp;clientAddr.sin_addr, ip, sizeof(ip));
+    printf("Client connected from %s\n", ip);
+
+    // 5) Echo loop: read a chunk, send the same bytes back.
+    char buf[512];
+    for (;;) {
+        int n = recv(clientSock, buf, sizeof(buf), 0);
+        if (n &gt; 0) {
+            printf("Received %d bytes, echoing back.\n", n);
+            int sent = 0;
+            while (sent &lt; n) {                 // send() may not send it all at once
+                int m = send(clientSock, buf + sent, n - sent, 0);
+                if (m == SOCKET_ERROR) {
+                    printf("send failed: %d\n", WSAGetLastError());
+                    break;
+                }
+                sent += m;
+            }
+        } else if (n == 0) {
+            printf("Client closed the connection.\n");   // graceful shutdown
+            break;
+        } else {
+            printf("recv failed: %d\n", WSAGetLastError());
+            break;
+        }
+    }
+
+    closesocket(clientSock);
+    closesocket(listenSock);
+    WSACleanup();
+    return 0;
+}
+</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Two different sockets</div><p>A common beginner mistake is calling <code>recv</code> on the <em>listening</em> socket. Don't. <code>listenSock</code> only accepts connections; the socket returned by <code>accept()</code> — here <code>clientSock</code> — is the one you actually read from and write to.</p></div>
+        </div>
+
+        <h3>Byte order: why <code>htons</code>?</h3>
+
+        <p>Different CPUs store multi-byte integers in different orders. The network expects "big-endian" (network byte order), so we convert the port with <code>htons</code> (<em>host-to-network short</em>). <code>INADDR_ANY</code> is the special address <code>0.0.0.0</code>, meaning "bind to every network interface on this machine" — convenient for a test server.</p>
+
+        <h2>The client</h2>
+
+        <p>The client is shorter. It has no <code>bind</code>, no <code>listen</code>, no <code>accept</code>. It creates a socket and calls <code>connect()</code>, pointing at the server's address. We use <code>inet_pton</code> (<em>presentation-to-network</em>) to turn the human-readable string <code>"127.0.0.1"</code> — the loopback address that means "this same machine" — into the binary form <code>sockaddr_in</code> wants.</p>
+
+        <pre><code class="language-cpp" data-file="client.cpp">// client.cpp — a minimal TCP echo client (Winsock2)
+#include &lt;winsock2.h&gt;
+#include &lt;ws2tcpip.h&gt;   // for inet_pton
+#include &lt;cstdio&gt;
+#include &lt;cstring&gt;
+
+#pragma comment(lib, "ws2_32.lib")
+
+constexpr unsigned short PORT = 27015;
+
+int main() {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &amp;wsa) != 0) {
+        printf("WSAStartup failed: %d\n", WSAGetLastError());
+        return 1;
+    }
+
+    // 1) Create a TCP socket.
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) {
+        printf("socket failed: %d\n", WSAGetLastError());
+        WSACleanup();
+        return 1;
+    }
+
+    // 2) Describe the server we want to reach.
+    sockaddr_in server{};
+    server.sin_family = AF_INET;
+    server.sin_port = htons(PORT);
+    if (inet_pton(AF_INET, "127.0.0.1", &amp;server.sin_addr) != 1) {
+        printf("inet_pton failed: %d\n", WSAGetLastError());
+        closesocket(sock);
+        WSACleanup();
+        return 1;
+    }
+
+    // 3) Connect — this performs the TCP handshake with the server.
+    if (connect(sock, (sockaddr*)&amp;server, sizeof(server)) == SOCKET_ERROR) {
+        printf("connect failed: %d\n", WSAGetLastError());
+        closesocket(sock);
+        WSACleanup();
+        return 1;
+    }
+    printf("Connected to server.\n");
+
+    // 4) Send a message.
+    const char* msg = "Hello, MiniEngine!";
+    int len = (int)strlen(msg);
+    if (send(sock, msg, len, 0) == SOCKET_ERROR) {
+        printf("send failed: %d\n", WSAGetLastError());
+        closesocket(sock);
+        WSACleanup();
+        return 1;
+    }
+
+    // 5) Read the echo back.
+    char buf[512]{};
+    int n = recv(sock, buf, sizeof(buf) - 1, 0);
+    if (n &gt; 0) {
+        buf[n] = '\0';                 // recv does NOT null-terminate for us
+        printf("Server echoed: %s\n", buf);
+    } else if (n == 0) {
+        printf("Server closed the connection.\n");
+    } else {
+        printf("recv failed: %d\n", WSAGetLastError());
+    }
+
+    closesocket(sock);
+    WSACleanup();
+    return 0;
+}
+</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Run the server first</div><p>Start <code>server.exe</code> in one terminal, then <code>client.exe</code> in another. If you launch the client alone, <code>connect</code> fails with error <code>10061</code> (connection refused) because nothing is listening on the port yet.</p></div>
+        </div>
+
+        <h2>Reading the return values</h2>
+
+        <p>Every Winsock call can fail, and the whole discipline of network code is checking that it didn't. Two sentinel values do most of the work, and <code>WSAGetLastError</code> tells you <em>why</em> something failed. Keep this table handy.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Call</th><th>Failure looks like</th><th>What to do</th></tr></thead>
+          <tbody>
+            <tr><td><code>socket</code></td><td>returns <code>INVALID_SOCKET</code></td><td>print <code>WSAGetLastError()</code>, bail out</td></tr>
+            <tr><td><code>bind</code> / <code>listen</code> / <code>connect</code> / <code>send</code></td><td>returns <code>SOCKET_ERROR</code></td><td>print <code>WSAGetLastError()</code>, clean up</td></tr>
+            <tr><td><code>accept</code></td><td>returns <code>INVALID_SOCKET</code></td><td>print error, keep the listener alive if you can</td></tr>
+            <tr><td><code>recv</code></td><td><code>0</code> = peer closed, <code>SOCKET_ERROR</code> = error</td><td>stop the loop; a positive value is the byte count</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Blocking calls freeze the thread</div><p>By default <code>accept</code> and <code>recv</code> are <strong>blocking</strong>: the thread simply stops there until data arrives. That's fine for a demo, but you cannot call them on your engine's main thread — a stalled <code>recv</code> would freeze rendering. Real engines run networking on a separate thread or switch sockets to non-blocking mode. We'll return to this when we wire networking into MiniEngine's loop.</p></div>
+        </div>
+
+        <h2>The big pitfall: TCP is a stream, not messages</h2>
+
+        <p>Here is the single most important thing to internalize. When the client calls <code>send("Hello, MiniEngine!")</code>, it feels like you sent <em>one message</em>. You did not. TCP is a continuous <strong>byte stream</strong> with no built-in concept of where one message ends and the next begins.</p>
+
+        <p>That means a single <code>recv</code> might return only <code>"Hello, Mini"</code> and the rest arrives on the next call. Or, if the client sends two messages quickly, one <code>recv</code> might return both glued together: <code>"Hello, MiniEngine!Ping"</code>. This is often called the "sticky packet" problem. Our echo server sidesteps it because it blindly bounces back whatever bytes it got — but any <em>real</em> protocol must recover message boundaries itself.</p>
+
+        <p>The standard fix is <strong>length-prefix framing</strong>: before each message, send its length as a fixed-size integer. The reader first reads exactly those length bytes, then reads exactly that many payload bytes.</p>
+
+        <pre><code class="language-cpp" data-file="framing.cpp">// Send a length-prefixed message: [4-byte big-endian length][payload].
+bool sendFramed(SOCKET s, const char* data, uint32_t len) {
+    uint32_t netLen = htonl(len);                 // length in network byte order
+    if (!sendAll(s, (const char*)&amp;netLen, 4)) return false;
+    return sendAll(s, data, len);
+}
+
+// Read exactly 'need' bytes, looping because recv may return partial data.
+bool recvAll(SOCKET s, char* out, int need) {
+    int got = 0;
+    while (got &lt; need) {
+        int n = recv(s, out + got, need - got, 0);
+        if (n &lt;= 0) return false;                  // 0 = closed, &lt;0 = error
+        got += n;
+    }
+    return true;
+}
+
+// Receive one framed message into 'buffer'.
+bool recvFramed(SOCKET s, std::vector&lt;char&gt;&amp; buffer) {
+    uint32_t netLen = 0;
+    if (!recvAll(s, (char*)&amp;netLen, 4)) return false;
+    uint32_t len = ntohl(netLen);                 // back to host byte order
+    buffer.resize(len);
+    return recvAll(s, buffer.data(), (int)len);
+}
+</code></pre>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body"><div class="c-title">Never assume one send equals one recv</div><p>Code that calls <code>recv</code> once and treats the result as a whole message will work on your machine, in your tests, over loopback — and then corrupt data the moment it runs over a real network. Always frame your messages and always loop your reads until you have every byte you expect. In production you'd also cap <code>len</code> so a malicious peer can't ask you to allocate gigabytes.</p></div>
+        </div>
+
+        <h2>How this feeds MiniEngine</h2>
+
+        <p>Everything here is a building block for the engine's networking component. A future <code>NetworkComponent</code> will own a socket much like <code>clientSock</code>, run its <code>recv</code> loop on a worker thread, and hand decoded messages to gameplay code through a queue. The framing helpers above become the wire format for the snapshots and input packets our objects will exchange. TCP's reliability is great for lobby chat, matchmaking, and loading state — but you'll notice its blocking, ordered delivery is a poor fit for fast-moving position updates. That tension is exactly why the next lesson reaches for UDP.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A TCP server follows <code>socket</code> → <code>bind</code> → <code>listen</code> → <code>accept</code> → <code>recv</code>/<code>send</code>; <code>accept</code> returns a brand-new socket per client.</li>
+            <li>A TCP client is <code>socket</code> → <code>connect</code> → <code>send</code>/<code>recv</code>; use <code>inet_pton</code> to parse <code>"127.0.0.1"</code> and <code>htons</code> for the port.</li>
+            <li>Check every call: <code>INVALID_SOCKET</code> and <code>SOCKET_ERROR</code> are the sentinels, and <code>WSAGetLastError()</code> explains the failure.</li>
+            <li><code>accept</code> and <code>recv</code> block the thread — keep them off your render loop.</li>
+            <li>TCP is a byte stream, so message boundaries are not preserved; frame your messages (e.g. length-prefix) and loop until you've read every byte.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

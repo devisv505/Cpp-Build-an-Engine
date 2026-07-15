@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anatomy of a C++ Project — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn how a C++ project is organized: solutions vs projects, source vs headers, output folders, and how include and linker settings feed the build.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Anatomy of a C++ Project</h1>
+
+        <p class="lead">You can already build, run and step through a program in the debugger. But what actually <em>is</em> the thing you pressed play on? In this lesson we open the hood: solutions, projects, source and header files, the folders your <code>.exe</code> lands in, and the include and linker settings that will eventually let us pull DirectX into our engine. Understanding this layout now means you will never feel lost when a project grows to hundreds of files.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The difference between a <strong>solution</strong> (<code>.sln</code>) and a <strong>project</strong> (<code>.vcxproj</code>)</li>
+            <li>Why we split code into <strong>source</strong> (<code>.cpp</code>) and <strong>header</strong> (<code>.h</code>) files</li>
+            <li>Where the compiler puts your <code>.exe</code> — the Debug/Release x64 output folders</li>
+            <li>What <strong>include directories</strong> and <strong>linker inputs</strong> are, and how they map to the compile-and-link pipeline</li>
+          </ul>
+        </div>
+
+        <h2>The solution and the project</h2>
+
+        <p>When you created your first program, Visual Studio actually made two different containers. It is easy to blur them together, but they do very different jobs.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>File</th><th>What it is</th><th>Think of it as</th></tr></thead>
+            <tbody>
+              <tr><td><code>.sln</code></td><td>A <strong>solution</strong> — a workspace that groups one or more projects together.</td><td>A folder of related work.</td></tr>
+              <tr><td><code>.vcxproj</code></td><td>A <strong>project</strong> — one build target, such as a single <code>.exe</code> or a library.</td><td>A recipe that produces one output.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>A tiny app has one solution containing one project, so people often say "project" and "solution" interchangeably. But the distinction matters as soon as things grow. Our engine will eventually be a solution with <em>several</em> projects: an <strong>Engine</strong> project (a reusable library of components), a <strong>Game</strong> project (the actual <code>.exe</code> that uses the engine), and maybe a <strong>Tests</strong> project. One solution, many recipes — just like Unity separates its engine runtime from your game code.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Both files are just text</div><p>The <code>.sln</code> and <code>.vcxproj</code> files are XML text describing settings, not compiled code. This is exactly why they belong in version control — but the build output folders do not.</p></div></div>
+
+        <h2>Source files vs header files</h2>
+
+        <p>Inside a project your C++ code lives in two kinds of files. This split feels odd at first, but it is one of the most important ideas in C++.</p>
+
+        <ul>
+          <li><strong>Header files</strong> (<code>.h</code> or <code>.hpp</code>) contain <em>declarations</em> — the promises. "There is a function called <code>Add</code> that takes two ints and returns an int." They describe <em>what</em> exists.</li>
+          <li><strong>Source files</strong> (<code>.cpp</code>) contain <em>definitions</em> — the actual code. They describe <em>how</em> it works.</li>
+        </ul>
+
+        <p>When another file wants to use your function, it <code>#include</code>s the header to learn the promise, then the linker connects that promise to the real code later. Let's see it concretely with three files that will feel like a mini version of an engine component.</p>
+
+        <pre><code class="language-cpp" data-file="MathUtils.h">// Header: declarations only. This is the "promise".
+#pragma once  // ensures this header is included at most once per .cpp
+
+// We promise a function named Add exists somewhere.
+int Add(int a, int b);
+</code></pre>
+
+        <pre><code class="language-cpp" data-file="MathUtils.cpp">// Source: the definition. This is the "how".
+#include "MathUtils.h"  // pull in our own promise so it must match
+
+int Add(int a, int b)
+{
+    return a + b;  // the real implementation lives here
+}
+</code></pre>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include "MathUtils.h"  // learn about Add without seeing its body
+
+int main()
+{
+    int sum = Add(2, 3);
+    std::cout &lt;&lt; "2 + 3 = " &lt;&lt; sum &lt;&lt; '\n';
+    return 0;
+}
+</code></pre>
+
+        <p>Notice that <code>main.cpp</code> never sees the body of <code>Add</code> — it only sees the header. Each <code>.cpp</code> is compiled on its own into an <strong>object file</strong> (<code>.obj</code>), and then the linker stitches them into one <code>.exe</code>. That is the <strong>compile then link</strong> pipeline from the previous lesson, now with a reason to exist: split code compiles faster and stays organized.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Always start headers with #pragma once</div><p>It stops the same declarations from being pulled in twice, which is a classic source of confusing "already defined" errors. Every header we write for the engine will begin with this line.</p></div></div>
+
+        <h2>Where your .exe actually lands</h2>
+
+        <p>When you build, the compiler does not scatter files next to your source. It writes them into <strong>output folders</strong> named after your <em>configuration</em> and <em>platform</em>. Two settings drive this:</p>
+
+        <ul>
+          <li><strong>Configuration</strong> — <code>Debug</code> (extra checks, no optimization, easy to step through) or <code>Release</code> (optimized, fast, what you ship).</li>
+          <li><strong>Platform</strong> — <code>x64</code> (64-bit, what we always use) or the old <code>x86</code>.</li>
+        </ul>
+
+        <p>Combine them and you get a folder path. A typical Visual Studio layout looks like this:</p>
+
+        <pre><code class="language-text" data-file="folder layout">MyEngine\                 &lt;- solution folder
+  MyEngine.sln
+  Game\                    &lt;- one project
+    Game.vcxproj
+    main.cpp
+    MathUtils.h
+    MathUtils.cpp
+  x64\
+    Debug\
+      Game.exe             &lt;- your program lands here
+      Game.pdb             &lt;- debug symbols for breakpoints
+    Release\
+      Game.exe             &lt;- optimized build lands here
+  Game\x64\Debug\
+      main.obj             &lt;- intermediate object files
+      MathUtils.obj
+</code></pre>
+
+        <p>So the same code produces <em>different</em> executables depending on the configuration you selected in the toolbar. If you set a breakpoint and nothing stops, the number-one culprit is being in <code>Release</code> instead of <code>Debug</code>. And because these folders are regenerated on every build, you never commit them to git — a <code>.gitignore</code> excludes <code>x64/</code>, <code>Debug/</code> and <code>Release/</code>.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Match your platform to your libraries</div><p>A 64-bit <code>x64</code> program can only link against 64-bit libraries. Later, when we add DirectX, mixing an <code>x86</code> build with 64-bit libs produces cryptic linker errors. Keep everything on <code>x64</code> and you sidestep the whole class of problem.</p></div></div>
+
+        <h2>Include directories and linker inputs</h2>
+
+        <p>So far our headers sat right next to our source, so <code>#include "MathUtils.h"</code> just worked. But libraries like DirectX live elsewhere on your system. Two project settings tell the build where to look, and they map cleanly onto the two stages of the pipeline.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 170" fill="none" stroke="currentColor" stroke-width="2" xmlns="http://www.w3.org/2000/svg">
+          <rect x="20" y="60" width="120" height="50" rx="6" stroke="#4aa8ff"/>
+          <text x="80" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">.cpp + .h</text>
+          <rect x="200" y="60" width="140" height="50" rx="6" stroke="#4aa8ff"/>
+          <text x="270" y="85" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Compiler</text>
+          <text x="270" y="102" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">uses include dirs</text>
+          <rect x="400" y="60" width="140" height="50" rx="6" stroke="#4aa8ff"/>
+          <text x="470" y="85" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Linker</text>
+          <text x="470" y="102" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">uses .lib inputs</text>
+          <path d="M140 85 L200 85" stroke="#4aa8ff"/><path d="M192 80 L200 85 L192 90" stroke="#4aa8ff"/>
+          <path d="M340 85 L400 85" stroke="#4aa8ff"/><path d="M392 80 L400 85 L392 90" stroke="#4aa8ff"/>
+          <text x="270" y="140" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">.obj</text>
+        </svg></div><figcaption>Include directories feed the compiler; linker inputs feed the linker. Two settings, two stages.</figcaption></figure>
+
+        <ul>
+          <li><strong>Include Directories</strong> — extra folders the <em>compiler</em> searches when it hits an <code>#include &lt;...&gt;</code>. This is how it finds a header it did not write itself.</li>
+          <li><strong>Additional Dependencies</strong> (linker inputs) — the list of <code>.lib</code> files the <em>linker</em> pulls in to resolve promises whose bodies live in a prebuilt library.</li>
+        </ul>
+
+        <p>DirectX 11 ships with the Windows SDK, so its headers and libraries are already on your machine — you just have to name them. When we reach the graphics lessons, wiring up Direct3D is literally these two settings. In modern C++ you can even declare the linker input right in your source with a pragma, which keeps the dependency next to the code that needs it:</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">#include &lt;d3d11.h&gt;  // Direct3D 11 header, found via include directories
+
+// Tell the linker to pull in these libraries.
+// Equivalent to adding them under Linker &gt; Input &gt; Additional Dependencies.
+#pragma comment(lib, "d3d11.lib")   // core Direct3D 11
+#pragma comment(lib, "dxgi.lib")    // DXGI, for swap chains
+
+// A pointer to the D3D11 device we will create in a later lesson.
+ID3D11Device* g_device = nullptr;   // just a declaration for now
+</code></pre>
+
+        <p>Do not worry about what <code>ID3D11Device</code> does yet — the point is that <code>&lt;d3d11.h&gt;</code> is found because of an <em>include directory</em>, and <code>d3d11.lib</code> is linked because it is a <em>linker input</em>. Same two settings you would use for any library, DirectX is nothing special here.</p>
+
+        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">"Unresolved external symbol" means a missing linker input</div><p>If the compiler is happy but the build fails at the <em>link</em> step with <code>unresolved external symbol</code>, you almost always forgot to add the matching <code>.lib</code>. The header gave the promise; without the library the linker cannot find the body. Remember which stage each setting serves and these errors stop being scary.</p></div></div>
+
+        <h2>Putting it together</h2>
+
+        <p>Zoom out and the whole layout is one story: a <strong>solution</strong> gathers <strong>projects</strong>; each project compiles its <strong>source</strong> files (guided by <strong>headers</strong> and <strong>include directories</strong>) into object files, then <strong>links</strong> them together with any <strong>library inputs</strong> to produce an <code>.exe</code> in a configuration-specific output folder. Every piece you have touched — build, run, debug — sits somewhere on that pipeline. From here on, when a project grows, you will know exactly what each file and setting is for.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <strong>solution</strong> (<code>.sln</code>) groups one or more <strong>projects</strong> (<code>.vcxproj</code>); our engine will use several projects in one solution.</li>
+            <li><strong>Headers</strong> (<code>.h</code>) declare what exists; <strong>source</strong> files (<code>.cpp</code>) define how it works — start every header with <code>#pragma once</code>.</li>
+            <li>Your <code>.exe</code> lands in a configuration/platform output folder like <code>x64\Debug\</code>; these folders are regenerated and kept out of version control.</li>
+            <li><strong>Include directories</strong> feed the compiler (finding headers); <strong>linker inputs</strong> (<code>.lib</code> files) feed the linker — this is exactly how we will attach <code>d3d11.lib</code> for DirectX.</li>
+            <li>An "unresolved external symbol" error is a link-stage problem, usually a missing library input.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

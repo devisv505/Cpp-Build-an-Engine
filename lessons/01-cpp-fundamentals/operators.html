@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Operators &amp; Expressions — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Master C++ arithmetic, comparison, logical, and assignment operators, integer division, modulo, and precedence.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Operators &amp; Expressions</h1>
+
+        <p class="lead">Now that you can print to the console and store values in constants, it is time to make the computer actually <em>compute</em>. Operators are the verbs of C++: they add, compare, and combine values to form expressions. Every line of engine math — moving a Transform, checking whether an object is on screen, ticking a timer — is built from the small handful of operators you will meet here.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The arithmetic operators <code>+ - * / %</code> and the famous integer-division gotcha</li>
+            <li>Comparison operators that produce <code>true</code> or <code>false</code></li>
+            <li>Logical operators <code>&amp;&amp;</code>, <code>||</code> and <code>!</code> for combining conditions</li>
+            <li>Assignment, compound assignment, and the increment/decrement operators</li>
+            <li>How operator precedence decides what runs first — and how to control it</li>
+          </ul>
+        </div>
+
+        <h2>Expressions and operators</h2>
+        <p>An <strong>expression</strong> is any piece of code that produces a value. <code>3</code> is an expression, and so is <code>width * height</code>. An <strong>operator</strong> is a symbol that combines one or more values (its <em>operands</em>) into a new value. Operators are the fundamental building blocks you will use constantly when we start computing positions, velocities and colors for the engine.</p>
+
+        <h2>Arithmetic operators</h2>
+        <p>C++ gives you the five arithmetic operators you already know from school, plus one that is new to many beginners:</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Operator</th><th>Meaning</th><th>Example</th><th>Result</th></tr></thead><tbody>
+          <tr><td><code>+</code></td><td>Addition</td><td><code>7 + 2</code></td><td><code>9</code></td></tr>
+          <tr><td><code>-</code></td><td>Subtraction</td><td><code>7 - 2</code></td><td><code>5</code></td></tr>
+          <tr><td><code>*</code></td><td>Multiplication</td><td><code>7 * 2</code></td><td><code>14</code></td></tr>
+          <tr><td><code>/</code></td><td>Division</td><td><code>7 / 2</code></td><td><code>3</code> (see below!)</td></tr>
+          <tr><td><code>%</code></td><td>Modulo (remainder)</td><td><code>7 % 2</code></td><td><code>1</code></td></tr>
+        </tbody></table></div>
+
+        <p>The <code>%</code> operator (called <strong>modulo</strong>) gives you the remainder after division. <code>7 % 2</code> is <code>1</code> because 2 goes into 7 three times with 1 left over. Modulo only works on integers, and it is surprisingly useful: we will use it later to wrap animation frames around or to tell whether a number is even (<code>n % 2 == 0</code>).</p>
+
+        <pre><code class="language-cpp" data-file="arithmetic.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int apples = 17;
+    int baskets = 5;
+
+    int perBasket = apples / baskets;   // 3  (integer division drops the remainder)
+    int leftover  = apples % baskets;   // 2  (17 = 5*3 + 2)
+
+    std::cout &lt;&lt; perBasket &lt;&lt; " apples per basket, "
+              &lt;&lt; leftover  &lt;&lt; " left over\n";
+    return 0;
+}</code></pre>
+
+        <h3>The integer-vs-float division gotcha</h3>
+        <p>Here is the single most common surprise for new C++ programmers. When <strong>both operands are integers</strong>, <code>/</code> performs <em>integer division</em>: it throws away the fractional part instead of rounding. So <code>7 / 2</code> is <code>3</code>, not <code>3.5</code>. The decimal simply vanishes.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Integer division truncates — and modulo needs integers</div><p>If either operand is a floating-point value, the division becomes real division. <code>7 / 2</code> is <code>3</code>, but <code>7.0 / 2</code> is <code>3.5</code>. To force a float result from two <code>int</code> variables, cast one first: <code>static_cast&lt;float&gt;(a) / b</code>. And remember <code>%</code> is integer-only — <code>7.5 % 2</code> will not compile; use <code>std::fmod</code> for floating-point remainders.</p></div></div>
+
+        <pre><code class="language-cpp" data-file="division.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int a = 7, b = 2;
+
+    std::cout &lt;&lt; (a / b) &lt;&lt; "\n";                       // 3   -- both ints, truncated
+    std::cout &lt;&lt; (7.0 / 2) &lt;&lt; "\n";                     // 3.5 -- one operand is a double
+    std::cout &lt;&lt; (static_cast&lt;float&gt;(a) / b) &lt;&lt; "\n";   // 3.5 -- cast forces float division
+
+    // This matters for real engine math, e.g. an aspect ratio:
+    int width = 1280, height = 720;
+    float aspect = static_cast&lt;float&gt;(width) / height; // 1.777...  (NOT 1)
+    std::cout &lt;&lt; "aspect ratio: " &lt;&lt; aspect &lt;&lt; "\n";
+    return 0;
+}</code></pre>
+
+        <p>That aspect-ratio example is not hypothetical — when we set up the DirectX projection matrix, computing it as plain <code>width / height</code> would give <code>1</code> and stretch everything into a square. This tiny gotcha is a real bug you will otherwise chase for an hour.</p>
+
+        <h2>Comparison operators</h2>
+        <p>Comparison operators ask a yes/no question about two values and produce a <code>bool</code> — either <code>true</code> or <code>false</code>. These feed directly into the decisions you will learn next lesson.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Operator</th><th>Meaning</th><th><code>a = 5, b = 8</code></th></tr></thead><tbody>
+          <tr><td><code>==</code></td><td>Equal to</td><td><code>a == b</code> &rarr; <code>false</code></td></tr>
+          <tr><td><code>!=</code></td><td>Not equal to</td><td><code>a != b</code> &rarr; <code>true</code></td></tr>
+          <tr><td><code>&lt;</code></td><td>Less than</td><td><code>a &lt; b</code> &rarr; <code>true</code></td></tr>
+          <tr><td><code>&gt;</code></td><td>Greater than</td><td><code>a &gt; b</code> &rarr; <code>false</code></td></tr>
+          <tr><td><code>&lt;=</code></td><td>Less than or equal</td><td><code>a &lt;= 5</code> &rarr; <code>true</code></td></tr>
+          <tr><td><code>&gt;=</code></td><td>Greater than or equal</td><td><code>b &gt;= 8</code> &rarr; <code>true</code></td></tr>
+        </tbody></table></div>
+
+        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">One equals sign is not two</div><p><code>=</code> <strong>assigns</strong> a value; <code>==</code> <strong>compares</strong>. Writing <code>if (x = 5)</code> silently stores <code>5</code> into <code>x</code> and is almost always a bug. Modern compilers warn about it — do not ignore the warning.</p></div></div>
+
+        <h2>Logical operators</h2>
+        <p>Real conditions are often combinations: "the player is alive <em>and</em> has ammo," or "the key is Escape <em>or</em> the window closed." Logical operators join <code>bool</code> values together.</p>
+        <ul>
+          <li><code>&amp;&amp;</code> (<strong>AND</strong>) — true only when <em>both</em> sides are true.</li>
+          <li><code>||</code> (<strong>OR</strong>) — true when <em>at least one</em> side is true.</li>
+          <li><code>!</code> (<strong>NOT</strong>) — flips a bool: <code>!true</code> is <code>false</code>.</li>
+        </ul>
+
+        <pre><code class="language-cpp" data-file="logical.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int health = 80;
+    int ammo   = 0;
+    bool isVisible = true;
+
+    bool canFight = (health &gt; 0) &amp;&amp; (ammo &gt; 0);   // false: alive but out of ammo
+    bool shouldDraw = isVisible &amp;&amp; (health &gt; 0);  // true
+
+    std::cout &lt;&lt; std::boolalpha;   // print true/false instead of 1/0
+    std::cout &lt;&lt; "canFight:   " &lt;&lt; canFight   &lt;&lt; "\n";
+    std::cout &lt;&lt; "shouldDraw: " &lt;&lt; shouldDraw &lt;&lt; "\n";
+    std::cout &lt;&lt; "is dead?    " &lt;&lt; !(health &gt; 0) &lt;&lt; "\n"; // false
+    return 0;
+}</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Short-circuit evaluation</div><p><code>&amp;&amp;</code> and <code>||</code> are lazy. If the left side of <code>&amp;&amp;</code> is already <code>false</code>, C++ never evaluates the right side (the answer is settled). This lets you safely write guards like <code>if (ptr != nullptr &amp;&amp; ptr-&gt;alive)</code> — the pointer check protects the access that follows.</p></div></div>
+
+        <h2>Assignment and compound assignment</h2>
+        <p>You already know <code>=</code> stores a value. C++ also offers <strong>compound assignment</strong> operators that combine an arithmetic operation with the store, so you do not have to repeat the variable name.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Shorthand</th><th>Equivalent to</th></tr></thead><tbody>
+          <tr><td><code>x += 5;</code></td><td><code>x = x + 5;</code></td></tr>
+          <tr><td><code>x -= 5;</code></td><td><code>x = x - 5;</code></td></tr>
+          <tr><td><code>x *= 2;</code></td><td><code>x = x * 2;</code></td></tr>
+          <tr><td><code>x /= 2;</code></td><td><code>x = x / 2;</code></td></tr>
+          <tr><td><code>x %= 3;</code></td><td><code>x = x % 3;</code></td></tr>
+        </tbody></table></div>
+
+        <h3>Increment and decrement</h3>
+        <p>Adding or subtracting exactly one is so common that C++ has dedicated operators: <code>++</code> and <code>--</code>. Each has a <em>prefix</em> form (<code>++x</code>) and a <em>postfix</em> form (<code>x++</code>). Both change <code>x</code> the same way; they differ only in the value the expression itself hands back. Prefix increments first and returns the new value; postfix returns the old value, then increments.</p>
+
+        <pre><code class="language-cpp" data-file="increment.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int frame = 0;
+
+    frame += 1;   // frame is now 1  (compound assignment)
+    ++frame;      // frame is now 2  (prefix increment)
+    frame++;      // frame is now 3  (postfix increment)
+
+    int a = 5;
+    int b = a++;  // b gets 5 (old value), THEN a becomes 6
+    int c = ++a;  // a becomes 7 first, THEN c gets 7
+
+    std::cout &lt;&lt; "frame=" &lt;&lt; frame &lt;&lt; " a=" &lt;&lt; a
+              &lt;&lt; " b=" &lt;&lt; b &lt;&lt; " c=" &lt;&lt; c &lt;&lt; "\n"; // frame=3 a=7 b=5 c=7
+    return 0;
+}</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Prefix vs postfix in practice</div><p>When you use <code>++x</code> as a standalone statement — which is most of the time, including loop counters — the two forms behave identically, so pick whichever reads well. The difference only matters when you use the result in a larger expression. When we write our game loop, you will see <code>++frameCount;</code> ticking over every frame.</p></div></div>
+
+        <h2>Operator precedence</h2>
+        <p>When an expression mixes operators, C++ needs rules for what runs first — exactly like "multiply before add" in ordinary math. This ordering is called <strong>precedence</strong>. Here is a simplified table, highest priority at the top:</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Priority</th><th>Operators</th><th>Group</th></tr></thead><tbody>
+          <tr><td>Highest</td><td><code>()</code></td><td>Parentheses (grouping)</td></tr>
+          <tr><td></td><td><code>!</code> &nbsp; <code>++</code> &nbsp; <code>--</code></td><td>Unary</td></tr>
+          <tr><td></td><td><code>*</code> &nbsp; <code>/</code> &nbsp; <code>%</code></td><td>Multiplicative</td></tr>
+          <tr><td></td><td><code>+</code> &nbsp; <code>-</code></td><td>Additive</td></tr>
+          <tr><td></td><td><code>&lt;</code> &nbsp; <code>&lt;=</code> &nbsp; <code>&gt;</code> &nbsp; <code>&gt;=</code></td><td>Relational</td></tr>
+          <tr><td></td><td><code>==</code> &nbsp; <code>!=</code></td><td>Equality</td></tr>
+          <tr><td></td><td><code>&amp;&amp;</code></td><td>Logical AND</td></tr>
+          <tr><td></td><td><code>||</code></td><td>Logical OR</td></tr>
+          <tr><td>Lowest</td><td><code>=</code> &nbsp; <code>+=</code> &nbsp; <code>-=</code> &nbsp; …</td><td>Assignment</td></tr>
+        </tbody></table></div>
+
+        <p>So <code>2 + 3 * 4</code> is <code>14</code>, not <code>20</code>, because <code>*</code> outranks <code>+</code>. And because comparison outranks <code>&amp;&amp;</code>, the expression <code>health &gt; 0 &amp;&amp; ammo &gt; 0</code> is read as <code>(health &gt; 0) &amp;&amp; (ammo &gt; 0)</code> — which is exactly what you want.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">When in doubt, parenthesize</div><p>You never have to memorize the whole table. Parentheses have the highest precedence and make your intent obvious to both the compiler and the next human reading the code. <code>(a + b) * c</code> is clearer than trusting everyone to recall the rules.</p></div></div>
+
+        <pre><code class="language-cpp" data-file="precedence.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int result = 2 + 3 * 4;        // 14  -- * before +
+    int forced = (2 + 3) * 4;      // 20  -- parentheses win
+
+    // A realistic mix: clamp-style check on a score threshold
+    int score = 42;
+    bool passed = score &gt;= 40 &amp;&amp; score % 2 == 0; // (score&gt;=40) &amp;&amp; ((score%2)==0)
+
+    std::cout &lt;&lt; result &lt;&lt; " " &lt;&lt; forced &lt;&lt; " "
+              &lt;&lt; std::boolalpha &lt;&lt; passed &lt;&lt; "\n"; // 14 20 true
+    return 0;
+}</code></pre>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Arithmetic operators are <code>+ - * / %</code>; <code>%</code> gives the integer remainder.</li>
+            <li>Integer <code>/</code> truncates — cast to <code>float</code> (or use a floating operand) when you need a decimal result, as with an aspect ratio.</li>
+            <li>Comparison operators produce a <code>bool</code>; remember <code>==</code> compares while <code>=</code> assigns.</li>
+            <li>Logical <code>&amp;&amp;</code>, <code>||</code> and <code>!</code> combine conditions and short-circuit from left to right.</li>
+            <li>Compound assignment (<code>+=</code>, <code>*=</code>, …) and <code>++</code>/<code>--</code> are concise shorthands.</li>
+            <li>Precedence decides evaluation order; parentheses always let you take control.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

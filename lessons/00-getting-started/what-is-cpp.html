@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>What Is C++ &amp; Why Build Engines With It — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Why C++ is the language behind Unity, Unreal and every AAA engine — and what you'll build in this course.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>What Is C++ &amp; Why Build Engines With It</h1>
+        <p class="lead">C++ is the language that powers Unreal Engine, most of Unity's core, and virtually every high-performance game engine on the planet. Before we write a single line, let's understand what makes it the right tool for the job you're about to take on: building your own real-time DirectX engine from scratch.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What C++ is and how it relates to C</li>
+            <li>Why engines are written in C++ rather than higher-level languages</li>
+            <li>How C++ gives you direct control over memory and the GPU</li>
+            <li>The roadmap for this course — from <code>Hello, World</code> to a working engine</li>
+          </ul>
+        </div>
+
+        <h2>What exactly is C++?</h2>
+        <p>C++ is a <strong>compiled, statically-typed systems programming language</strong>. That's a mouthful, so let's unpack it:</p>
+        <ul>
+          <li><strong>Compiled</strong> — your source code is translated ahead of time into raw machine instructions the CPU runs directly. There's no interpreter or virtual machine sitting in the middle slowing things down.</li>
+          <li><strong>Statically typed</strong> — the type of every variable is known at compile time, so the compiler can catch mistakes and generate extremely efficient code.</li>
+          <li><strong>Systems language</strong> — it gives you unrestricted access to memory, hardware, and operating-system APIs like DirectX.</li>
+        </ul>
+        <p>C++ started life in 1985 as "C with classes" — an extension of the C language that added object-oriented features. Today it's a mature, standardized language (we'll target <strong>C++17/20</strong>) that still keeps C's philosophy: <em>you don't pay for what you don't use</em>, and you stay close to the metal.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">C vs C++</div>
+            <p>C++ is (almost) a superset of C. Everything you learn about variables, functions, and pointers is shared. C++ simply adds classes, templates, and a large standard library on top. Game engines lean heavily on those additions.</p>
+          </div>
+        </div>
+
+        <h2>Why do game engines use C++?</h2>
+        <p>A real-time engine has to update physics, animation, audio, and render millions of triangles — all within roughly <strong>16 milliseconds</strong> to hit 60 frames per second. That budget is brutal, and it's exactly where C++ shines.</p>
+
+        <h3>1. Predictable, high performance</h3>
+        <p>C++ compiles to native machine code with no garbage collector pausing your game at random moments. You decide when memory is allocated and freed, which means no surprise frame-rate hitches.</p>
+
+        <h3>2. Direct hardware &amp; API access</h3>
+        <p>DirectX, Vulkan, and the Windows API are all exposed as C-style interfaces. C++ can call them directly, hand raw memory buffers to the GPU, and manage them with zero overhead.</p>
+
+        <h3>3. It's the industry standard</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Engine</th><th>Core language</th><th>Scripting layer</th></tr></thead>
+            <tbody>
+              <tr><td>Unreal Engine</td><td>C++</td><td>Blueprints / C++</td></tr>
+              <tr><td>Unity</td><td>C++ (engine core)</td><td>C#</td></tr>
+              <tr><td>Godot</td><td>C++</td><td>GDScript / C#</td></tr>
+              <tr><td>id Tech / Frostbite</td><td>C++</td><td>C++ / scripting</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Notice the pattern: the <em>engine itself</em> is C++, even when games are scripted in C# or a visual language. Learn C++ and you can read, modify, and build the layer everything else sits on.</p>
+
+        <h2>A taste of the language</h2>
+        <p>Here's a tiny C++ program. Don't worry about understanding every symbol yet — we'll build all of this up carefully. Just notice that it reads fairly clearly:</p>
+        <pre><code class="language-cpp" data-file="hello.cpp">#include &lt;iostream&gt;
+
+// Every C++ program starts running from main()
+int main()
+{
+    const char* engineName = "MyEngine";
+    int targetFps = 60;
+
+    std::cout &lt;&lt; "Booting " &lt;&lt; engineName
+              &lt;&lt; " at " &lt;&lt; targetFps &lt;&lt; " FPS\n";
+
+    return 0; // 0 means "success"
+}</code></pre>
+        <p>That <code>#include &lt;iostream&gt;</code> line pulls in the standard input/output library, <code>main()</code> is where execution begins, and <code>std::cout</code> prints text. We'll dissect every piece of this in the coming lessons.</p>
+
+        <h2>What you'll build in this course</h2>
+        <p>This isn't a course that stops at "print the numbers 1 to 10." Everything we learn feeds a single, concrete goal: <strong>your own component-based 3D engine</strong>, rendered with DirectX 11 and organized around the same ideas Unity and Unreal use.</p>
+        <p>The journey looks like this:</p>
+        <ol>
+          <li><strong>Setup &amp; C++ core</strong> — tools, syntax, control flow, functions.</li>
+          <li><strong>Memory &amp; objects</strong> — pointers, classes, inheritance, smart pointers.</li>
+          <li><strong>Math</strong> — vectors and matrices, the language of 3D graphics.</li>
+          <li><strong>Windows &amp; DirectX</strong> — open a window, then draw triangles, cubes, and textured 3D scenes.</li>
+          <li><strong>Engine architecture</strong> — GameObjects, components, scenes, and the game loop.</li>
+          <li><strong>The capstone</strong> — assemble it all into a working engine you can keep extending.</li>
+        </ol>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">How to use this course</div>
+            <p>Read each lesson, then <strong>type the code yourself</strong> — don't just copy-paste. Use the "Mark as complete" button at the bottom to track your progress, and the <kbd>←</kbd> / <kbd>→</kbd> arrow keys to move between lessons.</p>
+          </div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>C++ is a compiled, statically-typed systems language built for performance and control.</li>
+            <li>Engines use it because real-time rendering needs predictable speed and direct hardware access.</li>
+            <li>Unity, Unreal, Godot and the rest are all C++ at their core.</li>
+            <li>Next up: understanding <em>how</em> C++ source becomes a program your computer can run.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

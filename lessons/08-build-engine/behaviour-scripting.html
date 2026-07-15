@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scripting with a MonoBehaviour-Style Class — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build a Unity-style Behaviour scripting layer on top of your Component system, with OnStart() and OnUpdate() driving your MiniEngine objects.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Scripting with a MonoBehaviour-Style Class</h1>
+
+        <p class="lead">
+          You already have a <code>Component</code> base class and a <code>GameObject</code> that owns a list of
+          components. That is the exact foundation Unity and Unreal are built on. In this lesson we add the piece
+          that makes it feel like a real engine: a <strong>scripting layer</strong>. We will write a
+          <code>Behaviour</code> class — our version of Unity's <code>MonoBehaviour</code> — so you can drop a
+          script onto any object in the scene and give it its own logic.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why a <code>Behaviour</code> class sits on top of <code>Component</code> — and why it mirrors Unity's <code>MonoBehaviour</code>.</li>
+            <li>How to give scripts an <code>OnStart()</code> that runs once and an <code>OnUpdate(float dt)</code> that runs every frame.</li>
+            <li>How <code>GameObject::Update</code> drives the whole lifecycle with a single <code>m_started</code> flag.</li>
+            <li>How to write real scripts — a spinning <code>RotatorBehaviour</code> and a WASD <code>PlayerController</code>.</li>
+            <li>How to attach them with <code>AddComponent&lt;T&gt;()</code>, composition-style, with no extra wiring.</li>
+          </ul>
+        </div>
+
+        <h2>From Component to Behaviour</h2>
+        <p>
+          Your <code>Component</code> class already does a lot: it holds a <code>GameObject*</code> owner, exposes
+          <code>GetComponent&lt;T&gt;()</code>, and has a virtual <code>OnUpdate(float dt)</code> that the
+          <code>GameObject</code> calls each frame. So why add anything?
+        </p>
+        <p>
+          Because most scripts need <strong>two</strong> moments, not one. They need a place to set things up
+          <em>once</em> — grab a reference, read a starting position, spawn something — and a place to run logic
+          <em>every frame</em>. In Unity those are <code>Start()</code> and <code>Update()</code>. We are going to
+          add the same pair as <code>OnStart()</code> and <code>OnUpdate()</code>, and we will call the class that
+          owns them <code>Behaviour</code>. Everything else — the owner pointer, <code>GetComponent</code>,
+          living inside a <code>GameObject</code>'s component list — we inherit for free.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Behaviour is our MonoBehaviour</div>
+            <p>
+              When you write <code>class Player : public MonoBehaviour</code> in Unity, you are deriving from a
+              component that adds the <code>Start</code>/<code>Update</code> lifecycle. Our <code>Behaviour</code>
+              plays the same role — a thin, script-friendly layer over the raw <code>Component</code>.
+            </p>
+          </div>
+        </div>
+
+        <h2>The Behaviour base class</h2>
+        <p>
+          Here is the whole layer. The trick is a single private <code>bool m_started</code> flag and a small
+          driver method — <code>Tick()</code> — that the engine calls. <code>Behaviour</code> overrides
+          <code>Tick()</code> to fire <code>OnStart()</code> exactly once, then <code>OnUpdate()</code> forever
+          after.
+        </p>
+
+<pre><code class="language-cpp" data-file="Behaviour.h">#include &lt;memory&gt;
+
+class GameObject;   // forward declaration — defined in a previous lesson
+
+// Component (from the previous lesson): every component knows its owner
+// and gets a chance to run logic each frame via OnUpdate().
+class Component {
+public:
+    virtual ~Component() = default;
+
+    virtual void OnUpdate(float dt) {}
+
+    // The engine calls Tick() every frame. By default it just forwards
+    // to OnUpdate(); Behaviour overrides it to inject a one-time OnStart().
+    virtual void Tick(float dt) { OnUpdate(dt); }
+
+    GameObject* GetOwner() const { return m_owner; }
+
+    template&lt;typename T&gt;
+    T* GetComponent() const { return m_owner-&gt;GetComponent&lt;T&gt;(); }
+
+private:
+    friend class GameObject;      // GameObject sets m_owner when it attaches us
+    GameObject* m_owner = nullptr;
+};
+
+// Behaviour is our MonoBehaviour: derive from it to write a script.
+class Behaviour : public Component {
+public:
+    virtual void OnStart() {}      // called ONCE, right before the first update
+    // OnUpdate(float dt) is inherited from Component — called every frame.
+
+    void Tick(float dt) override {
+        if (!m_started) {          // run OnStart exactly once...
+            OnStart();
+            m_started = true;
+        }
+        OnUpdate(dt);              // ...then OnUpdate every frame after that
+    }
+
+private:
+    bool m_started = false;
+};</code></pre>
+
+        <p>
+          That is the entire scripting engine. Notice we did <strong>not</strong> touch the <code>GameObject</code>
+          much — we only added a virtual <code>Tick()</code> to <code>Component</code> so a <code>Behaviour</code>
+          can wrap its own lifecycle around the plain update. A component that is not a <code>Behaviour</code> just
+          uses the default <code>Tick()</code>, which forwards straight to <code>OnUpdate()</code>.
+        </p>
+
+        <h2>Driving it from GameObject</h2>
+        <p>
+          The <code>GameObject</code> is unchanged from last lesson except that its per-frame loop now calls
+          <code>Tick()</code> instead of <code>OnUpdate()</code> directly. Because <code>Tick()</code> is virtual,
+          each component decides for itself what happens — plain components update, behaviours start-then-update.
+        </p>
+
+<pre><code class="language-cpp" data-file="GameObject.h">class GameObject {
+public:
+    // ... name, Transform, and the component list from the last lesson ...
+
+    // Add a script (or any component) and get a pointer back to it.
+    template&lt;typename T, typename... Args&gt;
+    T* AddComponent(Args&amp;&amp;... args) {
+        auto comp = std::make_unique&lt;T&gt;(std::forward&lt;Args&gt;(args)...);
+        comp-&gt;m_owner = this;                 // GameObject is a friend of Component
+        T* raw = comp.get();
+        m_components.push_back(std::move(comp));
+        return raw;
+    }
+
+    // Called once per frame by the scene. This is what powers Start/Update.
+    void Update(float dt) {
+        for (auto&amp; c : m_components)
+            c-&gt;Tick(dt);                      // behaviours fire OnStart then OnUpdate
+    }
+
+    Transform* GetTransform() const { return m_transform; }
+
+private:
+    Transform* m_transform = nullptr;
+    std::vector&lt;std::unique_ptr&lt;Component&gt;&gt; m_components;
+};</code></pre>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 150" fill="none" stroke="currentColor" stroke-width="2" xmlns="http://www.w3.org/2000/svg">
+              <rect x="16" y="55" width="110" height="40" rx="8"/>
+              <text x="71" y="80" text-anchor="middle" fill="currentColor" stroke="none" font-size="13">AddComponent</text>
+              <rect x="176" y="55" width="110" height="40" rx="8" stroke="#4aa8ff"/>
+              <text x="231" y="80" text-anchor="middle" fill="#4aa8ff" stroke="none" font-size="13">OnStart()</text>
+              <text x="231" y="118" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">runs once</text>
+              <rect x="336" y="55" width="110" height="40" rx="8"/>
+              <text x="391" y="80" text-anchor="middle" fill="currentColor" stroke="none" font-size="13">OnUpdate(dt)</text>
+              <rect x="470" y="55" width="110" height="40" rx="8"/>
+              <text x="525" y="80" text-anchor="middle" fill="currentColor" stroke="none" font-size="13">OnUpdate(dt)</text>
+              <text x="525" y="118" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">every frame</text>
+              <path d="M126 75 h44" stroke="#4aa8ff"/>
+              <path d="M286 75 h44"/>
+              <path d="M446 75 h20"/>
+              <path d="M580 100 q10 20 -10 20 H400" stroke-dasharray="4 4"/>
+            </svg>
+          </div>
+          <figcaption>The Behaviour lifecycle: attach, then one OnStart, then OnUpdate on every frame.</figcaption>
+        </figure>
+
+        <h2>Your first script: RotatorBehaviour</h2>
+        <p>
+          Time to actually write a script. This one spins its object around the Y axis at a constant speed. It
+          caches the <code>Transform</code> in <code>OnStart()</code> so it does not have to look it up 60 times a
+          second, then nudges the rotation in <code>OnUpdate()</code>.
+        </p>
+
+<pre><code class="language-cpp" data-file="RotatorBehaviour.h">// Spins its GameObject around the Y axis at a constant speed.
+class RotatorBehaviour : public Behaviour {
+public:
+    float degreesPerSecond = 90.0f;   // a public "inspector" field, just like Unity
+
+    void OnStart() override {
+        // Cache the Transform once so we don't fetch it every frame.
+        m_transform = GetComponent&lt;Transform&gt;();
+    }
+
+    void OnUpdate(float dt) override {
+        if (!m_transform) return;                          // no Transform, nothing to spin
+        m_transform-&gt;rotation.y += degreesPerSecond * dt;  // multiply by dt = frame-rate safe
+    }
+
+private:
+    Transform* m_transform = nullptr;
+};</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Always multiply movement by dt</div>
+            <p>
+              <code>degreesPerSecond * dt</code> means the cube rotates the same amount per <em>second</em> whether
+              the game runs at 30 or 300 FPS. Forget the <code>* dt</code> and your object spins faster on faster
+              machines — one of the most common beginner bugs.
+            </p>
+          </div>
+        </div>
+
+        <h2>Reading input: a PlayerController</h2>
+        <p>
+          A rotating cube is nice, but scripts get interesting when they react to the player. Here is a controller
+          that moves its object across the XZ plane using WASD. On Windows we can poll the keyboard directly with
+          <code>GetAsyncKeyState</code> from <code>&lt;Windows.h&gt;</code> — later we will route input through a
+          proper input manager, but this is perfect for learning.
+        </p>
+
+<pre><code class="language-cpp" data-file="PlayerController.h">#include &lt;Windows.h&gt;   // GetAsyncKeyState for quick keyboard polling
+
+// Moves its GameObject across the XZ plane using WASD.
+class PlayerController : public Behaviour {
+public:
+    float moveSpeed = 5.0f;   // world units per second
+
+    void OnStart() override {
+        m_transform = GetOwner()-&gt;GetTransform();
+    }
+
+    void OnUpdate(float dt) override {
+        Vector3 dir{ 0.0f, 0.0f, 0.0f };
+
+        // The high bit (0x8000) is set while the key is held down.
+        if (GetAsyncKeyState('W') &amp; 0x8000) dir.z += 1.0f;
+        if (GetAsyncKeyState('S') &amp; 0x8000) dir.z -= 1.0f;
+        if (GetAsyncKeyState('D') &amp; 0x8000) dir.x += 1.0f;
+        if (GetAsyncKeyState('A') &amp; 0x8000) dir.x -= 1.0f;
+
+        m_transform-&gt;position.x += dir.x * moveSpeed * dt;
+        m_transform-&gt;position.z += dir.z * moveSpeed * dt;
+    }
+
+private:
+    Transform* m_transform = nullptr;
+};</code></pre>
+
+        <p>
+          Both scripts follow the same shape: reach for what they need in <code>OnStart()</code>, do work in
+          <code>OnUpdate()</code>. That predictable rhythm is exactly why the Unity pattern scales to thousands of
+          scripts — and why it will keep your MiniEngine sane too.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't call GetComponent in the constructor</div>
+            <p>
+              When a script's constructor runs, its <code>m_owner</code> may not be set yet and sibling components
+              may not be attached. Reaching for <code>GetComponent&lt;Transform&gt;()</code> too early gives you
+              <code>nullptr</code>. <code>OnStart()</code> exists precisely so every reference is ready before you
+              grab it — always cache there, not in the constructor.
+            </p>
+          </div>
+        </div>
+
+        <h2>Dropping scripts onto objects</h2>
+        <p>
+          Here is the payoff. Because a script <em>is</em> a component, attaching behaviour to any object is one
+          call — <code>AddComponent&lt;T&gt;()</code> — with no scene-graph surgery, no registration, no
+          switch statements. That is the composition promise from the last lesson, delivered.
+        </p>
+
+<pre><code class="language-cpp" data-file="main.cpp">// Build a little scene and give objects behaviour by attaching scripts.
+GameObject* cube = scene.CreateGameObject("SpinningCube");
+cube-&gt;AddComponent&lt;MeshRenderer&gt;();                 // from the rendering lessons
+
+RotatorBehaviour* spin = cube-&gt;AddComponent&lt;RotatorBehaviour&gt;();
+spin-&gt;degreesPerSecond = 180.0f;                   // AddComponent returns a T*, so we configure it
+
+GameObject* player = scene.CreateGameObject("Player");
+player-&gt;AddComponent&lt;PlayerController&gt;();           // WASD movement, zero extra wiring
+
+// ...and in the main loop, once per frame:
+for (GameObject* go : scene.GetObjects())
+    go-&gt;Update(dt);                                // every Behaviour ticks itself</code></pre>
+
+        <p>
+          Read that again and compare it to Unity: you <em>drop a script onto an object</em> and it comes alive.
+          Want a second spinning object? <code>AddComponent&lt;RotatorBehaviour&gt;()</code> on any GameObject.
+          Want the cube to also chase the player? Write a <code>ChaseBehaviour</code> and attach it alongside the
+          rotator — they coexist because each is just another entry in the component list. No inheritance
+          gymnastics, no god-class. This is the same architecture that lets Unity and Unreal scale to entire games.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Unity</th><th>Your MiniEngine</th><th>Called when</th></tr></thead>
+            <tbody>
+              <tr><td><code>class : MonoBehaviour</code></td><td><code>class : Behaviour</code></td><td>You derive to write a script</td></tr>
+              <tr><td><code>Start()</code></td><td><code>OnStart()</code></td><td>Once, before the first frame</td></tr>
+              <tr><td><code>Update()</code></td><td><code>OnUpdate(float dt)</code></td><td>Every frame</td></tr>
+              <tr><td><code>AddComponent&lt;T&gt;()</code></td><td><code>AddComponent&lt;T&gt;()</code></td><td>To attach a script</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          In the next lesson we will write one more script-like piece — the Camera Component — and you will see how
+          naturally it drops into this exact system.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><code>Behaviour</code> derives from <code>Component</code> and adds a scripting lifecycle — it is our <code>MonoBehaviour</code>.</li>
+            <li>A private <code>bool m_started</code> lets <code>Tick()</code> call <code>OnStart()</code> once, then <code>OnUpdate(float dt)</code> every frame.</li>
+            <li><code>GameObject::Update</code> just loops its components calling <code>Tick()</code>; plain components forward to <code>OnUpdate</code>, behaviours run the full start-then-update flow.</li>
+            <li>Real scripts like <code>RotatorBehaviour</code> and <code>PlayerController</code> cache references in <code>OnStart()</code> and do frame work in <code>OnUpdate()</code> — always scaled by <code>dt</code>.</li>
+            <li><code>AddComponent&lt;T&gt;()</code> drops a script onto any object, so you compose behaviour exactly like Unity.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

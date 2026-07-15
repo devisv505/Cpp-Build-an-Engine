@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Where to Go Next — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="You built a real engine loop. Here is the road ahead: lighting, materials, shadows, physics, audio, an editor, asset importing, and modern GPU APIs.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Where to Go Next</h1>
+
+        <p class="lead">You did it. You started this course unable to write a single line of C++, and you now have a running, component-based 3D engine with a real render loop, a device and swap chain, buffers on the GPU, shaders, and a <code>Transform</code> that moves things through space. That is not a toy — it is the same skeleton that Unity and Unreal are built on. This final lesson is your map for everything that comes next.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What you have actually accomplished, and why it matters</li>
+            <li>A prioritized roadmap of engine features to build next, from lighting to a full editor</li>
+            <li>How to think about big topics like shadows, physics, and asset importing before you write them</li>
+            <li>Where to look for high-quality, trustworthy learning resources</li>
+            <li>Concrete first steps to keep your momentum going this week</li>
+          </ul>
+        </div>
+
+        <h2>First, take a moment</h2>
+
+        <p>Building an engine is hard. Most people who try to learn graphics programming stall out at "I got a triangle on screen and then got overwhelmed." You pushed past that. You understand the pieces — a window, a device, a swap chain, vertex and index buffers, a constant buffer feeding matrices to a shader, and a loop that ties it all together. More importantly, you understand <strong>why</strong> those pieces exist and how they talk to each other. That mental model is the thing that transfers to any engine, any API, any job.</p>
+
+        <p>Everything from here is an <em>extension</em> of what you already have. You are no longer learning to program; you are learning graphics and systems techniques and expressing them in tools you already own.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Build features, not a rewrite</div><p>The temptation now is to scrap everything and "do it properly." Resist it. Real engines grow feature by feature on top of a working core. Add one thing, get it on screen, commit, repeat. A messy engine that runs teaches you far more than a perfect architecture that never renders.</p></div>
+        </div>
+
+        <h2>The roadmap</h2>
+
+        <p>Here is a sensible order. Each row builds naturally on the ones above it, and each one is a satisfying, self-contained win. Do them roughly top to bottom, but follow your curiosity.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Feature</th><th>What it gives you</th><th>Difficulty</th></tr></thead>
+            <tbody>
+              <tr><td>Lighting &amp; normals</td><td>Surfaces that respond to light — the moment 3D stops looking flat</td><td>Approachable</td></tr>
+              <tr><td>Phong / PBR materials</td><td>Shininess, metals, roughness; a real <code>Material</code> component</td><td>Approachable</td></tr>
+              <tr><td>Texturing &amp; samplers</td><td>Images wrapped onto meshes instead of solid colors</td><td>Approachable</td></tr>
+              <tr><td>Asset importing (assimp)</td><td>Load real <code>.fbx</code>/<code>.gltf</code> models instead of hand-typed cubes</td><td>Moderate</td></tr>
+              <tr><td>Shadow mapping</td><td>Objects that cast shadows — huge visual payoff</td><td>Moderate</td></tr>
+              <tr><td>Scene &amp; serialization</td><td>Save/load your world to a file; the heart of an editor</td><td>Moderate</td></tr>
+              <tr><td>Editor with Dear ImGui</td><td>Inspect and tweak entities at runtime, like Unity's Inspector</td><td>Moderate</td></tr>
+              <tr><td>Physics &amp; collision</td><td>Gravity, rigid bodies, triggers — the world reacts</td><td>Advanced</td></tr>
+              <tr><td>Audio</td><td>Sound effects and music tied to entities</td><td>Moderate</td></tr>
+              <tr><td>Scripting</td><td>Gameplay logic without recompiling the engine</td><td>Advanced</td></tr>
+              <tr><td>Direct3D 12 / Vulkan</td><td>Explicit, modern GPU control; where the industry is heading</td><td>Advanced</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Lighting and normals — do this next</h3>
+
+        <p>Right now your objects are lit by nothing, so they read as flat silhouettes. Lighting is the single biggest visual jump you can make, and it is mostly a shader change. The core idea: every vertex carries a <strong>normal</strong> — a direction the surface faces — and in the pixel shader you compare that normal against the direction to a light. Surfaces facing the light are bright; surfaces facing away are dark.</p>
+
+        <p>You will extend your vertex format to include a normal, then add a light direction to a constant buffer. The math for basic diffuse (Lambert) lighting is a single dot product:</p>
+
+        <pre><code class="language-hlsl" data-file="lit.hlsl">// Pixel shader input already carries the interpolated world-space normal.
+cbuffer LightBuffer : register(b1)
+{
+    float3 lightDir;   // direction the light travels, normalized
+    float  padding;
+    float4 lightColor;
+}
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    // Normalize because interpolation across the triangle shortens it.
+    float3 N = normalize(input.normalWS);
+
+    // Light against the surface. We negate lightDir so it points
+    // from the surface toward the light source.
+    float  diffuse = saturate(dot(N, -lightDir));
+
+    float3 baseColor = input.color.rgb;
+    float3 lit       = baseColor * lightColor.rgb * diffuse;
+
+    // A little ambient so shadowed areas aren't pure black.
+    lit += baseColor * 0.05;
+
+    return float4(lit, 1.0);
+}</code></pre>
+
+        <p>Once this works, a <strong>Phong</strong> material adds a specular highlight (a bright spot where the reflection of the light hits your eye), and from there <strong>PBR</strong> (physically based rendering) replaces the ad-hoc numbers with parameters that mean something real: metallic, roughness, albedo. That is your first proper <code>Material</code> component — data that lives on an entity and tells the renderer how its surface behaves.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Normals need care</div><p>When you scale an object non-uniformly, normals must be transformed by the <em>inverse transpose</em> of the world matrix, not the world matrix itself. Get this wrong and lighting looks subtly broken on stretched objects. It is a classic bug — knowing it exists saves you an afternoon.</p></div>
+        </div>
+
+        <h3>Asset importing with assimp</h3>
+
+        <p>Typing cube vertices by hand gets old fast. <strong>assimp</strong> (the Open Asset Import Library) reads dozens of model formats and hands you clean arrays of positions, normals, texture coordinates, and indices. Your job is to copy those arrays into the same vertex and index buffers you already know how to make. This is where your engine starts loading real content.</p>
+
+        <h3>Shadow mapping</h3>
+
+        <p>Shadows sound intimidating but the trick is elegant: render the scene <em>from the light's point of view</em> into an off-screen depth texture. Then, when shading normally, check whether each pixel is farther from the light than what that depth texture recorded. If it is, something is between it and the light — so it is in shadow. You already know how to render to a target and sample a texture, which is 80% of the work.</p>
+
+        <h3>An editor with Dear ImGui</h3>
+
+        <p>This is the feature that makes your engine <em>feel</em> like an engine. Dear ImGui is a lightweight immediate-mode UI library that drops into your render loop and lets you draw panels, sliders, and lists in a few lines. Wire it to your entity list and you have an Inspector: click an entity, see its <code>Transform</code>, drag a slider, watch it move. It pairs perfectly with the next item.</p>
+
+        <h3>Scenes, serialization, and scripting</h3>
+
+        <p>A <strong>scene</strong> is just your list of entities and their components. Serialization means writing that list to a file (JSON is a friendly starting format) and reading it back. Once you can save and load, your editor becomes genuinely useful. <strong>Scripting</strong> — often via Lua or C# — then lets you write gameplay behavior without recompiling the whole engine, exactly the split you see between Unreal's C++ core and its Blueprints, or Unity's engine and your C# scripts.</p>
+
+        <h3>Physics, audio, and going modern</h3>
+
+        <p>For <strong>physics</strong>, do not write your own at first — integrate a mature library like Jolt or Bullet, feed it your transforms, and read the results back each frame. <strong>Audio</strong> can start with a simple library that plays a sound at a position. And when you want to see how the cutting edge works, <strong>Direct3D 12</strong> or <strong>Vulkan</strong> hand you explicit control over memory and command submission. They are more verbose, but every concept maps back to what you already learned in D3D11 — you are relabeling ideas, not starting over.</p>
+
+        <h2>How to learn the hard parts</h2>
+
+        <p>You will hit topics that no single tutorial explains perfectly. That is normal, and it is a skill in itself to work through them. A reliable process:</p>
+
+        <ol>
+          <li><strong>Read the official docs first.</strong> The vendor API reference is the source of truth — it tells you exactly what each function expects and returns.</li>
+          <li><strong>Find one good book or course</strong> and follow it end to end rather than hopping between ten half-tutorials. Depth beats breadth here.</li>
+          <li><strong>Read other engines' source.</strong> Small open-source engines are a goldmine; seeing how someone else structured a renderer is worth a dozen articles.</li>
+          <li><strong>Ask a community.</strong> Active graphics and game-dev forums and chat servers are full of people who enjoy these problems. Post a minimal example and the exact error.</li>
+          <li><strong>Use the debug layer.</strong> Direct3D's debug layer prints precise messages when you misuse the API — turn it on and read every warning. It is the best teacher you have.</li>
+        </ol>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Beware tutorial-hopping</div><p>Jumping between sources that each use different conventions is the fastest way to get confused and quit. Pick one primary path per topic, finish it, and only then compare it against others. Consistency in what you read mirrors the consistency that made this course click.</p></div>
+        </div>
+
+        <h2>Your next week</h2>
+
+        <p>Momentum is fragile right after a big finish, so give yourself a small, concrete goal — not "rewrite the renderer," but something you can land in a few evenings:</p>
+
+        <ul>
+          <li>Add a normal to your vertex struct and get basic diffuse lighting working on your existing cube.</li>
+          <li>Commit it. Then add a second light color and a slider for it — even without ImGui yet, just change a constant and recompile.</li>
+          <li>Write down three features from the roadmap that excite you most, and pick the top one as your next milestone.</li>
+        </ul>
+
+        <p>That is how engines get built: not in one heroic sprint, but in dozens of small, shippable wins stacked on a core that already runs. You have that core now. Keep going — and enjoy the moment your world first responds to light. Thank you for building this with us, and good luck out there.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>You built a real, component-based engine core — the same skeleton commercial engines share — and everything ahead is an extension of it, not a rewrite.</li>
+            <li>Add features roughly in order: lighting and normals, materials (Phong then PBR), texturing, asset importing with assimp, shadow mapping, scenes and serialization, an ImGui editor, then physics, audio, scripting, and modern APIs.</li>
+            <li>Lighting is your highest-value next step and is mostly a shader change built on a per-vertex normal and a single dot product.</li>
+            <li>Learn hard topics by leaning on official docs, one deep resource at a time, other engines' source, communities, and the D3D debug layer.</li>
+            <li>Keep momentum with small, committable wins — start this week by lighting the cube you already have.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

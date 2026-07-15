@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Actor Model (Unreal) — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="How Unreal structures a scene with Actors, ActorComponents, SceneComponents, and a root transform — and how it maps to Unity's model.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>The Actor Model (Unreal)</h1>
+
+        <p class="lead">
+          Last lesson we studied Unity's GameObject–Component split. Now we look at how <strong>Unreal Engine</strong>
+          solves the same problem with a different vocabulary: <strong>Actors</strong> live in a level, and
+          <strong>Components</strong> attach to them to supply behaviour, geometry, and a transform. Seeing two
+          successful engines side by side reveals what is essential and what is just naming — and that insight
+          will guide the architecture of our own C++ engine.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What an Actor is, and how it differs from a bare GameObject.</li>
+            <li>The difference between an <code>ActorComponent</code> and a <code>SceneComponent</code>.</li>
+            <li>Why every visible Actor has a single <strong>root component</strong> that anchors its transform.</li>
+            <li>What <code>UObject</code>, reflection, and garbage collection give Unreal at a high level.</li>
+            <li>A direct equivalence table mapping Unreal concepts onto Unity's.</li>
+          </ul>
+        </div>
+
+        <h2>Actors: the things you place in a level</h2>
+
+        <p>
+          In Unreal, a <strong>level</strong> (a scene, in Unity terms) is a collection of <strong>Actors</strong>.
+          An Actor is anything that can be placed into or spawned inside the world: a character, a light, a
+          camera, a trigger volume, a sound emitter, or an invisible game-rules manager. The C++ base class is
+          <code>AActor</code> — Unreal prefixes Actor classes with <code>A</code> by convention.
+        </p>
+
+        <p>
+          Here is the key mental shift from Unity. A Unity GameObject is a nearly empty container that
+          <em>always</em> has a Transform. An Unreal Actor is a slightly richer object: it is itself a
+          class you frequently subclass, and it does <em>not</em> carry a transform directly. Instead, an
+          Actor is a <strong>container for components</strong>, and its transform comes from one special
+          component it designates as the root. Actors that never appear in space (a scoreboard manager, say)
+          simply have no root component and no position — that is perfectly legal.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Naming prefixes</div>
+            <p>
+              Unreal's C++ prefixes encode the base type: <code>A</code> for Actors (<code>AActor</code>),
+              <code>U</code> for other <code>UObject</code>s including components (<code>UActorComponent</code>),
+              <code>F</code> for plain structs (<code>FVector</code>), and <code>T</code> for templates
+              (<code>TArray</code>). They are conventions, not language features, but the engine's tooling relies on them.
+            </p>
+          </div>
+        </div>
+
+        <h2>Two families of component</h2>
+
+        <p>
+          Where Unity has one <code>Component</code> base class, Unreal splits components into two layers, and
+          understanding the split is the heart of this lesson.
+        </p>
+
+        <h3>ActorComponent — behaviour without a place</h3>
+
+        <p>
+          <code>UActorComponent</code> is the base class for any component. It can tick every frame, respond
+          to events, and hold state, but it has <strong>no position, rotation, or scale</strong>. It answers
+          the question "what can this Actor <em>do</em>?" A health component, an inventory, an AI decision
+          module, or a stats tracker are all good candidates: none of them need to exist at a point in space.
+        </p>
+
+        <h3>SceneComponent — a component with a transform</h3>
+
+        <p>
+          <code>USceneComponent</code> derives from <code>UActorComponent</code> and adds a
+          <strong>transform</strong>: a location, rotation, and scale relative to its parent. Crucially,
+          SceneComponents can be <strong>attached to one another</strong>, forming a tree inside a single
+          Actor. A car Actor might have a body mesh as its root, four wheel meshes attached beneath it, and a
+          camera attached above — move the root and the whole assembly moves together.
+        </p>
+
+        <p>
+          Renderable pieces go one level deeper still. <code>UPrimitiveComponent</code> derives from
+          <code>USceneComponent</code>, and <code>UStaticMeshComponent</code> derives from
+          <code>UPrimitiveComponent</code> — because to draw geometry you first need a place to draw it. This is
+          exactly the layering we will build toward: a transform is a prerequisite for rendering, never the other
+          way around.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 250" fill="none" stroke="#4aa8ff" stroke-width="2" font-family="sans-serif">
+              <rect x="220" y="12" width="160" height="40" rx="8"/>
+              <text x="300" y="37" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">UActorComponent</text>
+              <line x1="300" y1="52" x2="300" y2="82"/>
+              <rect x="220" y="82" width="160" height="40" rx="8"/>
+              <text x="300" y="107" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">USceneComponent</text>
+              <line x1="300" y1="122" x2="300" y2="152"/>
+              <rect x="200" y="152" width="200" height="40" rx="8"/>
+              <text x="300" y="177" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">UPrimitiveComponent</text>
+              <line x1="300" y1="192" x2="300" y2="212"/>
+              <rect x="180" y="212" width="240" height="34" rx="8"/>
+              <text x="300" y="234" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">UStaticMeshComponent</text>
+              <text x="40" y="37" fill="currentColor" stroke="none" font-size="12">behaviour</text>
+              <text x="40" y="107" fill="currentColor" stroke="none" font-size="12">+ transform</text>
+              <text x="40" y="177" fill="currentColor" stroke="none" font-size="12">+ drawable</text>
+            </svg>
+          </div>
+          <figcaption>Unreal's component hierarchy: each layer adds one capability on top of the last.</figcaption>
+        </figure>
+
+        <h2>The root component</h2>
+
+        <p>
+          If an Actor can hold a whole tree of SceneComponents, which one defines the Actor's own location?
+          The answer is the <strong>root component</strong> (<code>AActor::GetRootComponent()</code>). Exactly
+          one SceneComponent is designated as the root; every other SceneComponent attaches beneath it, directly
+          or transitively. When you call <code>SetActorLocation()</code>, you are really moving the root, and
+          the whole attached subtree follows because child transforms are relative to their parent.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">This is the same idea as Unity's Transform hierarchy</div>
+            <p>
+              Unity nests <em>GameObjects</em> under one another; Unreal nests <em>SceneComponents</em> inside a
+              single Actor and can also attach whole Actors together. Both give you parent-relative transforms and a
+              tree you move as a unit. The engine we build will use the same relative-transform math for our own Transform component.
+            </p>
+          </div>
+        </div>
+
+        <p>
+          Here is a compact, realistic <code>AActor</code> subclass that builds a small component tree in its
+          constructor. This is idiomatic Unreal C++.
+        </p>
+
+        <pre><code class="language-cpp" data-file="PickupActor.h">// A collectible that shows a mesh and detects overlaps.
+UCLASS()
+class APickupActor : public AActor
+{
+    GENERATED_BODY()
+
+public:
+    APickupActor();
+
+private:
+    // The transform anchor for the whole Actor.
+    UPROPERTY(VisibleAnywhere)
+    USceneComponent* Root;
+
+    // Visible geometry, attached under the root.
+    UPROPERTY(VisibleAnywhere)
+    UStaticMeshComponent* Mesh;
+
+    // A trigger sphere, also under the root.
+    UPROPERTY(VisibleAnywhere)
+    USphereComponent* Trigger;
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="PickupActor.cpp">#include "PickupActor.h"
+
+APickupActor::APickupActor()
+{
+    // Ask the engine to tick this Actor each frame.
+    PrimaryActorTick.bCanEverTick = true;
+
+    // 1) Create a bare SceneComponent and make it the root.
+    Root = CreateDefaultSubobject&lt;USceneComponent&gt;(TEXT("Root"));
+    SetRootComponent(Root);
+
+    // 2) Create the mesh and attach it under the root.
+    Mesh = CreateDefaultSubobject&lt;UStaticMeshComponent&gt;(TEXT("Mesh"));
+    Mesh-&gt;SetupAttachment(Root);
+
+    // 3) Create the trigger sphere, also under the root.
+    Trigger = CreateDefaultSubobject&lt;USphereComponent&gt;(TEXT("Trigger"));
+    Trigger-&gt;SetupAttachment(Root);
+    Trigger-&gt;SetSphereRadius(64.0f);
+}</code></pre>
+
+        <p>
+          Notice how <code>SetupAttachment(Root)</code> wires each SceneComponent into the tree, and
+          <code>SetRootComponent(Root)</code> chooses which node the Actor's world position tracks. Move this
+          Actor and the mesh and trigger travel with it — no manual bookkeeping required.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Constructor-only helpers</div>
+            <p>
+              <code>CreateDefaultSubobject</code> and <code>SetupAttachment</code> are meant for the constructor
+              (edit-time defaults). To add or attach components at runtime you use
+              <code>NewObject</code> plus <code>RegisterComponent</code> and <code>AttachToComponent</code>
+              instead. Mixing them up is a classic beginner crash.
+            </p>
+          </div>
+        </div>
+
+        <h2>UObject, reflection, and garbage collection</h2>
+
+        <p>
+          Both <code>AActor</code> and <code>UActorComponent</code> ultimately derive from <code>UObject</code>,
+          Unreal's universal base class. <code>UObject</code> is what gives Unreal capabilities that plain C++
+          does not have out of the box:
+        </p>
+
+        <ul>
+          <li>
+            <strong>Reflection.</strong> Macros like <code>UCLASS()</code>, <code>UPROPERTY()</code>, and
+            <code>UFUNCTION()</code> feed a build-time tool (the Unreal Header Tool) that generates metadata.
+            That metadata powers the editor's property panels, Blueprint access, and save/load serialization —
+            all things standard C++ has no notion of.
+          </li>
+          <li>
+            <strong>Garbage collection.</strong> Any <code>UPROPERTY</code> pointer to a <code>UObject</code> is
+            tracked by Unreal's garbage collector. When nothing references an object anymore, the engine reclaims
+            it automatically. This is why Unreal code uses raw pointers like <code>UStaticMeshComponent*</code>
+            rather than the <code>std::unique_ptr</code> you would reach for in plain C++.
+          </li>
+        </ul>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Forget UPROPERTY, lose your object</div>
+            <p>
+              A pointer <em>not</em> marked <code>UPROPERTY</code> is invisible to the garbage collector. The
+              object it points to can be collected out from under you, leaving a dangling pointer and a hard crash.
+              This is the single most common source of "why did my component disappear?" bugs in Unreal.
+            </p>
+          </div>
+        </div>
+
+        <p>
+          We will not build a reflection system or a garbage collector for our own engine — those are enormous
+          undertakings. But it is worth knowing they exist, because they explain <em>why</em> Unreal code looks
+          the way it does, and they show the price a AAA engine pays for editor integration and safety.
+        </p>
+
+        <h2>Mapping Unreal onto Unity</h2>
+
+        <p>
+          Now the payoff. Despite the different names, the two engines line up almost point for point. Keep this
+          table handy — it is the Rosetta Stone between the two ecosystems.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Concept</th><th>Unity</th><th>Unreal</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Scene / world container</td><td>Scene</td><td>Level (World)</td></tr>
+              <tr><td>Placeable object</td><td>GameObject</td><td>Actor (<code>AActor</code>)</td></tr>
+              <tr><td>Behaviour with no transform</td><td>MonoBehaviour / Component</td><td><code>UActorComponent</code></td></tr>
+              <tr><td>Component with a transform</td><td>Transform (built in)</td><td><code>USceneComponent</code></td></tr>
+              <tr><td>The transform anchor</td><td>Always-present Transform</td><td>Root component</td></tr>
+              <tr><td>Nesting / hierarchy</td><td>Parent GameObjects</td><td>Attached SceneComponents / Actors</td></tr>
+              <tr><td>Universal base object</td><td><code>UnityEngine.Object</code></td><td><code>UObject</code></td></tr>
+              <tr><td>Memory management</td><td>C# garbage collector</td><td>UObject garbage collector</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          The one real structural difference: in Unity a GameObject <em>always</em> has exactly one Transform,
+          so transform and identity are welded together. In Unreal the transform is a component you can add,
+          omit, or nest several of. Unreal is a touch more flexible; Unity is a touch simpler. Both, however,
+          converge on the same big idea we met last lesson — <strong>composition over inheritance</strong>. You
+          do not build a "flying exploding pickup" by subclassing; you build it by attaching a movement
+          component, a health component, and a mesh to one container.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Where this leaves our engine</div>
+            <p>
+              Our C++ engine will borrow the best of both: an <code>Entity</code> that plays the role of Actor /
+              GameObject, a <code>Transform</code> component that behaves like Unity's built-in transform or
+              Unreal's root SceneComponent, and pluggable components for everything else. Next lesson pushes the
+              idea one step further into a data-oriented layout — the Entity-Component-System.
+            </p>
+          </div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>An <strong>Actor</strong> (<code>AActor</code>) is Unreal's placeable object and a container for components; it has no transform of its own.</li>
+            <li><code>UActorComponent</code> adds behaviour without a position; <code>USceneComponent</code> adds a transform and can be nested into a tree.</li>
+            <li>Exactly one SceneComponent is the <strong>root component</strong> — it defines the Actor's location, and its subtree moves with it.</li>
+            <li><code>UObject</code> underpins everything, providing reflection (via <code>UCLASS</code>/<code>UPROPERTY</code>) and automatic garbage collection.</li>
+            <li>Unreal's Actor model and Unity's GameObject model map almost one-to-one and both embrace <strong>composition over inheritance</strong>.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

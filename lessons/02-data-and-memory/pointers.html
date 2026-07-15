@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pointers &amp; Memory Addresses — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn how memory addresses work, how a pointer stores one, and how to use & and * to read and write through pointers in C++.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Pointers &amp; Memory Addresses</h1>
+
+        <p class="lead">In the last lesson you met references — a friendly alias for an existing variable. Pointers are the next step down, closer to the metal: instead of aliasing a variable, a pointer stores the numeric <strong>address</strong> of where that variable lives in memory. This is the idea every serious engine is built on. When our DirectX engine hands a GPU buffer or a device context around, it passes a pointer, not a fat copy of the data.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How memory is organized as a long line of addressable bytes.</li>
+            <li>How to declare a pointer with <code>T*</code> and take an address with <code>&amp;</code>.</li>
+            <li>How to read and write the pointed-to value by dereferencing with <code>*</code>.</li>
+            <li>Why <code>nullptr</code> exists and how to check for it safely.</li>
+            <li>When to reach for a pointer instead of a reference.</li>
+          </ul>
+        </div>
+
+        <h2>Memory is just a row of numbered boxes</h2>
+
+        <p>Your program's memory is one enormous sequence of bytes. Every byte has a unique number called its <strong>address</strong>, counting up from zero. When you declare a variable, the compiler reserves one or more of those bytes and remembers where they are. An <code>int</code> is typically 4 bytes, so if an <code>int</code> lives at address 1000, it occupies bytes 1000 through 1003.</p>
+
+        <p>You almost never care about the exact number — it changes every run — but the <em>concept</em> matters: a variable is a named window onto a specific place in memory. A pointer lets you hold that place as a value you can pass around, store, and follow later.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="2" font-family="monospace" font-size="14">
+              <!-- pointer box -->
+              <rect x="30" y="80" width="140" height="50" rx="6" stroke="#4aa8ff"/>
+              <text x="100" y="70" text-anchor="middle" fill="currentColor" stroke="none">ptr</text>
+              <text x="100" y="110" text-anchor="middle" fill="#4aa8ff" stroke="none">0x03E8</text>
+              <!-- value box -->
+              <rect x="410" y="80" width="140" height="50" rx="6"/>
+              <text x="480" y="70" text-anchor="middle" fill="currentColor" stroke="none">score</text>
+              <text x="480" y="110" text-anchor="middle" fill="currentColor" stroke="none">42</text>
+              <text x="480" y="150" text-anchor="middle" fill="currentColor" stroke="none" font-size="12">@ 0x03E8</text>
+              <!-- arrow -->
+              <line x1="170" y1="105" x2="405" y2="105" stroke="#4aa8ff"/>
+              <path d="M405 105 l-12 -6 v12 z" fill="#4aa8ff" stroke="#4aa8ff"/>
+            </svg>
+          </div>
+          <figcaption>A pointer stores the address of another variable. Here <code>ptr</code> holds <code>0x03E8</code> — the address where <code>score</code> lives.</figcaption>
+        </figure>
+
+        <h2>Declaring a pointer and taking an address</h2>
+
+        <p>A pointer type is written by adding a <code>*</code> to the type it points at. A pointer to <code>int</code> is <code>int*</code>; a pointer to <code>double</code> is <code>double*</code>. To get the address of an existing variable, use the <strong>address-of</strong> operator <code>&amp;</code> (the same symbol you used to declare references, but here it sits on the right-hand side, applied to a value).</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int score = 42;      // an ordinary int
+    int* ptr = &amp;score;   // ptr holds the ADDRESS of score
+
+    // Printing a pointer shows the raw address (a hex number).
+    std::cout &lt;&lt; "score lives at: " &lt;&lt; ptr &lt;&lt; "\n";
+    std::cout &lt;&lt; "value of score: " &lt;&lt; *ptr &lt;&lt; "\n"; // dereference
+
+    return 0;
+}</code></pre>
+
+        <p>Read the declaration right-to-left: "<code>ptr</code> is a pointer to <code>int</code>." The <code>&amp;score</code> on the right produces score's address, and we store it in <code>ptr</code>.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Two jobs for one asterisk</div>
+            <p>The <code>*</code> means different things in different places. In a <em>declaration</em> (<code>int* ptr</code>) it is part of the type — "pointer to int." In an <em>expression</em> (<code>*ptr</code>) it is the dereference operator — "the value at this address." Same symbol, opposite directions.</p>
+          </div>
+        </div>
+
+        <h2>Dereferencing: reading and writing through a pointer</h2>
+
+        <p>Holding an address is only useful if you can follow it. The <strong>dereference</strong> operator <code>*</code> takes a pointer and gives you the actual variable it points at. And because it gives you the variable itself — not a copy — you can assign <em>through</em> the pointer to change the original.</p>
+
+        <pre><code class="language-cpp" data-file="deref.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int health = 100;
+    int* hp = &amp;health;   // hp points at health
+
+    *hp = 75;            // write through the pointer...
+    std::cout &lt;&lt; health &lt;&lt; "\n";   // ...health is now 75
+
+    *hp = *hp - 10;      // read then write: 75 - 10
+    std::cout &lt;&lt; health &lt;&lt; "\n";   // health is now 65
+
+    return 0;
+}</code></pre>
+
+        <p>Notice we never touched <code>health</code> by name after the first line, yet its value changed. That indirection is the whole point: a function can be handed a pointer to your data and modify it in place, without ever copying it. Later, our engine's systems will take a <code>Transform*</code> and update an object's position exactly this way.</p>
+
+        <h2>The null pointer</h2>
+
+        <p>Sometimes a pointer points at nothing — maybe a resource has not been created yet, or a lookup failed. C++ has a dedicated value for "points at nothing": <code>nullptr</code>. Always give a pointer a value; an uninitialized pointer holds garbage and dereferencing it is undefined behavior.</p>
+
+        <pre><code class="language-cpp" data-file="null.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int* device = nullptr;   // explicitly points at nothing
+
+    // Guard before you dereference.
+    if (device != nullptr) {
+        std::cout &lt;&lt; *device &lt;&lt; "\n";
+    } else {
+        std::cout &lt;&lt; "no device yet\n";
+    }
+
+    return 0;
+}</code></pre>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Never dereference a null (or dangling) pointer</div>
+            <p>Writing <code>*device</code> when <code>device</code> is <code>nullptr</code> crashes your program — this is the classic "null pointer dereference." In DirectX, functions like <code>D3D11CreateDevice</code> hand you back a pointer and a status code; you must check the result before you use the pointer.</p>
+          </div>
+        </div>
+
+        <h2>Pointer vs. reference</h2>
+
+        <p>Pointers and references both give you indirect access to another variable, so when do you use which? References are simpler and safer: they must bind to something on creation and can never be reseated or null. Pointers are more powerful: they can be null, can be reassigned to point at different objects over time, and can be stored in arrays and containers.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Aspect</th><th>Reference (<code>T&amp;</code>)</th><th>Pointer (<code>T*</code>)</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Can be null?</td><td>No</td><td>Yes (<code>nullptr</code>)</td></tr>
+              <tr><td>Must init on declare?</td><td>Yes</td><td>No (but you should)</td></tr>
+              <tr><td>Can point elsewhere later?</td><td>No</td><td>Yes, reassign it</td></tr>
+              <tr><td>Access syntax</td><td><code>ref</code> (like a normal variable)</td><td><code>*ptr</code> to read the value</td></tr>
+              <tr><td>Typical use</td><td>Guaranteed, single target</td><td>Optional or changing target</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">A good rule of thumb</div>
+            <p>Reach for a reference when the target always exists and never changes. Reach for a pointer when the target might be absent (<code>nullptr</code>) or when it needs to change over the object's lifetime — which is exactly how an engine holds onto GPU resources such as an <code>ID3D11Device*</code>.</p>
+          </div>
+        </div>
+
+        <h2>Why engines live and breathe pointers</h2>
+
+        <p>Graphics resources — devices, textures, vertex buffers — are large and owned by the driver. You would never copy one around; instead the Direct3D API hands you a pointer to it, and every system that needs it shares that same pointer. A tiny sketch of what that looks like:</p>
+
+        <pre><code class="language-cpp" data-file="engine_sketch.cpp">// Simplified: a system receives the shared resource by pointer.
+struct Mesh {
+    int vertexCount = 0;
+};
+
+// 'mesh' is passed by pointer, so nothing is copied — the caller
+// still owns the Mesh and we just read through the pointer.
+void draw(const Mesh* mesh) {
+    if (mesh == nullptr) return;          // nothing to draw
+    // *mesh gives us the real Mesh; -&gt; reads a member through a pointer.
+    for (int i = 0; i &lt; mesh-&gt;vertexCount; ++i) {
+        // ...submit vertex i to the GPU...
+    }
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">A sneak peek: the arrow operator</div>
+            <p>You saw <code>mesh-&gt;vertexCount</code> above. When you have a pointer to a struct or class, <code>ptr-&gt;member</code> is shorthand for <code>(*ptr).member</code> — dereference, then access the member. We'll lean on it constantly once we start writing components.</p>
+          </div>
+        </div>
+
+        <p>Everything so far assumes the pointed-to variable already exists somewhere on the stack. But engines also need memory that outlives the function that created it — that is where the <strong>heap</strong> comes in, with <code>new</code> and <code>delete</code>. That is exactly the next lesson.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Memory is a long line of numbered bytes; a variable's <strong>address</strong> is where it starts.</li>
+            <li>A pointer is declared with <code>T*</code> and holds an address; <code>&amp;value</code> gives you one.</li>
+            <li><code>*ptr</code> dereferences — it reads or writes the actual variable the pointer targets.</li>
+            <li><code>nullptr</code> means "points at nothing"; always check before you dereference.</li>
+            <li>Prefer references for guaranteed, fixed targets; use pointers when the target may be null or change — the model engines use to share GPU resources.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

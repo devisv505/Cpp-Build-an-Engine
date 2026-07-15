@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>References — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn C++ references: T&amp; aliases, passing by reference to modify or avoid copying, and const T&amp; for fast read-only access.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>References</h1>
+
+        <p class="lead">So far, when you pass a variable into a function, the function gets its own private copy. That is safe, but it means the function cannot change your original value, and copying a big object like a <code>std::string</code> can be wasteful. References fix both problems by giving a function direct access to your variable. They are the everyday tool we will reach for constantly when our engine passes around Transforms, meshes, and other components.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What a reference is — an <strong>alias</strong> for an existing variable — and the <code>T&amp;</code> syntax.</li>
+            <li>How to pass by reference so a function can modify the caller's variable.</li>
+            <li>How <code>const T&amp;</code> gives you fast, read-only access to large objects without copying.</li>
+            <li>Why references must be initialized and can never be re-pointed at something else.</li>
+          </ul>
+        </div>
+
+        <h2>A reference is just another name</h2>
+
+        <p>A reference is an <strong>alias</strong>: a second name for a variable that already exists. Once you bind a reference to a variable, the two names refer to the exact same piece of memory. Change one, and you have changed both — because there is really only one value underneath.</p>
+
+        <p>You create a reference by putting an ampersand (<code>&amp;</code>) after the type:</p>
+
+        <pre><code class="language-cpp" data-file="alias.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int health = 100;
+    int&amp; hp = health;   // hp is now another name for health
+
+    hp = 75;            // changes health too — same storage
+
+    std::cout &lt;&lt; health &lt;&lt; "\n";   // prints 75
+    std::cout &lt;&lt; hp &lt;&lt; "\n";       // prints 75
+    return 0;
+}</code></pre>
+
+        <p>Notice there is no new integer here. <code>hp</code> is not a copy of <code>health</code>; it <em>is</em> <code>health</code>, viewed through a different name. This is the whole idea, and everything else about references follows from it.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Read the &amp; by context</div><p>The same <code>&amp;</code> symbol means different things depending on where it sits. In a <em>type</em> like <code>int&amp;</code> it declares a reference. Later, when you study pointers, you will see <code>&amp;x</code> in an <em>expression</em> meaning "address of x". Different jobs, same character.</p></div>
+        </div>
+
+        <h2>Passing by reference to modify a variable</h2>
+
+        <p>Here is the problem references were made for. Suppose you write a function that should swap two values. If you pass the values by copy, the function swaps its own copies and the originals never change:</p>
+
+        <pre><code class="language-cpp" data-file="swap_broken.cpp">// BROKEN: a and b are copies, so the caller sees no change
+void swapBroken(int a, int b) {
+    int temp = a;
+    a = b;
+    b = temp;
+}</code></pre>
+
+        <p>Add an ampersand to each parameter and the function now works on the caller's actual variables:</p>
+
+        <pre><code class="language-cpp" data-file="swap.cpp">#include &lt;iostream&gt;
+
+// a and b are aliases for the caller's variables
+void swap(int&amp; a, int&amp; b) {
+    int temp = a;
+    a = b;
+    b = temp;
+}
+
+int main() {
+    int x = 3;
+    int y = 9;
+
+    swap(x, y);   // no &amp; needed here — just pass the variables
+
+    std::cout &lt;&lt; "x = " &lt;&lt; x &lt;&lt; ", y = " &lt;&lt; y &lt;&lt; "\n";  // x = 9, y = 3
+    return 0;
+}</code></pre>
+
+        <p>Inside <code>swap</code>, the name <code>a</code> is bound to <code>x</code> and <code>b</code> is bound to <code>y</code>. Assigning through those names edits <code>x</code> and <code>y</code> directly. Notice the call site is unchanged — you still write <code>swap(x, y)</code>. The reference lives in the parameter list, not the call.</p>
+
+        <h2>Passing by <code>const</code> reference to avoid copies</h2>
+
+        <p>References are not only for changing things. Their second big use is <strong>efficiency</strong>. When you pass a large object by value, the whole thing is copied — every character of a <code>std::string</code>, every element of a <code>std::vector</code>. For a big object that copy costs time and memory, and it is pure waste if the function only wants to <em>read</em> the value.</p>
+
+        <p>The fix is a <strong>const reference</strong>, written <code>const T&amp;</code>. It gives the function direct, no-copy access, and the <code>const</code> promises the function will not modify the original:</p>
+
+        <pre><code class="language-cpp" data-file="greet.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+// const std::string&amp;: no copy is made, and name cannot be changed here
+void greet(const std::string&amp; name) {
+    std::cout &lt;&lt; "Hello, " &lt;&lt; name &lt;&lt; "!\n";
+    // name = "other"; // would be a COMPILE ERROR — name is const
+}
+
+int main() {
+    std::string player = "Ada";
+    greet(player);          // passes a reference, not a copy
+    greet("Grace Hopper");  // string literals work too
+    return 0;
+}</code></pre>
+
+        <p>This pattern — <code>const std::string&amp;</code>, <code>const std::vector&lt;int&gt;&amp;</code>, and so on — is one of the most common sights in real C++. When our engine has a function like <code>loadMesh(const std::string&amp; path)</code>, the const reference lets it read the file path cheaply without duplicating the string on every call.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">A simple rule of thumb</div><p>For small built-in types like <code>int</code>, <code>float</code>, or <code>bool</code>, pass by value — copying them is essentially free. For larger objects the function only needs to read, prefer <code>const T&amp;</code>. Use a plain <code>T&amp;</code> when the function is meant to modify the caller's object.</p></div>
+        </div>
+
+        <h2>Two rules you cannot break</h2>
+
+        <p>References come with two strict rules. Both fall straight out of "a reference is just another name for something that already exists".</p>
+
+        <h3>1. A reference must be initialized</h3>
+
+        <p>A name has to name <em>something</em>. You cannot declare a reference and leave it empty to fill in later:</p>
+
+        <pre><code class="language-cpp" data-file="rules.cpp">int value = 42;
+
+int&amp; good = value;   // OK: bound to value at birth
+// int&amp; bad;         // ERROR: a reference must be initialized</code></pre>
+
+        <h3>2. A reference cannot rebind</h3>
+
+        <p>Once bound, a reference is stuck to that variable for its entire life. Later assignments do not re-point the reference — they write <em>through</em> it into the original variable:</p>
+
+        <pre><code class="language-cpp" data-file="rebind.cpp">int a = 1;
+int b = 2;
+
+int&amp; r = a;   // r is an alias for a
+r = b;        // does NOT make r refer to b;
+              // it copies b's value (2) INTO a. Now a == 2.</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Common beginner trap</div><p>Writing <code>r = b</code> feels like "make r point to b", but a reference can never be re-seated. It quietly overwrites the value it was already bound to. When you truly need something that can point at different objects over time — that is a job for pointers, the topic of the next lesson.</p></div>
+        </div>
+
+        <h2>Value vs. reference at a glance</h2>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Parameter</th><th>Copies the object?</th><th>Can modify caller?</th><th>Use it when…</th></tr></thead>
+          <tbody>
+            <tr><td><code>T</code> (by value)</td><td>Yes</td><td>No</td><td>the type is small (int, float, bool)</td></tr>
+            <tr><td><code>T&amp;</code> (reference)</td><td>No</td><td>Yes</td><td>the function must change the caller's variable</td></tr>
+            <tr><td><code>const T&amp;</code></td><td>No</td><td>No</td><td>you only read a large object cheaply</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>Keep this little table in your head. Almost every function parameter you write from here on will be one of these three shapes, and choosing the right one is a big part of writing clean, fast C++.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A reference (<code>T&amp;</code>) is an <strong>alias</strong> — another name for an existing variable, sharing the same storage.</li>
+            <li>Pass by reference (<code>T&amp;</code>) when a function needs to modify the caller's variable, as in <code>swap(int&amp; a, int&amp; b)</code>.</li>
+            <li>Pass by <code>const T&amp;</code> to read large objects like <code>std::string</code> efficiently, with no copy and no risk of modification.</li>
+            <li>References must be initialized when declared and can never be rebound; assigning to a reference writes through it to the original.</li>
+            <li>Small built-in types are cheap to pass by value; reserve references for big objects or when you must edit the original.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

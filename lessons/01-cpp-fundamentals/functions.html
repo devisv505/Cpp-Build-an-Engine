@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Functions: Reusing Your Code — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Declare, define and call C++ functions: parameters, return types, void, pass-by-value, overloading and default arguments.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Functions: Reusing Your Code</h1>
+
+        <p class="lead">
+          So far your programs have run top to bottom as one long list of statements. Real software — and
+          especially a 3D engine — is built from small, named pieces of behaviour you can call over and over.
+          Those pieces are <strong>functions</strong>. In this lesson you'll learn to package logic into
+          functions, pass data in, get results back, and give several functions the same name. Every engine
+          system we build later (a <code>Transform</code>, a renderer, a math library) is really just a
+          well-organised pile of functions.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to declare, define and call a function with parameters and a return type</li>
+            <li>What <code>void</code> means and when a function returns nothing</li>
+            <li>Why parameters are passed <strong>by value</strong> (as copies) by default</li>
+            <li>How function overloading and default arguments reduce repetitive code</li>
+            <li>The difference between a declaration (prototype) and a definition, and why order matters</li>
+          </ul>
+        </div>
+
+        <h2>Anatomy of a function</h2>
+        <p>
+          A function has four parts: a <strong>return type</strong>, a <strong>name</strong>, a list of
+          <strong>parameters</strong> in parentheses, and a <strong>body</strong> in braces. Here is a tiny
+          function that squares a number:
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">// return type   name   parameter list
+int Square(int value)
+{
+    return value * value;   // hand a result back to the caller
+}</code></pre>
+
+        <p>
+          The <code>int</code> before the name says "this function evaluates to an <code>int</code>". The
+          <code>return</code> statement produces that value and immediately ends the function. To <em>use</em>
+          the function you <strong>call</strong> it by writing its name and supplying <strong>arguments</strong>:
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+int Square(int value)
+{
+    return value * value;
+}
+
+int main()
+{
+    int result = Square(5);           // result is now 25
+    std::cout &lt;&lt; "5 squared is " &lt;&lt; result &lt;&lt; "\n";
+    std::cout &lt;&lt; "9 squared is " &lt;&lt; Square(9) &lt;&lt; "\n"; // call it inline too
+    return 0;
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Parameter vs. argument</div>
+            <p>The <strong>parameter</strong> is the placeholder in the function's definition (<code>value</code>). The <strong>argument</strong> is the actual data you pass at the call site (<code>5</code>). People use the words loosely, but knowing the distinction helps when reading compiler errors.</p>
+          </div>
+        </div>
+
+        <h2>Parameters and return types</h2>
+        <p>
+          A function can take zero, one, or many parameters, each with its own type, separated by commas. It
+          returns exactly one value whose type matches the return type. Here is a function that picks the larger
+          of two integers:
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">int Max(int a, int b)
+{
+    if (a &gt; b)
+        return a;   // one exit...
+    return b;       // ...or the other
+}</code></pre>
+
+        <p>
+          You can have multiple <code>return</code> statements; whichever one runs first ends the function. The
+          value you return must be convertible to the declared return type — returning a <code>double</code>
+          from an <code>int</code> function would silently chop off the fractional part, which is rarely what you
+          want.
+        </p>
+
+        <h3>Functions that return nothing: <code>void</code></h3>
+        <p>
+          Sometimes a function <em>does</em> something rather than <em>computing</em> something — it prints,
+          it updates state, it draws. Such a function has the return type <code>void</code>, meaning "no value
+          comes back". You may still use a bare <code>return;</code> to exit early.
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+void PrintBanner(const std::string&amp; title)
+{
+    if (title.empty())
+        return;   // nothing to print, leave early
+
+    std::cout &lt;&lt; "==== " &lt;&lt; title &lt;&lt; " ====\n";
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">You've already seen <code>void</code> and <code>int</code></div>
+            <p>Your programs start in <code>int main()</code>. That's just a function the operating system calls for you; its returned <code>int</code> is the program's exit code (<code>0</code> means success).</p>
+          </div>
+        </div>
+
+        <h2>Pass-by-value: functions get copies</h2>
+        <p>
+          By default, a parameter receives a <strong>copy</strong> of the argument. Whatever the function does
+          to that copy does not touch the caller's original variable. This is called <strong>pass-by-value</strong>.
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+void TryToDouble(int n)
+{
+    n = n * 2;   // only changes this function's local copy
+    std::cout &lt;&lt; "inside: " &lt;&lt; n &lt;&lt; "\n";
+}
+
+int main()
+{
+    int score = 10;
+    TryToDouble(score);
+    std::cout &lt;&lt; "outside: " &lt;&lt; score &lt;&lt; "\n"; // still 10!
+    return 0;
+}</code></pre>
+
+        <p>This prints:</p>
+        <pre><code class="language-console">inside: 20
+outside: 10</code></pre>
+
+        <p>
+          The copy makes functions safe and predictable — a function can't accidentally scramble your data. The
+          trade-off is cost: copying a small <code>int</code> is free, but copying a big object (say a mesh with
+          thousands of vertices) every call would be wasteful.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Coming next module: pass-by-reference</div>
+            <p>When you <em>want</em> a function to modify the caller's variable, or you want to avoid an expensive copy, you'll pass <strong>by reference</strong> (<code>int&amp;</code>) or by <code>const</code> reference. That's exactly how our engine's systems will update a <code>Transform</code> in place. We introduce it properly in the next module — for now, just know copies are the default.</p>
+          </div>
+        </div>
+
+        <h2>Overloading: one name, several versions</h2>
+        <p>
+          C++ lets you give several functions the <strong>same name</strong> as long as their parameter lists
+          differ in number or type. The compiler picks the right one based on the arguments you pass. This is
+          called <strong>function overloading</strong>, and it keeps related operations under one friendly name.
+        </p>
+
+        <pre><code class="language-cpp" data-file="math_utils.cpp">int Square(int value)
+{
+    return value * value;
+}
+
+// Same name, different parameter type — a distinct function.
+double Square(double value)
+{
+    return value * value;
+}
+
+// Overloads can also differ in how MANY parameters they take.
+int Max(int a, int b)          { return a &gt; b ? a : b; }
+int Max(int a, int b, int c)   { return Max(Max(a, b), c); }</code></pre>
+
+        <p>
+          Now <code>Square(5)</code> calls the <code>int</code> version and <code>Square(2.5)</code> calls the
+          <code>double</code> version. Note that the <strong>return type alone cannot distinguish overloads</strong>
+          — the difference has to be in the parameters.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Call</th><th>Which overload runs</th><th>Result</th></tr></thead>
+            <tbody>
+              <tr><td><code>Square(6)</code></td><td><code>Square(int)</code></td><td><code>36</code></td></tr>
+              <tr><td><code>Square(1.5)</code></td><td><code>Square(double)</code></td><td><code>2.25</code></td></tr>
+              <tr><td><code>Max(3, 9)</code></td><td><code>Max(int, int)</code></td><td><code>9</code></td></tr>
+              <tr><td><code>Max(3, 9, 4)</code></td><td><code>Max(int, int, int)</code></td><td><code>9</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>Default arguments</h2>
+        <p>
+          You can give a parameter a <strong>default value</strong>, used when the caller omits that argument.
+          This is handy for "usually this, occasionally that" options. Defaults must come last in the parameter
+          list — once one parameter has a default, every parameter after it needs one too.
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+// step defaults to 1 if the caller doesn't supply it.
+void CountUp(int to, int step = 1)
+{
+    for (int i = 0; i &lt;= to; i += step)
+        std::cout &lt;&lt; i &lt;&lt; ' ';
+    std::cout &lt;&lt; "\n";
+}
+
+int main()
+{
+    CountUp(5);       // uses step = 1  -&gt; 0 1 2 3 4 5
+    CountUp(10, 2);   // step = 2       -&gt; 0 2 4 6 8 10
+    return 0;
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Overloads or defaults?</div>
+            <p>Default arguments and overloading solve overlapping problems. Reach for a default when the versions share one body and differ only by a value; reach for overloads when the versions genuinely do different work or take different types.</p>
+          </div>
+        </div>
+
+        <h2>Declaration vs. definition — why order matters</h2>
+        <p>
+          C++ reads your file from top to bottom. Before you can <em>call</em> a function, the compiler must
+          already know its name, parameters and return type. If you define a function <em>below</em>
+          <code>main</code> and call it from inside <code>main</code>, the compiler hasn't met it yet and errors
+          out.
+        </p>
+        <p>
+          The fix is a <strong>declaration</strong> (also called a <strong>prototype</strong>): the function's
+          signature followed by a semicolon, placed near the top. It's a promise — "this function exists; here's
+          its shape — the body appears later." The full function, braces and all, is the <strong>definition</strong>.
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+// --- Declarations (prototypes): promises to the compiler ---
+int Square(int value);
+int Max(int a, int b);
+
+int main()
+{
+    // These calls compile because the prototypes are already visible.
+    std::cout &lt;&lt; Square(7) &lt;&lt; "\n";   // 49
+    std::cout &lt;&lt; Max(3, 8) &lt;&lt; "\n";    // 8
+    return 0;
+}
+
+// --- Definitions: the actual bodies, order no longer matters ---
+int Square(int value)
+{
+    return value * value;
+}
+
+int Max(int a, int b)
+{
+    return a &gt; b ? a : b;
+}</code></pre>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 150" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="20" y="30" width="150" height="46" rx="8"/>
+              <text x="95" y="52" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Declaration</text>
+              <text x="95" y="68" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">int Square(int);</text>
+              <rect x="225" y="30" width="150" height="46" rx="8"/>
+              <text x="300" y="52" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Call site</text>
+              <text x="300" y="68" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">Square(7)</text>
+              <rect x="430" y="30" width="150" height="46" rx="8"/>
+              <text x="505" y="52" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Definition</text>
+              <text x="505" y="68" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">{ return v*v; }</text>
+              <path d="M170 53 H225" stroke-linecap="round"/>
+              <path d="M375 53 H430" stroke-linecap="round" stroke-dasharray="4 4"/>
+              <text x="300" y="110" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">The declaration lets the call compile; the definition supplies the body.</text>
+            </svg>
+          </div>
+          <figcaption>A prototype near the top lets you call a function before its full body appears.</figcaption>
+        </figure>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">This is how header files work</div>
+            <p>When our engine grows, declarations move into <code>.h</code> header files and definitions into <code>.cpp</code> files. Including a header gives every file the prototypes it needs, while each function is defined in exactly one place. You'll do this for real when we split code across files.</p>
+          </div>
+        </div>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Always return a value from non-<code>void</code> functions</div>
+            <p>If a function promises to return an <code>int</code> but a code path reaches the end without a <code>return</code>, the returned value is <strong>undefined</strong> — your program may print garbage or crash unpredictably. Make sure every path returns. Turn on compiler warnings and the compiler will flag it for you.</p>
+          </div>
+        </div>
+
+        <h2>Putting it together</h2>
+        <p>
+          Here's a small, complete program that uses everything above: prototypes at the top, an overloaded
+          <code>Square</code>, a default argument, and clear <code>void</code> output. Compile and run it to see
+          the pieces cooperate.
+        </p>
+
+        <pre><code class="language-cpp" data-file="functions_demo.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+// Prototypes
+int    Square(int value);
+double Square(double value);
+int    Max(int a, int b);
+void   Report(const std::string&amp; label, int value, int width = 8);
+
+int main()
+{
+    int   a = 6;
+    double b = 2.5;
+
+    Report("Square(int)",    Square(a));   // 36
+    Report("Square(double)", static_cast&lt;int&gt;(Square(b))); // 6 (2.5*2.5 = 6.25 -&gt; truncated)
+    Report("Max",            Max(a, 9), 12);
+    return 0;
+}
+
+// Definitions
+int Square(int value)          { return value * value; }
+double Square(double value)    { return value * value; }
+int Max(int a, int b)          { return a &gt; b ? a : b; }
+
+void Report(const std::string&amp; label, int value, int width)
+{
+    std::cout &lt;&lt; label;
+    // pad with spaces so the numbers line up
+    for (int i = static_cast&lt;int&gt;(label.size()); i &lt; width; ++i)
+        std::cout &lt;&lt; ' ';
+    std::cout &lt;&lt; "= " &lt;&lt; value &lt;&lt; "\n";
+}</code></pre>
+
+        <p>
+          Functions like <code>Square</code> and <code>Max</code> are exactly the kind of small, reusable helpers
+          that fill an engine's math library. Once you can factor logic into clean, well-named functions, the
+          rest of the course is mostly about writing more of them — and organising them into components.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A function bundles reusable logic behind a name; you <strong>call</strong> it with arguments and it may <strong>return</strong> a value.</li>
+            <li>The return type declares what comes back; <code>void</code> means nothing does, and a bare <code>return;</code> exits early.</li>
+            <li>Parameters are passed <strong>by value</strong> (copies) by default, so changes inside a function don't affect the caller — pass-by-reference comes next module.</li>
+            <li><strong>Overloading</strong> lets several functions share a name if their parameter lists differ; <strong>default arguments</strong> fill in omitted values.</li>
+            <li>A <strong>declaration/prototype</strong> tells the compiler a function's shape so you can call it before its <strong>definition</strong> appears — the basis of header files.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
