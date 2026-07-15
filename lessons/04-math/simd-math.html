@@ -3,17 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Using DirectXMath (SIMD) — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Learn DirectXMath: storage types vs SIMD types, load and store, and build a world*view*proj matrix for your engine.">
+  <title>SIMD Math: DirectXMath &amp; Apple simd — Learn C++ Engine Development</title>
+  <meta name="description" content="Learn SIMD graphics math with DirectXMath on Windows and Apple simd on macOS, then isolate both behind a portable engine math layer.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
   <div id="app">
     <main class="content">
       <article class="lesson">
-        <h1>Using DirectXMath (SIMD)</h1>
+        <h1>SIMD Math: DirectXMath &amp; Apple simd</h1>
 
-        <p class="lead">You already know the math behind matrices and transformations. Now let's stop writing it by hand and use the industrial-strength library that ships with Windows: <strong>DirectXMath</strong>. It gives us fast, SIMD-accelerated vectors and matrices with the exact helpers a 3D engine needs. By the end of this lesson you'll build the famous <strong>world &times; view &times; projection</strong> matrix that every renderer uses to put objects on screen.</p>
+        <p class="lead">You already know the math behind transformations. Now we'll use the SIMD libraries supplied by each platform: <strong>DirectXMath</strong> on Windows and <strong>Apple simd</strong> on macOS. Both accelerate vectors and matrices; our engine math layer will hide their naming and convention differences.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
@@ -23,6 +23,7 @@
             <li>The key matrix helpers: translation, rotation, scaling, look-at, and perspective</li>
             <li>How to combine them into a single world &times; view &times; projection matrix</li>
             <li>The alignment rule that keeps SIMD code from crashing</li>
+            <li>How Apple simd maps the same concepts on macOS</li>
           </ul>
         </div>
 
@@ -41,7 +42,7 @@ int main()
     return 0;
 }</code></pre>
 
-        <p>That compiles cleanly on any modern Visual Studio. The interesting part is the two <em>families</em> of types the library gives you, and knowing when to use each.</p>
+        <p>That compiles cleanly with the Windows toolchain configured in CLion. The interesting part is the two <em>families</em> of types the library gives you, and knowing when to use each.</p>
 
         <h2>Storage types vs SIMD types</h2>
         <p>This is the single most important idea in DirectXMath, so let's be precise. The library separates the type you <strong>store in memory</strong> from the type you <strong>calculate with</strong>.</p>
@@ -193,17 +194,47 @@ XMFLOAT4X4 BuildWorldViewProj(float rotationRadians, float aspectRatio)
           </div>
         </div>
 
+        <h2>macOS — the Apple simd equivalent</h2>
+        <p>Apple platforms expose SIMD vector and matrix types through <code>&lt;simd/simd.h&gt;</code>. The types are ordinary C-compatible values backed by the compiler's vector operations:</p>
+
+        <pre><code class="language-cpp" data-file="simd_demo.cpp">#include &lt;simd/simd.h&gt;
+
+simd_float4 TransformPoint(const simd_float4x4&amp; matrix,
+                           const simd_float3&amp; point)
+{
+    const simd_float4 homogeneous = { point.x, point.y, point.z, 1.0f };
+    return simd_mul(matrix, homogeneous);
+}
+
+simd_float4x4 IdentityMatrix()
+{
+    return matrix_identity_float4x4;
+}</code></pre>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Concept</th><th>Windows</th><th>macOS</th></tr></thead>
+          <tbody>
+            <tr><td>3-float storage</td><td><code>XMFLOAT3</code></td><td><code>simd_float3</code></td></tr>
+            <tr><td>4-lane vector</td><td><code>XMVECTOR</code></td><td><code>simd_float4</code></td></tr>
+            <tr><td>4×4 matrix</td><td><code>XMMATRIX</code>/<code>XMFLOAT4X4</code></td><td><code>simd_float4x4</code></td></tr>
+            <tr><td>Matrix multiply</td><td><code>a * b</code></td><td><code>simd_mul(a, b)</code></td></tr>
+            <tr><td>Identity</td><td><code>XMMatrixIdentity()</code></td><td><code>matrix_identity_float4x4</code></td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Matrix conventions are part of the API</div><p>DirectXMath examples commonly use row vectors and left-handed helpers; Metal Shading Language commonly uses column-vector notation. Do not copy raw matrices between backends without defining transpose and handedness rules. Our portable math types establish one convention and each renderer converts at the upload boundary.</p></div></div>
+
         <h2>How this fits the engine</h2>
-        <p>Everything here becomes a building block. Our <strong>Transform component</strong> will store position, rotation, and scale as plain floats, then expose a <code>GetWorldMatrix()</code> that assembles them with these exact helpers. A <strong>Camera component</strong> will produce the view and projection matrices. The renderer multiplies them per object and hands the result to the shader. You just wrote the heart of that system.</p>
+        <p>The <strong>Transform</strong> and <strong>Camera</strong> components will expose engine-owned vector and matrix types. The Windows adapter can use DirectXMath internally; the macOS adapter can use Apple simd. Renderer code converts the final matrix to the layout expected by HLSL or Metal Shading Language.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>DirectXMath lives in <code>&lt;DirectXMath.h&gt;</code> and the <code>DirectX</code> namespace — no install needed.</li>
+            <li>Windows uses DirectXMath from <code>&lt;DirectXMath.h&gt;</code>; macOS uses Apple simd from <code>&lt;simd/simd.h&gt;</code>.</li>
             <li><strong>Storage types</strong> (<code>XMFLOAT2/3/4</code>, <code>XMFLOAT4X4</code>) live in memory; <strong>SIMD types</strong> (<code>XMVECTOR</code>, <code>XMMATRIX</code>) do the fast math.</li>
             <li>Move between them with <code>XMLoadFloat*</code> and <code>XMStoreFloat*</code>: load &rarr; compute &rarr; store.</li>
             <li>Never make <code>XMVECTOR</code>/<code>XMMATRIX</code> a heap-allocated class member — they need 16-byte alignment.</li>
-            <li>Combine <code>XMMatrixScaling</code> &times; <code>XMMatrixRotationY</code> &times; <code>XMMatrixTranslation</code> into a world matrix, then multiply by view and projection to get the final <code>world * view * proj</code>.</li>
+            <li>Define one engine matrix convention and convert explicitly when uploading to Direct3D or Metal.</li>
           </ul>
         </div>
       </article>

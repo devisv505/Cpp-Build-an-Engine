@@ -3,281 +3,107 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>UDP Datagrams for Real-Time — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Use connectionless UDP datagrams with sendto/recvfrom and a non-blocking socket to move real-time game state without stalling your engine loop.">
+  <title>Portable UDP Datagrams — Learn C++ Engine Development</title>
+  <meta name="description" content="Send, receive, and drain non-blocking UDP datagrams on Windows and macOS with the portable socket layer.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
-<body class="lesson-page">
-  <div id="app">
-    <main class="content">
-      <article class="lesson">
-        <h1>UDP Datagrams for Real-Time</h1>
+<body class="lesson-page"><div id="app"><main class="content"><article class="lesson">
+  <h1>Portable UDP Datagrams</h1>
+  <p class="lead">TCP gives us a reliable byte stream; real-time state updates usually need UDP. We will send individual datagrams and configure the receiver as non-blocking so the game loop never waits for the network. The code uses the same portable layer on Windows and macOS.</p>
 
-        <p class="lead">In the last lesson we built a TCP client and server: a tidy, reliable, ordered stream of bytes. That is perfect for a chat message or a login handshake, but it is the wrong tool for a fast-moving game world. Here we switch to UDP — small, connectionless, fire-and-forget datagrams — and wire a non-blocking receive loop into MiniEngine so the network never freezes a frame.</p>
+  <div class="objectives"><div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div><ul>
+    <li>Send one datagram with <code>sendto</code>.</li>
+    <li>Bind and receive datagrams with <code>recvfrom</code>.</li>
+    <li>Use portable non-blocking mode and error checks.</li>
+    <li>Drain every waiting packet once per frame.</li>
+  </ul></div>
 
-        <div class="objectives">
-          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
-          <ul>
-            <li>How connectionless messaging works with <code>sendto()</code> and <code>recvfrom()</code> — no <code>listen</code>, <code>accept</code>, or <code>connect</code></li>
-            <li>Why lost, duplicated, and reordered packets are acceptable for constantly-resent game state</li>
-            <li>How UDP sidesteps TCP head-of-line blocking</li>
-            <li>How to make a socket non-blocking with <code>ioctlsocket(sock, FIONBIO, &amp;mode)</code> and drain all pending packets each frame</li>
-            <li>Where you would layer your own sequence numbers and acks for the parts that must be reliable</li>
-          </ul>
-        </div>
+  <h2>Sending a datagram</h2>
+  <pre><code class="language-cpp" data-file="UdpSender.cpp">#include "SocketPlatform.h"
+#include &lt;string&gt;
 
-        <h2>Streams versus datagrams</h2>
-        <p>TCP gives you a <strong>stream</strong>: an unbroken river of bytes that arrive in order, with no gaps, exactly once. To get that guarantee, TCP retransmits anything that goes missing and holds newer data back until the missing piece shows up. That holding-back is called <strong>head-of-line blocking</strong>, and it is a disaster for a shooter or a racing game: if one position update is lost, every update behind it waits in line, so your character freezes and then teleports when the backlog clears.</p>
+bool SendMessage(SocketHandle socket, const char* ip, uint16_t port,
+                 const std::string&amp; message) {
+    sockaddr_in destination{};
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip, &amp;destination.sin_addr) != 1) return false;
 
-        <p>UDP takes the opposite stance. Each message is a self-contained <strong>datagram</strong> — you hand the OS a block of bytes and a destination address, and it sends exactly one packet. There is no connection, no ordering, no retransmission, and no acknowledgement. A datagram may arrive, arrive twice, arrive late, or never arrive at all. That sounds terrifying until you realize what game state actually looks like: you are sending the player's position <em>sixty times a second</em>. If packet 118 is lost, packet 119 is already on its way with fresher data. Waiting for the old one would be worse than useless.</p>
-
-        <div class="callout tip">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
-          <div class="c-body"><div class="c-title">Rule of thumb</div><p>If the newest message makes the previous one obsolete, use UDP. If every message matters and none can be skipped — a chat line, an inventory purchase, a "match started" event — you want reliability, either from TCP or from a reliability layer you build on top of UDP.</p></div>
-        </div>
-
-        <div class="table-wrap"><table><thead><tr><th></th><th>TCP (last lesson)</th><th>UDP (this lesson)</th></tr></thead><tbody>
-          <tr><td>Connection</td><td>Handshake via <code>connect</code>/<code>accept</code></td><td>None — just an address per send</td></tr>
-          <tr><td>Delivery</td><td>Reliable, retransmitted</td><td>Best-effort, may be lost</td></tr>
-          <tr><td>Ordering</td><td>Strictly in order</td><td>Any order</td></tr>
-          <tr><td>Duplicates</td><td>Never</td><td>Possible</td></tr>
-          <tr><td>On packet loss</td><td>Everything behind it waits</td><td>Nothing waits</td></tr>
-          <tr><td>Socket type</td><td><code>SOCK_STREAM</code></td><td><code>SOCK_DGRAM</code></td></tr>
-          <tr><td>Best for</td><td>Login, chat, trades</td><td>Positions, inputs, physics</td></tr>
-        </tbody></table></div>
-
-        <h2>Creating a UDP socket</h2>
-        <p>The Winsock boilerplate is the same as before — <code>WSAStartup</code> at launch, <code>WSACleanup</code> at exit, and you must link <code>ws2_32.lib</code>. The only change at socket-creation time is the type: <code>SOCK_DGRAM</code> with <code>IPPROTO_UDP</code> instead of <code>SOCK_STREAM</code>. Because there is no connection, the <em>sender</em> does not even bind to a port; it just names a destination on every send.</p>
-
-        <pre><code class="language-cpp" data-file="UdpSender.cpp">// Link with ws2_32.lib
-#include &lt;winsock2.h&gt;
-#include &lt;ws2tcpip.h&gt;   // inet_pton
-#include &lt;cstdint&gt;
-#include &lt;cstdio&gt;
-
-#pragma comment(lib, "ws2_32.lib")
-
-int main()
-{
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &amp;wsa) != 0) {
-        printf("WSAStartup failed: %d\n", WSAGetLastError());
-        return 1;
-    }
-
-    // SOCK_DGRAM + IPPROTO_UDP = a UDP socket. No connect() needed.
-    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET) {
-        printf("socket failed: %d\n", WSAGetLastError());
-        WSACleanup();
-        return 1;
-    }
-
-    // Describe WHERE each datagram goes. We fill this once and reuse it.
-    sockaddr_in dest{};
-    dest.sin_family = AF_INET;
-    dest.sin_port   = htons(9000);              // host -&gt; network byte order
-    inet_pton(AF_INET, "127.0.0.1", &amp;dest.sin_addr);
-
-    // A tiny fake "player state" payload (see the next lesson for real serialization).
-    struct PlayerState { float x, y, z; };
-    PlayerState state{ 1.0f, 0.0f, -3.5f };
-
-    // sendto() is one datagram. The address is passed EVERY call.
-    int sent = sendto(sock,
-                      reinterpret_cast&lt;const char*&gt;(&amp;state),
-                      sizeof(state),
-                      0,
-                      reinterpret_cast&lt;sockaddr*&gt;(&amp;dest),
-                      sizeof(dest));
-
-    if (sent == SOCKET_ERROR)
-        printf("sendto failed: %d\n", WSAGetLastError());
-    else
-        printf("sent %d bytes to 127.0.0.1:9000\n", sent);
-
-    closesocket(sock);
-    WSACleanup();
-    return 0;
+    const int sent = sendto(socket, message.data(),
+        static_cast&lt;int&gt;(message.size()), 0,
+        reinterpret_cast&lt;sockaddr*&gt;(&amp;destination), sizeof(destination));
+    return sent == static_cast&lt;int&gt;(message.size());
 }</code></pre>
 
-        <div class="callout">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
-          <div class="c-body"><div class="c-title">No connect, but you may</div><p>You <em>can</em> call <code>connect()</code> on a UDP socket. It does not open a connection — it just remembers a default destination so you can use plain <code>send()</code>/<code>recv()</code> and get error replies (like ICMP "port unreachable"). For a game talking to many peers, passing the address on each <code>sendto()</code> is more flexible, so that is what we do here.</p></div>
-        </div>
+  <h2>A non-blocking receiver</h2>
+  <pre><code class="language-cpp" data-file="UdpReceiver.cpp">#include "SocketPlatform.h"
+#include &lt;iostream&gt;
 
-        <h2>The receiver: bind, then recvfrom</h2>
-        <p>The side that <em>listens</em> for datagrams does need a fixed port so senders know where to aim. That is the only reason it calls <code>bind()</code> — there is still no <code>listen</code> or <code>accept</code>. <code>recvfrom()</code> then hands you both the payload and the address it came from, which is exactly what a server needs to reply to the right client.</p>
+SocketHandle CreateReceiver(uint16_t port) {
+    SocketHandle socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket == InvalidSocket) return InvalidSocket;
 
-        <pre><code class="language-cpp" data-file="UdpReceiver.cpp">#include &lt;winsock2.h&gt;
-#include &lt;ws2tcpip.h&gt;
-#include &lt;cstdio&gt;
-
-#pragma comment(lib, "ws2_32.lib")
-
-int main()
-{
-    WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &amp;wsa);
-
-    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-
-    // Bind to a known port so clients can send to us.
     sockaddr_in local{};
-    local.sin_family      = AF_INET;
-    local.sin_port        = htons(9000);
-    local.sin_addr.s_addr = htonl(INADDR_ANY);  // accept on any local NIC
+    local.sin_family = AF_INET;
+    local.sin_addr.s_addr = htonl(INADDR_ANY);
+    local.sin_port = htons(port);
 
-    if (bind(sock, reinterpret_cast&lt;sockaddr*&gt;(&amp;local), sizeof(local)) == SOCKET_ERROR) {
-        printf("bind failed: %d\n", WSAGetLastError());
-        closesocket(sock);
-        WSACleanup();
-        return 1;
+    if (bind(socket, reinterpret_cast&lt;sockaddr*&gt;(&amp;local), sizeof(local)) != 0 ||
+        !SetNonBlocking(socket)) {
+        CloseSocket(socket);
+        return InvalidSocket;
     }
+    return socket;
+}
 
-    struct PlayerState { float x, y, z; };
-    PlayerState state{};
+void DrainPackets(SocketHandle socket) {
+    for (;;) {
+        char data[1200]{};
+        sockaddr_in sender{};
+        SocketLength senderLength = sizeof(sender);
 
-    sockaddr_in from{};
-    int fromLen = sizeof(from);
+        const int received = recvfrom(socket, data, sizeof(data), 0,
+            reinterpret_cast&lt;sockaddr*&gt;(&amp;sender), &amp;senderLength);
 
-    // This call BLOCKS until a datagram arrives. Fine for a demo, fatal in a game loop.
-    int n = recvfrom(sock,
-                    reinterpret_cast&lt;char*&gt;(&amp;state),
-                    sizeof(state),
-                    0,
-                    reinterpret_cast&lt;sockaddr*&gt;(&amp;from),
-                    &amp;fromLen);
-
-    if (n == SOCKET_ERROR) {
-        printf("recvfrom failed: %d\n", WSAGetLastError());
-    } else {
-        char ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &amp;from.sin_addr, ip, sizeof(ip));
-        printf("got %d bytes from %s:%d -&gt; pos(%.2f, %.2f, %.2f)\n",
-               n, ip, ntohs(from.sin_port), state.x, state.y, state.z);
-    }
-
-    closesocket(sock);
-    WSACleanup();
-    return 0;
-}</code></pre>
-
-        <div class="callout warn">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body"><div class="c-title">One send, one receive</div><p>A datagram is atomic: one <code>sendto()</code> becomes exactly one <code>recvfrom()</code>. Unlike TCP, messages never merge or split, so you never have to reassemble a stream. But if your buffer is smaller than the datagram, the extra bytes are <strong>discarded</strong> and you get <code>WSAEMSGSIZE</code>. Always size the buffer for your largest expected packet, and keep packets well under ~1200 bytes to avoid IP fragmentation.</p></div>
-        </div>
-
-        <h2>Non-blocking: don't freeze the frame</h2>
-        <p>The receiver above has a fatal flaw for a real-time engine: <code>recvfrom()</code> <strong>blocks</strong>. If no packet has arrived, your thread parks inside that call, the game loop stops, and the whole engine stutters. We cannot afford that — MiniEngine's loop has to update transforms, run components, and render a DirectX frame roughly every 16 milliseconds whether or not the network has news.</p>
-
-        <p>The fix is to put the socket into <strong>non-blocking mode</strong> with <code>ioctlsocket</code> and the <code>FIONBIO</code> command. After that, <code>recvfrom()</code> returns immediately: if a datagram is waiting you get it, and if not you get <code>SOCKET_ERROR</code> with <code>WSAGetLastError()</code> equal to <code>WSAEWOULDBLOCK</code>. That error code is not a failure — it simply means "nothing yet, ask again later."</p>
-
-        <pre><code class="language-cpp" data-file="NetworkComponent.cpp">// Call once, right after creating and binding the socket.
-u_long mode = 1;                       // 1 = non-blocking, 0 = blocking
-if (ioctlsocket(sock, FIONBIO, &amp;mode) == SOCKET_ERROR) {
-    printf("ioctlsocket failed: %d\n", WSAGetLastError());
-}</code></pre>
-
-        <h3>Draining the queue each frame</h3>
-        <p>Between two frames, several datagrams may have piled up in the OS receive buffer. If you read only one per frame, you fall behind and add latency. The pattern is a <strong>drain loop</strong>: keep calling <code>recvfrom()</code> until it reports <code>WSAEWOULDBLOCK</code>, which means the queue is empty for now. Below is that loop wrapped in a component method — the kind of thing you would call from your engine's <code>Update()</code>, right alongside your other components.</p>
-
-        <pre><code class="language-cpp" data-file="NetworkComponent.cpp">#include &lt;winsock2.h&gt;
-#include &lt;ws2tcpip.h&gt;
-#include &lt;vector&gt;
-#include &lt;cstdint&gt;
-
-// A component that owns a non-blocking UDP socket and pumps it once per frame.
-class NetworkComponent {
-public:
-    struct Packet {
-        sockaddr_in from{};
-        std::vector&lt;uint8_t&gt; data;
-    };
-
-    // Called every frame from the engine loop. Never blocks.
-    void Receive(std::vector&lt;Packet&gt;&amp; out) {
-        uint8_t buffer[1200];          // one datagram's worth of bytes
-
-        // Drain EVERY pending datagram so we never lag behind the network.
-        for (;;) {
-            sockaddr_in from{};
-            int fromLen = sizeof(from);
-
-            int n = recvfrom(m_sock,
-                            reinterpret_cast&lt;char*&gt;(buffer),
-                            sizeof(buffer),
-                            0,
-                            reinterpret_cast&lt;sockaddr*&gt;(&amp;from),
-                            &amp;fromLen);
-
-            if (n == SOCKET_ERROR) {
-                int err = WSAGetLastError();
-                if (err == WSAEWOULDBLOCK)
-                    break;             // queue is empty for this frame — done
-                if (err == WSAEMSGSIZE)
-                    continue;          // datagram bigger than buffer: skip it
-                break;                 // a real error: stop draining this frame
-            }
-
-            if (n == 0)
-                continue;              // empty datagram, ignore
-
-            // Hand the payload up for the game to interpret next lesson.
-            Packet p;
-            p.from = from;
-            p.data.assign(buffer, buffer + n);
-            out.push_back(std::move(p));
+        if (received &lt; 0) {
+            const int error = LastSocketError();
+            if (!WouldBlock(error)) std::cerr &lt;&lt; "recvfrom failed: " &lt;&lt; error &lt;&lt; '\n';
+            break;
         }
+
+        HandlePacket(data, static_cast&lt;std::size_t&gt;(received), sender);
     }
+}</code></pre>
 
-    // Send is unchanged: one datagram, addressed every time.
-    void Send(const sockaddr_in&amp; dest, const uint8_t* data, int len) {
-        sendto(m_sock,
-               reinterpret_cast&lt;const char*&gt;(data),
-               len,
-               0,
-               reinterpret_cast&lt;const sockaddr*&gt;(&amp;dest),
-               sizeof(dest));
-    }
+  <p><code>DrainPackets</code> loops because several UDP packets can arrive between rendered frames. The normal stopping condition is “would block,” which means the receive queue is empty right now.</p>
 
-private:
-    SOCKET m_sock = INVALID_SOCKET;    // created, bound, and set non-blocking at init
-};</code></pre>
+  <h2>Platform behavior hidden by the wrapper</h2>
+  <div class="table-wrap"><table><thead><tr><th>Task</th><th>Windows</th><th>macOS</th></tr></thead><tbody>
+    <tr><td>Enable non-blocking</td><td><code>ioctlsocket(FIONBIO)</code></td><td><code>fcntl(O_NONBLOCK)</code></td></tr>
+    <tr><td>Queue empty</td><td><code>WSAEWOULDBLOCK</code></td><td><code>EWOULDBLOCK</code> or <code>EAGAIN</code></td></tr>
+    <tr><td>Close</td><td><code>closesocket</code></td><td><code>close</code></td></tr>
+  </tbody></table></div>
 
-        <p>Notice how naturally this drops into the engine you already built. <code>NetworkComponent</code> is just another component hanging off a <code>GameObject</code>; its <code>Receive()</code> runs in the update phase, fills a list of packets, and the rest of your systems consume them — no threads, no blocking, no special cases in the render code.</p>
+  <h2>Use it in the engine loop</h2>
+  <pre><code class="language-cpp" data-file="GameLoop.cpp">SocketRuntime runtime;
+SocketHandle receiver = CreateReceiver(7777);
 
-        <div class="callout">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
-          <div class="c-body"><div class="c-title">select() is the alternative</div><p><code>ioctlsocket</code> with <code>FIONBIO</code> is the simplest approach and scales fine for a handful of sockets. If you ever manage many sockets at once, <code>select()</code> lets you ask "which of these have data ready?" in a single call, so you avoid polling each one. Both solve the same problem: never let the network block your frame.</p></div>
-        </div>
+while (!window.ShouldClose()) {
+    window.PollEvents();
+    DrainPackets(receiver);  // returns immediately when the queue is empty
+    scene.Update(deltaTime);
+    renderer.DrawScene(scene);
+}
 
-        <h2>What UDP does not give you</h2>
-        <p>UDP hands you raw datagrams and nothing else — no ordering, no delivery guarantee, no duplicate detection. For pure state you resend every frame, that is exactly what you want. But some messages genuinely must arrive: "you picked up the flag", "the round ended", "you took 40 damage". You cannot just resend those and hope.</p>
+CloseSocket(receiver);</code></pre>
 
-        <p>The professional answer is to build a thin <strong>reliability layer</strong> on top of UDP. In practice that means stamping each packet with a <strong>sequence number</strong>, having the receiver send back <strong>acks</strong> for the sequence numbers it saw, and resending anything that was not acked within a timeout. You also use the sequence number to drop old, reordered packets and to detect duplicates. This is how libraries like ENet and the netcode in commercial engines work — reliable-when-you-need-it, unreliable-when-you-don't, all over one UDP socket.</p>
+  <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Stay below the path MTU</div><p>Keep real-time UDP payloads around 1200 bytes or less unless you have measured the path. Smaller datagrams reduce IP fragmentation risk.</p></div></div>
 
-        <div class="callout danger">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
-          <div class="c-body"><div class="c-title">Never trust the wire</div><p>A datagram can come from anyone and contain anything — a malformed or malicious packet is a classic attack vector. Always validate <code>n</code> (the byte count) before reading fields, never index past what actually arrived, and treat every incoming byte as untrusted input. We will parse packets safely in the next lesson.</p></div>
-        </div>
-
-        <p>We will not build the full reliability layer yet — first we need a clean way to turn a <code>PlayerState</code> into bytes and back. That is exactly what the next lesson, on serializing game state, is about. The sequence numbers and acks slot in right after.</p>
-
-        <div class="recap">
-          <div class="r-title">Recap</div>
-          <ul>
-            <li>UDP is connectionless: create a <code>SOCK_DGRAM</code> socket and name the destination on every <code>sendto()</code> — no <code>listen</code>, <code>accept</code>, or <code>connect</code> required.</li>
-            <li>Each datagram is independent and may be lost, duplicated, or reordered; that is fine for game state you resend many times a second, and it avoids TCP's head-of-line blocking.</li>
-            <li>The listening side calls <code>bind()</code> on a known port, then <code>recvfrom()</code>, which also reports the sender's address.</li>
-            <li>Put the socket in non-blocking mode with <code>ioctlsocket(sock, FIONBIO, &amp;mode)</code> and drain all pending packets each frame, treating <code>WSAEWOULDBLOCK</code> as "no data yet."</li>
-            <li>For messages that must arrive, layer your own sequence numbers and acks on top of UDP — coming up after we tackle serialization.</li>
-          </ul>
-        </div>
-      </article>
-    </main>
-  </div>
-  <script src="../../js/curriculum.js"></script>
-  <script src="../../js/main.js"></script>
-</body>
+  <div class="recap"><div class="r-title">Recap</div><ul>
+    <li>UDP sends independent datagrams with no connection handshake.</li>
+    <li>The receiver binds to a local port and uses non-blocking mode.</li>
+    <li>The wrapper maps non-blocking setup and “would block” errors across Windows and macOS.</li>
+    <li>Drain the receive queue every frame and validate each packet before using it.</li>
+  </ul></div>
+</article></main></div><script src="../../js/curriculum.js"></script><script src="../../js/main.js"></script></body>
 </html>

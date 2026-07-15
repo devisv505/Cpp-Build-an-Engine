@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Anatomy of a C++ Project — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Learn how a C++ project is organized: solutions vs projects, source vs headers, output folders, and how include and linker settings feed the build.">
+  <title>Anatomy of a C++ Project — Learn C++ Engine Development</title>
+  <meta name="description" content="Learn how a CLion CMake project is organized: projects, targets, source and headers, build folders, include paths, and linked libraries.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -13,35 +13,35 @@
       <article class="lesson">
         <h1>Anatomy of a C++ Project</h1>
 
-        <p class="lead">You can already build, run and step through a program in the debugger. But what actually <em>is</em> the thing you pressed play on? In this lesson we open the hood: solutions, projects, source and header files, the folders your <code>.exe</code> lands in, and the include and linker settings that will eventually let us pull DirectX into our engine. Understanding this layout now means you will never feel lost when a project grows to hundreds of files.</p>
+        <p class="lead">You can already build, run and step through a program in the debugger. Now we'll open the hood: the CMake project, its build targets, source and header files, generated build directories, include paths, and linked libraries. This structure is identical in CLion on Windows and macOS.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>The difference between a <strong>solution</strong> (<code>.sln</code>) and a <strong>project</strong> (<code>.vcxproj</code>)</li>
+            <li>The difference between a CMake <strong>project</strong> and a build <strong>target</strong></li>
             <li>Why we split code into <strong>source</strong> (<code>.cpp</code>) and <strong>header</strong> (<code>.h</code>) files</li>
-            <li>Where the compiler puts your <code>.exe</code> — the Debug/Release x64 output folders</li>
-            <li>What <strong>include directories</strong> and <strong>linker inputs</strong> are, and how they map to the compile-and-link pipeline</li>
+            <li>Where CLion and CMake put Debug and Release build outputs</li>
+            <li>How <code>target_include_directories</code> and <code>target_link_libraries</code> feed the build</li>
           </ul>
         </div>
 
-        <h2>The solution and the project</h2>
+        <h2>The project and its targets</h2>
 
-        <p>When you created your first program, Visual Studio actually made two different containers. It is easy to blur them together, but they do very different jobs.</p>
+        <p>When you created your first program, CMake defined a project and one executable target. These concepts do different jobs.</p>
 
         <div class="table-wrap">
           <table>
-            <thead><tr><th>File</th><th>What it is</th><th>Think of it as</th></tr></thead>
+            <thead><tr><th>Concept</th><th>What it is</th><th>Example</th></tr></thead>
             <tbody>
-              <tr><td><code>.sln</code></td><td>A <strong>solution</strong> — a workspace that groups one or more projects together.</td><td>A folder of related work.</td></tr>
-              <tr><td><code>.vcxproj</code></td><td>A <strong>project</strong> — one build target, such as a single <code>.exe</code> or a library.</td><td>A recipe that produces one output.</td></tr>
+              <tr><td><code>project(...)</code></td><td>Names the overall CMake project and its languages.</td><td><code>project(MiniEngine LANGUAGES CXX)</code></td></tr>
+              <tr><td>Target</td><td>One output built from a source list.</td><td>An executable, static library, or test program.</td></tr>
             </tbody>
           </table>
         </div>
 
-        <p>A tiny app has one solution containing one project, so people often say "project" and "solution" interchangeably. But the distinction matters as soon as things grow. Our engine will eventually be a solution with <em>several</em> projects: an <strong>Engine</strong> project (a reusable library of components), a <strong>Game</strong> project (the actual <code>.exe</code> that uses the engine), and maybe a <strong>Tests</strong> project. One solution, many recipes — just like Unity separates its engine runtime from your game code.</p>
+        <p>A tiny app has one project and one target, so the distinction is easy to miss. Our engine will have several targets: an <strong>Engine</strong> static library, a <strong>Game</strong> executable, and perhaps a <strong>Tests</strong> executable. One CMake project, several named recipes.</p>
 
-        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Both files are just text</div><p>The <code>.sln</code> and <code>.vcxproj</code> files are XML text describing settings, not compiled code. This is exactly why they belong in version control — but the build output folders do not.</p></div></div>
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">CMakeLists.txt is portable text</div><p><code>CMakeLists.txt</code> belongs in version control and describes the build for every supported operating system. CLion's generated <code>cmake-build-*</code> directories do not belong in version control.</p></div></div>
 
         <h2>Source files vs header files</h2>
 
@@ -81,42 +81,44 @@ int main()
 }
 </code></pre>
 
-        <p>Notice that <code>main.cpp</code> never sees the body of <code>Add</code> — it only sees the header. Each <code>.cpp</code> is compiled on its own into an <strong>object file</strong> (<code>.obj</code>), and then the linker stitches them into one <code>.exe</code>. That is the <strong>compile then link</strong> pipeline from the previous lesson, now with a reason to exist: split code compiles faster and stays organized.</p>
+        <p>Notice that <code>main.cpp</code> never sees the body of <code>Add</code> — it only sees the header. Each <code>.cpp</code> becomes an object file, and the linker combines them into one executable. Add all source files to the target so CMake knows they belong together:</p>
+
+        <pre><code class="language-cmake" data-file="CMakeLists.txt">add_executable(Game
+    main.cpp
+    MathUtils.cpp
+    MathUtils.h
+)</code></pre>
 
         <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Always start headers with #pragma once</div><p>It stops the same declarations from being pulled in twice, which is a classic source of confusing "already defined" errors. Every header we write for the engine will begin with this line.</p></div></div>
 
-        <h2>Where your .exe actually lands</h2>
+        <h2>Where build output lands</h2>
 
-        <p>When you build, the compiler does not scatter files next to your source. It writes them into <strong>output folders</strong> named after your <em>configuration</em> and <em>platform</em>. Two settings drive this:</p>
+        <p>CLion keeps generated build files outside your source tree in one directory per CMake profile:</p>
 
         <ul>
-          <li><strong>Configuration</strong> — <code>Debug</code> (extra checks, no optimization, easy to step through) or <code>Release</code> (optimized, fast, what you ship).</li>
-          <li><strong>Platform</strong> — <code>x64</code> (64-bit, what we always use) or the old <code>x86</code>.</li>
+          <li><code>cmake-build-debug</code> — debug symbols, minimal optimization, easy stepping.</li>
+          <li><code>cmake-build-release</code> — optimized output for performance testing and shipping.</li>
         </ul>
 
-        <p>Combine them and you get a folder path. A typical Visual Studio layout looks like this:</p>
+        <p>A portable CMake layout looks like this:</p>
 
-        <pre><code class="language-text" data-file="folder layout">MyEngine\                 &lt;- solution folder
-  MyEngine.sln
-  Game\                    &lt;- one project
-    Game.vcxproj
+        <pre><code class="language-text" data-file="folder layout">MiniEngine/
+  CMakeLists.txt           &lt;- portable build recipe
+  src/
     main.cpp
-    MathUtils.h
     MathUtils.cpp
-  x64\
-    Debug\
-      Game.exe             &lt;- your program lands here
-      Game.pdb             &lt;- debug symbols for breakpoints
-    Release\
-      Game.exe             &lt;- optimized build lands here
-  Game\x64\Debug\
-      main.obj             &lt;- intermediate object files
-      MathUtils.obj
+  include/
+    MathUtils.h
+  cmake-build-debug/       &lt;- generated; do not commit
+    Game                   &lt;- macOS executable
+    Game.exe               &lt;- Windows executable name
+    CMakeFiles/            &lt;- object files and metadata
+  cmake-build-release/     &lt;- separate optimized build
 </code></pre>
 
-        <p>So the same code produces <em>different</em> executables depending on the configuration you selected in the toolbar. If you set a breakpoint and nothing stops, the number-one culprit is being in <code>Release</code> instead of <code>Debug</code>. And because these folders are regenerated on every build, you never commit them to git — a <code>.gitignore</code> excludes <code>x64/</code>, <code>Debug/</code> and <code>Release/</code>.</p>
+        <p>The same source produces different binaries per profile and operating system. If stepping behaves strangely, confirm the Debug profile is active. Add <code>cmake-build-*/</code> and <code>.idea/</code> to <code>.gitignore</code>; both are generated locally.</p>
 
-        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Match your platform to your libraries</div><p>A 64-bit <code>x64</code> program can only link against 64-bit libraries. Later, when we add DirectX, mixing an <code>x86</code> build with 64-bit libs produces cryptic linker errors. Keep everything on <code>x64</code> and you sidestep the whole class of problem.</p></div></div>
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Do not copy build folders between systems</div><p>A build directory caches absolute paths, compiler details, and an architecture. Delete or reset it after moving a project between Windows and macOS; CMake will generate the correct native files again.</p></div></div>
 
         <h2>Include directories and linker inputs</h2>
 
@@ -130,46 +132,46 @@ int main()
           <text x="270" y="102" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">uses include dirs</text>
           <rect x="400" y="60" width="140" height="50" rx="6" stroke="#4aa8ff"/>
           <text x="470" y="85" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Linker</text>
-          <text x="470" y="102" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">uses .lib inputs</text>
+          <text x="470" y="102" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">uses libraries</text>
           <path d="M140 85 L200 85" stroke="#4aa8ff"/><path d="M192 80 L200 85 L192 90" stroke="#4aa8ff"/>
           <path d="M340 85 L400 85" stroke="#4aa8ff"/><path d="M392 80 L400 85 L392 90" stroke="#4aa8ff"/>
           <text x="270" y="140" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">.obj</text>
         </svg></div><figcaption>Include directories feed the compiler; linker inputs feed the linker. Two settings, two stages.</figcaption></figure>
 
         <ul>
-          <li><strong>Include Directories</strong> — extra folders the <em>compiler</em> searches when it hits an <code>#include &lt;...&gt;</code>. This is how it finds a header it did not write itself.</li>
-          <li><strong>Additional Dependencies</strong> (linker inputs) — the list of <code>.lib</code> files the <em>linker</em> pulls in to resolve promises whose bodies live in a prebuilt library.</li>
+          <li><code>target_include_directories</code> adds folders the compiler searches for headers.</li>
+          <li><code>target_link_libraries</code> lists libraries or framework targets the linker must combine with your code.</li>
         </ul>
 
-        <p>DirectX 11 ships with the Windows SDK, so its headers and libraries are already on your machine — you just have to name them. When we reach the graphics lessons, wiring up Direct3D is literally these two settings. In modern C++ you can even declare the linker input right in your source with a pragma, which keeps the dependency next to the code that needs it:</p>
+        <p>Our renderer chooses libraries by platform. Windows links Direct3D; macOS links Apple frameworks. The shared target sees only the backend interface:</p>
 
-        <pre><code class="language-cpp" data-file="Renderer.cpp">#include &lt;d3d11.h&gt;  // Direct3D 11 header, found via include directories
+        <pre><code class="language-cmake" data-file="CMakeLists.txt">target_include_directories(Engine PUBLIC include)
 
-// Tell the linker to pull in these libraries.
-// Equivalent to adding them under Linker &gt; Input &gt; Additional Dependencies.
-#pragma comment(lib, "d3d11.lib")   // core Direct3D 11
-#pragma comment(lib, "dxgi.lib")    // DXGI, for swap chains
+if (WIN32)
+    target_sources(Engine PRIVATE src/graphics/D3D11Renderer.cpp)
+    target_link_libraries(Engine PRIVATE d3d11 dxgi d3dcompiler)
+elseif (APPLE)
+    target_sources(Engine PRIVATE src/graphics/MetalRenderer.cpp)
+    target_link_libraries(Engine PRIVATE
+        "-framework Foundation"
+        "-framework Metal"
+        "-framework QuartzCore")
+endif()</code></pre>
 
-// A pointer to the D3D11 device we will create in a later lesson.
-ID3D11Device* g_device = nullptr;   // just a declaration for now
-</code></pre>
-
-        <p>Do not worry about what <code>ID3D11Device</code> does yet — the point is that <code>&lt;d3d11.h&gt;</code> is found because of an <em>include directory</em>, and <code>d3d11.lib</code> is linked because it is a <em>linker input</em>. Same two settings you would use for any library, DirectX is nothing special here.</p>
-
-        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">"Unresolved external symbol" means a missing linker input</div><p>If the compiler is happy but the build fails at the <em>link</em> step with <code>unresolved external symbol</code>, you almost always forgot to add the matching <code>.lib</code>. The header gave the promise; without the library the linker cannot find the body. Remember which stage each setting serves and these errors stop being scary.</p></div></div>
+        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">Undefined reference means a missing source or library</div><p>If compilation succeeds but linking fails, check that the implementation file appears in <code>target_sources</code> and its external dependency appears in <code>target_link_libraries</code>.</p></div></div>
 
         <h2>Putting it together</h2>
 
-        <p>Zoom out and the whole layout is one story: a <strong>solution</strong> gathers <strong>projects</strong>; each project compiles its <strong>source</strong> files (guided by <strong>headers</strong> and <strong>include directories</strong>) into object files, then <strong>links</strong> them together with any <strong>library inputs</strong> to produce an <code>.exe</code> in a configuration-specific output folder. Every piece you have touched — build, run, debug — sits somewhere on that pipeline. From here on, when a project grows, you will know exactly what each file and setting is for.</p>
+        <p>One CMake project gathers targets. Each target compiles source files, uses headers found through include paths, and links the resulting object files with libraries into a native output. CLion reads that same model on Windows and macOS.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>A <strong>solution</strong> (<code>.sln</code>) groups one or more <strong>projects</strong> (<code>.vcxproj</code>); our engine will use several projects in one solution.</li>
+            <li>A CMake <strong>project</strong> groups one or more executable, library, and test <strong>targets</strong>.</li>
             <li><strong>Headers</strong> (<code>.h</code>) declare what exists; <strong>source</strong> files (<code>.cpp</code>) define how it works — start every header with <code>#pragma once</code>.</li>
-            <li>Your <code>.exe</code> lands in a configuration/platform output folder like <code>x64\Debug\</code>; these folders are regenerated and kept out of version control.</li>
-            <li><strong>Include directories</strong> feed the compiler (finding headers); <strong>linker inputs</strong> (<code>.lib</code> files) feed the linker — this is exactly how we will attach <code>d3d11.lib</code> for DirectX.</li>
-            <li>An "unresolved external symbol" error is a link-stage problem, usually a missing library input.</li>
+            <li>Generated output belongs in <code>cmake-build-debug</code> or <code>cmake-build-release</code>, never in version control.</li>
+            <li><code>target_include_directories</code> feeds the compiler; <code>target_link_libraries</code> feeds the linker.</li>
+            <li>CMake's <code>WIN32</code> and <code>APPLE</code> conditions select the correct native backend.</li>
           </ul>
         </div>
       </article>

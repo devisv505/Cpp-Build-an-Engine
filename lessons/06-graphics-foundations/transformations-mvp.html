@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Model, View &amp; Projection — Learn C++ &amp; DirectX</title>
+  <title>Model, View &amp; Projection — Learn C++ Engine Development</title>
   <meta name="description" content="Build world, view and projection matrices with DirectXMath, combine them, transpose for HLSL, and see your geometry render in true 3D perspective.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -184,6 +184,19 @@ VS_OUTPUT main(VS_INPUT input)
         </div>
 
         <p>Right now the triangle is still flat because it only has three coplanar vertices. In the next lesson we add an index buffer and a real cube, and this same MVP pipeline will make it turn believably in space — no new matrix code required.</p>
+
+        <h2>macOS — MVP transforms in Metal</h2>
+        <p>The transform sequence is identical, but Metal shaders normally use column-vector notation:</p>
+        <pre><code class="language-cpp" data-file="Transform.metal">struct Uniforms { float4x4 modelViewProjection; };
+
+vertex VertexOut vertexMain(VertexIn in [[stage_in]],
+                            constant Uniforms&amp; u [[buffer(1)]])
+{
+    VertexOut out;
+    out.position = u.modelViewProjection * float4(in.position, 1.0);
+    return out;
+}</code></pre>
+        <p>Keep one convention inside the engine and transpose or reorder only inside the backend upload function. That prevents Windows and macOS from producing mirrored or transposed scenes.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

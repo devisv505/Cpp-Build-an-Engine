@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Structs &amp; Enums: Grouping Data — Learn C++ &amp; DirectX</title>
+  <title>Structs &amp; Enums: Grouping Data — Learn C++ Engine Development</title>
   <meta name="description" content="Bundle related data with structs, access members with the dot operator, and model named states with enum class — the building blocks of a Vertex and Transform.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -73,7 +73,7 @@ Point3D up{ 0.0f, 1.0f, 0.0f };</code></pre>
         </div>
 
         <h2>A real Vertex struct</h2>
-        <p>When we start talking to DirectX, the GPU needs a list of <strong>vertices</strong>. Each vertex is exactly the kind of grouped data structs were made for: a position and a color. This is not a toy example — it is essentially the layout you will hand to the graphics card in the rendering module.</p>
+        <p>When we start talking to the GPU through Direct3D on Windows or Metal on macOS, it needs a list of <strong>vertices</strong>. Each vertex is exactly the kind of grouped data structs were made for: a position and a color.</p>
 
         <pre><code class="language-cpp" data-file="Vertex.h">// Reused throughout the rendering module.
 // A single point of a mesh: where it is, and what color it is.
@@ -108,7 +108,7 @@ std::vector&lt;Vertex&gt; makeTriangle() {
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
           <div class="c-body">
             <div class="c-title">The GPU cares about layout</div>
-            <p>Later, DirectX will read this vector as raw bytes. Because our members are simple floats laid out in order, the memory of one <code>Vertex</code> is just seven floats back to back — exactly what a <em>vertex buffer</em> expects. Structs give us that predictable memory shape for free.</p>
+            <p>Later, either graphics backend reads this vector as raw bytes. Because its members are simple floats laid out in order, one <code>Vertex</code> maps directly to a GPU vertex-buffer element.</p>
           </div>
         </div>
 

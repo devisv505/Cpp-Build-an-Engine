@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Installing CLion &amp; the C++ Tools — Learn C++ Engine Development</title>
+  <meta name="description" content="Install CLion and configure its bundled MinGW toolchain on Windows or Apple Clang on macOS, then verify CMake, the compiler, and debugger.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Installing CLion &amp; the C++ Tools</h1>
+
+        <p class="lead">In the last lesson you learned what a compiler and linker do. Now we'll install one consistent development environment for the whole course: <strong>CLion</strong>. CLion manages the editor, CMake projects, builds, and debugging on both Windows and macOS; the compiler underneath changes with the operating system.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What CLion, CMake, a compiler, and a debugger each contribute</li>
+            <li>How to install CLion on Windows or macOS</li>
+            <li>How to configure bundled MinGW on Windows or Apple Clang on macOS</li>
+            <li>How to verify the toolchain and repair common setup errors</li>
+          </ul>
+        </div>
+
+        <h2>One IDE, two native toolchains</h2>
+        <p>CLion is the interface you use everywhere, while each operating system supplies the native platform layer. CMake describes the targets and libraries in text files, so the same project can choose the correct implementation at configure time.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>System</th><th>IDE</th><th>Compiler</th><th>Debugger</th><th>Graphics path</th></tr></thead>
+          <tbody>
+            <tr><td>Windows 10/11</td><td>CLion</td><td>Bundled MinGW-w64 GCC</td><td>Bundled GDB</td><td>Direct3D 11</td></tr>
+            <tr><td>macOS</td><td>CLion</td><td>Apple Clang</td><td>Bundled LLDB</td><td>Metal</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">CLion is free for learning</div><p>CLion is free for non-commercial use, including learning, hobby projects, and non-commercial open-source work. Choose <strong>Non-commercial use</strong> on first launch and sign in with a JetBrains Account. Commercial development requires a paid license.</p></div>
+        </div>
+
+        <h2>Step 1 — Install CLion</h2>
+        <p>Download CLion from the <a href="https://www.jetbrains.com/clion/download/">official CLion page</a>. JetBrains recommends the Toolbox App because it installs updates and lets you roll back versions. The standalone installer works too.</p>
+
+        <ul>
+          <li><strong>Windows:</strong> run the downloaded installer and keep the default components.</li>
+          <li><strong>macOS:</strong> choose the Apple silicon download on an M-series Mac or the Intel download on an Intel Mac, open the <code>.dmg</code>, and drag CLion to Applications.</li>
+        </ul>
+
+        <p>Launch CLion, accept the privacy policy, choose the non-commercial license for this course, and reach the Welcome screen.</p>
+
+        <h2>Windows — use CLion's bundled MinGW</h2>
+        <p>Current CLion installations bundle a complete MinGW-w64 environment on Windows. It includes GCC, GDB, CMake, Ninja, Windows headers, and the import libraries needed by our Windows targets, so no separate IDE or compiler suite is required.</p>
+
+        <h3>Check the Windows toolchain</h3>
+        <p>Open <strong>Settings → Build, Execution, Deployment → Toolchains</strong>. Select or add a <strong>MinGW</strong> toolchain and choose the bundled environment. CLion should show green checks for:</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Tool</th><th>Expected Windows choice</th></tr></thead>
+          <tbody>
+            <tr><td>C compiler</td><td>Bundled <code>gcc.exe</code></td></tr>
+            <tr><td>C++ compiler</td><td>Bundled <code>g++.exe</code></td></tr>
+            <tr><td>Debugger</td><td>Bundled GDB</td></tr>
+            <tr><td>CMake</td><td>Bundled</td></tr>
+            <tr><td>Build tool</td><td>Bundled Ninja</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>Click <strong>Apply</strong>. Later, CMake will link the Windows graphics libraries by name:</p>
+
+        <pre><code class="language-cmake" data-file="CMakeLists.txt">if (WIN32)
+    target_link_libraries(MiniEngine PRIVATE d3d11 dxgi d3dcompiler)
+endif()</code></pre>
+
+        <p>This is the portable CMake replacement for IDE-specific linker settings. The dependency stays in source control and is applied automatically on every Windows machine.</p>
+
+        <h2>macOS — install Apple Clang</h2>
+        <p>CLion supplies the IDE, CMake, Ninja, and LLDB, but Apple supplies the compiler and macOS SDK. Open Terminal and install the Command Line Tools:</p>
+
+        <pre><code class="language-bash">xcode-select --install</code></pre>
+
+        <p>Accept the system dialog and wait for installation. If Terminal says the tools are already installed, continue. Full Xcode also contains this toolchain, so you do not need both packages.</p>
+
+        <h3>Verify Apple Clang</h3>
+
+        <pre><code class="language-bash">xcode-select -p
+xcrun --find clang++
+clang++ --version</code></pre>
+
+        <p>The commands should print an active developer directory, a compiler path, and a line beginning with <code>Apple clang version</code>.</p>
+
+        <h3>Check the macOS toolchain in CLion</h3>
+        <p>Open <strong>Settings → Build, Execution, Deployment → Toolchains</strong> and select the default <strong>System</strong> toolchain. It should show:</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Tool</th><th>Expected macOS choice</th></tr></thead>
+          <tbody>
+            <tr><td>C compiler</td><td>Apple Clang (<code>/usr/bin/clang</code>)</td></tr>
+            <tr><td>C++ compiler</td><td>Apple Clang++ (<code>/usr/bin/clang++</code>)</td></tr>
+            <tr><td>Debugger</td><td>Bundled LLDB</td></tr>
+            <tr><td>CMake</td><td>Bundled</td></tr>
+            <tr><td>Build tool</td><td>Bundled Ninja</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>Click <strong>Apply</strong> once every entry has a green check.</p>
+
+        <h2>Step 2 — verify everything with a CMake project</h2>
+        <p>From the CLion Welcome screen, select <strong>New Project → C++ Executable</strong>. Name it <code>ToolchainCheck</code>, select <strong>C++20</strong>, and click <strong>Create</strong>. Replace <code>main.cpp</code> with:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    std::cout &lt;&lt; "Toolchain OK\n";
+    return 0;
+}</code></pre>
+
+        <p>Wait for CMake to finish loading, then click the green Run triangle beside <code>main</code> or in the top toolbar. Seeing the following output proves the editor, CMake, compiler, linker, and executable all agree:</p>
+
+        <pre><code class="language-console">Toolchain OK
+
+Process finished with exit code 0</code></pre>
+
+        <h2>Possible errors and how to fix them</h2>
+
+        <h3>macOS — <code>fatal error: 'iostream' file not found</code></h3>
+        <p>Clang is present, but the selected developer directory points at an incomplete or outdated header set. If full Xcode is installed in Applications, select its complete toolchain:</p>
+
+        <pre><code class="language-bash">sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+xcode-select -p
+xcrun clang++ --version</code></pre>
+
+        <p>Restart CLion and select <strong>Tools → CMake → Reset Cache and Reload Project</strong>. If you do not have full Xcode, install any Command Line Tools update under System Settings → General → Software Update. If no repair is offered, install Xcode and use the switch command above.</p>
+
+        <h3>The project builds, but headers and standard-library names stay red</h3>
+        <p>If the executable runs with exit code <code>0</code>, but <code>&lt;iostream&gt;</code> or <code>std::cout</code> is red and <code>std::</code> has no completion suggestions, the compiler works but CLion's code model has stale paths.</p>
+
+        <ol>
+          <li>Select <strong>Tools → CMake → Reset Cache and Reload Project</strong>.</li>
+          <li>Wait for CMake loading and indexing to finish.</li>
+          <li>Recheck the active toolchain and its green checks under Settings.</li>
+          <li>As a final fallback, select <strong>File → Invalidate Caches → Invalidate and Restart</strong>.</li>
+        </ol>
+
+        <h3>Windows — compiler or debugger not detected</h3>
+        <p>Return to Toolchains, select the bundled MinGW environment rather than an empty System toolchain, and click Apply. Reset and reload the CMake project afterward so its cached compiler paths are regenerated.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">How the two graphics paths fit together</div><p>Windows lessons use Direct3D 11; macOS lessons show the equivalent Metal objects and commands. The engine architecture, scene, math, resources, gameplay, and networking remain shared C++. Only the thin window and renderer backends differ.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Use <strong>CLion and CMake</strong> for every course project on both operating systems.</li>
+            <li>Windows uses CLion's bundled MinGW-w64 compiler and GDB debugger.</li>
+            <li>macOS uses Apple Clang from the Command Line Tools and CLion's bundled LLDB.</li>
+            <li>Green toolchain checks plus <code>Toolchain OK</code> and exit code <code>0</code> confirm the full build pipeline.</li>
+            <li>Reset the CMake cache after changing toolchains so editor analysis and builds use the same paths.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

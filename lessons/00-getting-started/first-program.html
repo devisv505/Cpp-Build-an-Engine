@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Your First Program: Hello, World — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Create a Console App in Visual Studio and dissect the Hello World program token by token, then build and run it.">
+  <title>Your First Program: Hello, World — Learn C++ Engine Development</title>
+  <meta name="description" content="Create a CMake executable in CLion, dissect the Hello World program token by token, then build and run it on Windows or macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -13,12 +13,12 @@
       <article class="lesson">
         <h1>Your First Program: Hello, World</h1>
 
-        <p class="lead">Now that the tools are installed, it's time to make the compiler do something for you. In this lesson you'll create a fresh Console App in Visual Studio, look at the classic "Hello, World" program, and take it apart one token at a time. Every line you see here is a building block you'll reuse thousands of times on the road to your own 3D engine, so understanding <em>why</em> each piece exists matters more than memorizing it.</p>
+        <p class="lead">Now that the tools are installed, it's time to make the compiler do something for you. In this lesson you'll create a CMake executable in CLion, look at the classic "Hello, World" program, and take it apart one token at a time. The same project works on Windows and macOS.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>How to create a new C++ Console App project in Visual Studio</li>
+            <li>How to create a new C++ executable project in CLion</li>
             <li>What every token in the Hello World program means</li>
             <li>How <code>#include</code>, <code>int main()</code>, and <code>return 0</code> fit together</li>
             <li>How <code>std::cout</code> and the <code>&lt;&lt;</code> operator print text</li>
@@ -26,14 +26,22 @@
           </ul>
         </div>
 
-        <h2>Creating a Console App</h2>
-        <p>Open Visual Studio and choose <strong>Create a new project</strong>. In the template search box, type "Console App" and pick the one labelled <strong>Console App</strong> with the <strong>C++</strong> tag (not the C# or .NET one). Click <strong>Next</strong>.</p>
+        <h2>Creating a CMake executable</h2>
+        <p>Open CLion and choose <strong>New Project</strong>. Select <strong>C++ Executable</strong>, which creates a small CMake project that CLion can build on either operating system.</p>
         <ol>
           <li>Give the project a name, for example <code>HelloWorld</code>.</li>
           <li>Pick a location on disk you can find again — you'll be creating many projects over this course.</li>
-          <li>Click <strong>Create</strong>.</li>
+          <li>Select <strong>C++20</strong> as the language standard and click <strong>Create</strong>.</li>
         </ol>
-        <p>Visual Studio generates a small program for you and opens a file called <code>HelloWorld.cpp</code>. The generated file usually prints "Hello World!" already. We'll replace its contents with a clean version so we can examine every line without distractions.</p>
+        <p>CLion generates <code>main.cpp</code> and <code>CMakeLists.txt</code>. CMake describes the executable target; <code>main.cpp</code> contains its code. Wait for the initial CMake load to finish, then replace <code>main.cpp</code> with a clean version.</p>
+
+        <pre><code class="language-cmake" data-file="CMakeLists.txt">cmake_minimum_required(VERSION 3.20)
+project(HelloWorld LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+add_executable(HelloWorld main.cpp)</code></pre>
 
         <div class="callout tip">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
@@ -41,9 +49,9 @@
         </div>
 
         <h2>The program</h2>
-        <p>Select everything in <code>HelloWorld.cpp</code>, delete it, and type this in. Typing it yourself (rather than pasting) helps it stick:</p>
+        <p>Select everything in <code>main.cpp</code>, delete it, and type this in. Typing it yourself (rather than pasting) helps it stick:</p>
 
-        <pre><code class="language-cpp" data-file="HelloWorld.cpp">#include &lt;iostream&gt;
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
 
 int main()
 {
@@ -117,22 +125,21 @@ int main()
         </svg></div><figcaption>The insertion operator pushes text into <code>cout</code>, which forwards it to the console window.</figcaption></figure>
 
         <h2>Build and run</h2>
-        <p>Time to see it work. Make sure the toolbar near the top shows a configuration like <strong>Debug</strong> and a platform like <strong>x64</strong> — the defaults are fine for now.</p>
+        <p>Time to see it work. Select the <strong>HelloWorld</strong> CMake run configuration in the top toolbar. CLion creates it automatically from <code>add_executable</code>.</p>
         <ul>
-          <li>Press <kbd>Ctrl</kbd> + <kbd>F5</kbd> to <strong>Start Without Debugging</strong>. Visual Studio compiles your code and, if there are no errors, launches it.</li>
-          <li>A console window pops up showing:</li>
+          <li>Click the green Run triangle beside <code>main</code> or in the toolbar. CLion configures CMake, builds the target, and launches it.</li>
+          <li>The Run tool window shows:</li>
         </ul>
 
         <pre><code class="language-console">Hello, World
 
-C:\...\HelloWorld.exe (process 12345) exited with code 0.
-Press any key to close this window . . .</code></pre>
+Process finished with exit code 0</code></pre>
 
-        <p>That "exited with code 0" line is your <code>return 0;</code> showing up in the real world — the operating system received the success code. Press any key to close the window.</p>
+        <p>That exit-code line is your <code>return 0;</code> showing up in the real world: the operating system received the success code. The output looks the same on Windows and macOS.</p>
 
         <div class="callout warn">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body"><div class="c-title">If it won't compile</div><p>Read the first error in the <strong>Error List</strong>, not the last — later errors are often just fallout from the first. The usual culprits are a missing <code>;</code>, a mismatched quote or brace, or a typo like <code>Std::cout</code> (capital S) or <code>cout</code> without the <code>std::</code> prefix. Fix the top error and build again.</p></div>
+          <div class="c-body"><div class="c-title">If it won't compile</div><p>Read the first error in CLion's <strong>Build</strong> tool window, not the last — later errors are often fallout from the first. Common causes are a missing <code>;</code>, a mismatched quote or brace, or a typo like <code>Std::cout</code>. Fix the first error and build again.</p></div>
         </div>
 
         <p>Congratulations — you just wrote, compiled, and ran a C++ program, and you can explain every character in it. That's a real milestone. In the next lesson we'll dig deeper into the build-and-run cycle and meet the debugger, the single most valuable tool for understanding what your code is actually doing — knowledge you'll rely on heavily once your engine grows to thousands of lines.</p>
@@ -140,12 +147,12 @@ Press any key to close this window . . .</code></pre>
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>A <strong>Console App</strong> project gives you a <code>.cpp</code> source file that the compiler turns into an executable.</li>
+            <li>A CLion C++ executable project uses <code>CMakeLists.txt</code> to turn <code>main.cpp</code> into a runnable target.</li>
             <li><code>#include &lt;iostream&gt;</code> pulls in the Standard Library's input/output tools, including <code>std::cout</code>.</li>
             <li><code>int main()</code> is the program's entry point; execution runs top to bottom through its <code>{ }</code> body.</li>
             <li><code>std::cout &lt;&lt; "text\n";</code> sends text to the console, and <code>\n</code> starts a new line; every statement ends in <code>;</code>.</li>
             <li><code>return 0;</code> ends <code>main</code> and reports success to the operating system.</li>
-            <li>Press <kbd>Ctrl</kbd> + <kbd>F5</kbd> to build and run without the debugger.</li>
+            <li>Use the green Run triangle to build and launch the selected CMake target.</li>
           </ul>
         </div>
       </article>

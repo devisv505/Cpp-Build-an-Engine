@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>The Camera Component — Learn C++ &amp; DirectX</title>
+  <title>The Camera Component — Learn C++ Engine Development</title>
   <meta name="description" content="Build a Camera component that derives from Component, produces view and projection matrices from its Transform, and feeds the renderer's per-object MVP.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -229,6 +229,25 @@ float4 main(VSInput vin) : SV_POSITION
 
         <p>That is the complete data flow: a GameObject's Transform feeds the Camera, the Camera feeds the Scene's active-camera slot, and the renderer combines it with each object's world matrix to place every triangle on screen. In the next lesson we will wire this into the engine loop so it all runs, frame after frame.</p>
 
+        <h2>The Metal camera path on macOS</h2>
+        <p>The Camera component remains shared C++. The macOS backend converts the engine's view-projection matrix to <code>simd_float4x4</code> and uploads it to an <code>MTLBuffer</code>. Metal Shading Language normally multiplies a column vector as <code>mvp * position</code>, so perform any row/column conversion once during upload.</p>
+
+        <pre><code class="language-cpp" data-file="MetalRenderer.mm">struct FrameConstants {
+    simd_float4x4 mvp;
+};
+
+FrameConstants constants{ ToMetalMatrix(world * viewProjection) };
+[encoder setVertexBytes:&amp;constants
+                  length:sizeof(constants)
+                 atIndex:0];</code></pre>
+
+        <pre><code class="language-shader" data-file="Camera.metal">struct FrameConstants { float4x4 mvp; };
+
+vertex float4 vertexMain(float3 position [[attribute(0)]],
+                         constant FrameConstants&amp; frame [[buffer(0)]]) {
+    return frame.mvp * float4(position, 1.0);
+}</code></pre>
+
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
@@ -236,7 +255,7 @@ float4 main(VSInput vin) : SV_POSITION
             <li>The <strong>view matrix</strong> is the inverse of the camera's world matrix; the <strong>projection matrix</strong> comes from FOV, aspect, near and far.</li>
             <li><code>GetViewProjection()</code> returns <code>view * projection</code> once per frame for the renderer to reuse.</li>
             <li>The Scene keeps a <strong>non-owning</strong> <code>activeCamera</code> pointer; the GameObject remains the owner.</li>
-            <li>The renderer builds a per-object <strong>MVP</strong> = <code>world * viewProj</code>, transposes it, and the vertex shader multiplies each vertex by it.</li>
+            <li>The renderer builds one per-object MVP and converts it at the backend boundary: HLSL on Windows or Metal Shading Language on macOS.</li>
           </ul>
         </div>
 

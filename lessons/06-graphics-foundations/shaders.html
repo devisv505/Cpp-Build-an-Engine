@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Shaders &amp; HLSL — Learn C++ &amp; DirectX</title>
+  <title>Shaders: HLSL &amp; Metal Shading Language — Learn C++ Engine Development</title>
   <meta name="description" content="Write HLSL vertex and pixel shaders for a colored triangle, compile them, and bind them to the Direct3D 11 pipeline.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -11,7 +11,7 @@
   <div id="app">
     <main class="content">
       <article class="lesson">
-        <h1>Shaders &amp; HLSL</h1>
+        <h1>Shaders: HLSL &amp; Metal Shading Language</h1>
 
         <p class="lead">Last lesson you drew a triangle, but the GPU can't do anything with your vertices until you tell it <em>how</em>. That "how" lives in two tiny programs: a <strong>vertex shader</strong> and a <strong>pixel shader</strong>, written in HLSL. In this lesson we'll write both for our colored triangle, compile them, and wire the resulting bytecode into the Direct3D 11 pipeline — the same shader flow your engine's material system will use later.</p>
 
@@ -179,6 +179,29 @@ context-&gt;PSSetShader(pixelShader.Get(),  nullptr, 0);
         <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why ComPtr?</div><p><code>Microsoft::WRL::ComPtr</code> is a smart pointer for COM objects. It calls <code>Release()</code> automatically when it goes out of scope, so you don't leak Direct3D resources. In our engine every renderer resource — shaders, buffers, textures — will be held in a <code>ComPtr</code> for exactly this reason.</p></div></div>
 
         <p>Bind these two shaders, hook up the triangle's vertex buffer, and your rainbow triangle appears — this time driven entirely by code you wrote, not fixed hardware behavior. That's the whole point: shaders are where <em>your</em> look-and-feel lives, and every material in your engine will be a pair of programs just like these.</p>
+
+        <h2>macOS — the same shaders in Metal Shading Language</h2>
+        <p>Metal Shading Language (MSL) uses C++-like syntax and explicit stage attributes. This pair performs the same work as the HLSL vertex and pixel shaders:</p>
+        <pre><code class="language-cpp" data-file="Triangle.metal">#include &lt;metal_stdlib&gt;
+using namespace metal;
+
+struct Vertex { float3 position; float3 color; };
+struct VertexOut { float4 position [[position]]; float3 color; };
+
+vertex VertexOut vertexMain(const device Vertex* vertices [[buffer(0)]],
+                            uint id [[vertex_id]])
+{
+    VertexOut out;
+    out.position = float4(vertices[id].position, 1.0);
+    out.color = vertices[id].color;
+    return out;
+}
+
+fragment float4 fragmentMain(VertexOut in [[stage_in]])
+{
+    return float4(in.color, 1.0);
+}</code></pre>
+        <p>Compile <code>.metal</code> files into a <code>.metallib</code> as a CMake build step, then load <code>vertexMain</code> and <code>fragmentMain</code> into an <code>MTL::RenderPipelineDescriptor</code>. HLSL semantics such as <code>SV_POSITION</code> map to MSL attributes such as <code>[[position]]</code>.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>A Movable Camera — Learn C++ &amp; DirectX</title>
+  <title>A Movable Camera — Learn C++ Engine Development</title>
   <meta name="description" content="Build a first-person camera in Direct3D 11: view and projection matrices, WASD movement, mouse look, and feeding them to a constant buffer.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -287,6 +287,15 @@ VSOut main(VSIn input)
             <strong>Transform</strong> instead of a raw <code>XMFLOAT3</code>.</p>
           </div>
         </div>
+
+        <h2>macOS — camera data for Metal</h2>
+        <p>The camera's position, yaw, pitch, field of view, and near/far planes are platform-neutral. On macOS, construct the view/projection values with the engine math layer or Apple simd and upload a <code>simd_float4x4</code> to the Metal uniform buffer.</p>
+        <pre><code class="language-cpp">#if defined(_WIN32)
+    backend.UploadCamera(ToDirectXMatrix(camera.ViewProjection()));
+#elif defined(__APPLE__)
+    backend.UploadCamera(ToSimdMatrix(camera.ViewProjection()));
+#endif</code></pre>
+        <p>Keep input and camera movement shared through GLFW. Only matrix layout, clip-space convention, and the final upload type belong to the renderer backend.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

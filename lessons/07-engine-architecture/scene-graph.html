@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scenes, Transforms &amp; Hierarchy — Learn C++ &amp; DirectX</title>
+  <title>Scenes, Transforms &amp; Hierarchy — Learn C++ Engine Development</title>
   <meta name="description" content="Model a scene as a tree of GameObjects, store local transforms, and combine them into world matrices with a single recursive traversal.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -228,6 +228,9 @@ float4 main(float3 localPos : POSITION) : SV_POSITION
 }</code></pre>
 
         <p>That is the whole loop of a scene graph: store transforms locally, walk the tree to compute world matrices, and feed each world matrix to the GPU. In later modules we will hang meshes, materials and cameras off these same GameObjects, and add a "dirty flag" so we only recompute branches that actually moved.</p>
+
+        <h2>The hierarchy on macOS</h2>
+        <p>The Scene, parent/child links, dirty flags, and traversal are shared C++. Only matrix construction and shader upload differ. Use Apple <code>simd_float4x4</code> in the macOS math backend and upload it to Metal; keep the engine's chosen handedness and multiplication order consistent.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

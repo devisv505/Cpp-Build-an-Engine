@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Input Layouts &amp; Vertex Formats — Learn C++ &amp; DirectX</title>
+  <title>Input Layouts &amp; Vertex Formats — Learn C++ Engine Development</title>
   <meta name="description" content="Learn how a D3D11 input layout tells the GPU how to read your vertex bytes and match them to your vertex shader's input semantics.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -212,6 +212,22 @@ context-&gt;Draw(3, 0);
             <p>If your triangle does not appear, suspect the layout first. Enable the D3D11 debug layer and read the output window — it will tell you plainly when a semantic name, format, or stride disagrees with your shader. Debugging silently is far harder than reading its warnings.</p>
           </div>
         </div>
+
+        <h2>macOS — describe vertices with <code>MTLVertexDescriptor</code></h2>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::VertexDescriptor* layout = MTL::VertexDescriptor::alloc()-&gt;init();
+
+auto* position = layout-&gt;attributes()-&gt;object(0);
+position-&gt;setFormat(MTL::VertexFormatFloat3);
+position-&gt;setOffset(offsetof(Vertex, position));
+position-&gt;setBufferIndex(0);
+
+auto* color = layout-&gt;attributes()-&gt;object(1);
+color-&gt;setFormat(MTL::VertexFormatFloat3);
+color-&gt;setOffset(offsetof(Vertex, color));
+color-&gt;setBufferIndex(0);
+
+layout-&gt;layouts()-&gt;object(0)-&gt;setStride(sizeof(Vertex));</code></pre>
+        <p>A Direct3D input layout matches semantic names in compiled HLSL. Metal matches numeric attribute indices in the vertex function. In both cases, offsets, formats, and stride must describe the exact C++ <code>Vertex</code> memory layout.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

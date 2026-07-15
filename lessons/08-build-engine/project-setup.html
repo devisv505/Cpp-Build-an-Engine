@@ -3,245 +3,158 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Structuring the Engine Project — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Lay out the capstone: an Engine static library plus a Sandbox executable, with folders, a precompiled header, and naming conventions.">
+  <title>Structuring the Engine Project — Learn C++ Engine Development</title>
+  <meta name="description" content="Structure a portable CMake engine project with an Engine library, Sandbox executable, GLFW, Direct3D 11 on Windows, and Metal on macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
-  <div id="app">
-    <main class="content">
-      <article class="lesson">
-        <h1>Structuring the Engine Project</h1>
+  <div id="app"><main class="content"><article class="lesson">
+    <h1>Structuring the Engine Project</h1>
+    <p class="lead">This is where the tutorial becomes a real project. We will build one reusable <strong>Engine</strong> library and one small <strong>Sandbox</strong> application with CLion and CMake. Shared gameplay code stays portable; only the graphics backend differs: Direct3D 11 on Windows and Metal on macOS.</p>
 
-        <p class="lead">This is the lesson where the tutorial becomes a <em>project</em>. Everything you have learned so far — variables, functions, classes, the standard library, and the input and time services from the previous lesson — now gets a permanent home. We are going to lay out the skeleton of a real engine: a reusable <strong>Engine</strong> library and a small <strong>Sandbox</strong> game that links against it, exactly the split that Unity, Unreal, and every serious engine use.</p>
+    <div class="objectives">
+      <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+      <ul>
+        <li>Split the engine into two CMake targets: a static library and an executable.</li>
+        <li>Keep shared code separate from Windows and macOS backends.</li>
+        <li>Configure platform sources and libraries with <code>WIN32</code> and <code>APPLE</code>.</li>
+        <li>Use a portable precompiled header without leaking platform APIs across the engine.</li>
+      </ul>
+    </div>
 
-        <div class="objectives">
-          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
-          <ul>
-            <li>Why an engine is split into a <strong>static library</strong> plus a thin <strong>executable</strong> that uses it.</li>
-            <li>The folder layout we will fill for the rest of the module: <code>Core</code>, <code>Math</code>, <code>Platform</code>, <code>Renderer</code>, and <code>Scene</code>.</li>
-            <li>How to organize headers and set up a <strong>precompiled header</strong> to keep compile times sane.</li>
-            <li>The naming conventions we will follow so every file in the project looks like it was written by one person.</li>
-          </ul>
-        </div>
+    <h2>Two targets, one goal</h2>
+    <ul>
+      <li><strong>Engine</strong> — a static library (<code>.lib</code> on Windows, <code>.a</code> on macOS) containing reusable systems.</li>
+      <li><strong>Sandbox</strong> — the executable that links Engine and contains the game-specific code.</li>
+    </ul>
+    <p>The dependency points one way: Sandbox uses Engine; Engine never includes Sandbox. That makes it possible to build another game or tool on top of the same library.</p>
 
-        <h2>Two projects, one goal</h2>
+    <h2>A cross-platform folder tree</h2>
+    <pre><code class="language-text" data-file="folder tree">MyEngine/
+├─ CMakeLists.txt
+├─ Engine/
+│  ├─ CMakeLists.txt
+│  └─ src/
+│     ├─ Core/                 # application, loop, logging
+│     ├─ Math/                 # vectors, matrices, transforms
+│     ├─ Platform/
+│     │  ├─ Window.h           # portable interface
+│     │  └─ GLFWWindow.cpp     # Windows + macOS implementation
+│     ├─ Renderer/
+│     │  ├─ Renderer.h         # portable interface
+│     │  ├─ D3D11Renderer.cpp  # Windows backend
+│     │  └─ MetalRenderer.cpp  # macOS backend
+│     ├─ Scene/                # entities and components
+│     ├─ Engine.h              # public umbrella header
+│     └─ pch.h
+└─ Sandbox/
+   ├─ CMakeLists.txt
+   └─ src/main.cpp</code></pre>
 
-        <p>A common beginner mistake is to pile every <code>.cpp</code> file into a single executable. That works for a demo, but it makes the "engine" and the "game" impossible to tell apart. Professional engines draw a hard line between the two:</p>
+    <div class="table-wrap"><table><thead><tr><th>Folder</th><th>Responsibility</th><th>Platform?</th></tr></thead><tbody>
+      <tr><td><code>Core</code></td><td>Game loop, logging, assertions, base types.</td><td>Shared</td></tr>
+      <tr><td><code>Math</code></td><td>Vectors, matrices, transforms.</td><td>Shared</td></tr>
+      <tr><td><code>Platform</code></td><td>Window, events, input, timing.</td><td>GLFW hides Cocoa and Win32.</td></tr>
+      <tr><td><code>Renderer</code></td><td>GPU resources, commands, presentation.</td><td>D3D11 or Metal backend.</td></tr>
+      <tr><td><code>Scene</code></td><td>Objects and components.</td><td>Shared</td></tr>
+    </tbody></table></div>
 
-        <ul>
-          <li><strong>Engine</strong> — a <em>static library</em> (<code>.lib</code> on Windows). It contains reusable systems: the game loop, the window, the renderer, the math types, the scene. It knows nothing about your specific game.</li>
-          <li><strong>Sandbox</strong> — an <em>executable</em> (<code>.exe</code>) that <em>links</em> the Engine and does something concrete with it: opens a window, spins a cube, prints the frame time. This is where <em>your</em> game logic lives.</li>
-        </ul>
+    <h2>The root CMake file</h2>
+    <pre><code class="language-cmake" data-file="CMakeLists.txt">cmake_minimum_required(VERSION 3.24)
+project(MyEngine LANGUAGES CXX)
 
-        <p>The payoff is enormous. When you later want a second game — or a tools application — you link the same Engine again instead of copy-pasting code. It also forces you to design clean public interfaces, because the Sandbox can only touch what the Engine exposes through its headers.</p>
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-        <figure>
-          <div class="figure-box">
-            <svg viewBox="0 0 600 200" fill="none" stroke="#4aa8ff" stroke-width="2">
-              <rect x="40" y="60" width="180" height="80" rx="10"/>
-              <text x="130" y="95" fill="currentColor" stroke="none" text-anchor="middle" font-size="16" font-weight="bold">Engine</text>
-              <text x="130" y="118" fill="currentColor" stroke="none" text-anchor="middle" font-size="12">static library (.lib)</text>
-              <rect x="380" y="60" width="180" height="80" rx="10"/>
-              <text x="470" y="95" fill="currentColor" stroke="none" text-anchor="middle" font-size="16" font-weight="bold">Sandbox</text>
-              <text x="470" y="118" fill="currentColor" stroke="none" text-anchor="middle" font-size="12">executable (.exe)</text>
-              <path d="M380 100 L220 100" stroke-linecap="round"/>
-              <path d="M245 90 L220 100 L245 110" stroke-linecap="round" stroke-linejoin="round"/>
-              <text x="300" y="90" fill="currentColor" stroke="none" text-anchor="middle" font-size="12">links &amp; #includes</text>
-            </svg>
-          </div>
-          <figcaption>The Sandbox depends on the Engine, never the other way around.</figcaption>
-        </figure>
+add_subdirectory(Engine)
+add_subdirectory(Sandbox)</code></pre>
 
-        <h2>The folder tree we will fill</h2>
+    <h2>The Engine target</h2>
+    <pre><code class="language-cmake" data-file="Engine/CMakeLists.txt">include(FetchContent)
+FetchContent_Declare(glfw
+  GIT_REPOSITORY https://github.com/glfw/glfw.git
+  GIT_TAG 3.4)
+FetchContent_MakeAvailable(glfw)
 
-        <p>Here is the layout for the whole module. Do not worry that most of these files do not exist yet — creating and filling them is exactly what the next lessons do. Treat this as the map we are following.</p>
+add_library(Engine STATIC
+  src/Core/Application.cpp
+  src/Platform/GLFWWindow.cpp)
 
-        <pre><code class="language-text" data-file="folder tree">MyEngine/
-├─ Engine/                     # the reusable static library
-│  ├─ src/
-│  │  ├─ Core/                 # game loop, logging, asserts, base types
-│  │  │  ├─ Application.h
-│  │  │  ├─ Application.cpp
-│  │  │  ├─ Log.h
-│  │  │  └─ Log.cpp
-│  │  ├─ Math/                 # Vector3, Matrix4, Transform
-│  │  │  ├─ Vector3.h
-│  │  │  └─ Matrix4.h
-│  │  ├─ Platform/             # OS-specific glue: window, input, time
-│  │  │  ├─ Window.h
-│  │  │  └─ Window.cpp
-│  │  ├─ Renderer/             # DirectX 11 device, swap chain, shaders
-│  │  │  ├─ GraphicsDevice.h
-│  │  │  └─ GraphicsDevice.cpp
-│  │  ├─ Scene/                # entities and components
-│  │  │  ├─ Entity.h
-│  │  │  └─ Component.h
-│  │  ├─ Engine.h              # the single public "umbrella" header
-│  │  └─ pch.h                 # precompiled header
-│  └─ Engine.vcxproj           # or CMakeLists.txt
-│
-├─ Sandbox/                    # the game that uses the engine
-│  ├─ src/
-│  │  └─ main.cpp
-│  └─ Sandbox.vcxproj
-│
-└─ MyEngine.sln                # solution that builds both</code></pre>
+target_include_directories(Engine PUBLIC src)
+target_link_libraries(Engine PUBLIC glfw)
 
-        <p>Five source folders, each a clear responsibility:</p>
+if(WIN32)
+  target_sources(Engine PRIVATE src/Renderer/D3D11Renderer.cpp)
+  target_link_libraries(Engine PRIVATE d3d11 dxgi d3dcompiler)
+elseif(APPLE)
+  enable_language(OBJCXX)
+  target_sources(Engine PRIVATE src/Renderer/MetalRenderer.mm)
+  target_include_directories(Engine PRIVATE ${PROJECT_SOURCE_DIR}/external/metal-cpp)
+  target_link_libraries(Engine PRIVATE
+    "-framework Metal"
+    "-framework QuartzCore"
+    "-framework Cocoa")
+else()
+  message(FATAL_ERROR "This course currently supports Windows and macOS")
+endif()
 
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Folder</th><th>Responsibility</th><th>Depends on</th></tr></thead>
-            <tbody>
-              <tr><td><code>Core</code></td><td>Game loop, logging, assertions, shared base types.</td><td>nothing</td></tr>
-              <tr><td><code>Math</code></td><td>Vectors, matrices, the <code>Transform</code> we will build components around.</td><td>nothing</td></tr>
-              <tr><td><code>Platform</code></td><td>Windows-specific glue: creating a window, reading input, measuring time.</td><td>Core</td></tr>
-              <tr><td><code>Renderer</code></td><td>The Direct3D 11 device, swap chain, buffers, and shaders.</td><td>Core, Math, Platform</td></tr>
-              <tr><td><code>Scene</code></td><td>Entities and the components that hang off them (Transform, Mesh, …).</td><td>Core, Math</td></tr>
-            </tbody>
-          </table>
-        </div>
+target_precompile_headers(Engine PRIVATE src/pch.h)</code></pre>
 
-        <p>Notice the dependencies point one way: <code>Core</code> and <code>Math</code> know nothing about rendering, while <code>Renderer</code> is allowed to use both. Keeping this direction clean is what stops an engine from turning into spaghetti.</p>
+    <p>The <code>WIN32</code> and <code>APPLE</code> branches ensure that only one renderer backend is compiled. Shared headers must not expose <code>ID3D11Device</code> or <code>MTL::Device</code>; keep those types in backend implementation files.</p>
 
-        <h2>Header organization and the umbrella header</h2>
+    <h2>The Sandbox target</h2>
+    <pre><code class="language-cmake" data-file="Sandbox/CMakeLists.txt">add_executable(Sandbox src/main.cpp)
+target_link_libraries(Sandbox PRIVATE Engine)</code></pre>
 
-        <p>Each subsystem exposes its public types through <code>.h</code> files. The Sandbox should not have to know the internal folder structure, so we provide a single convenience header that pulls the public pieces together:</p>
-
-        <pre><code class="language-cpp" data-file="Engine/src/Engine.h">#pragma once
-
-// One header the game can include to get the public engine API.
-// The Sandbox never reaches into Renderer/ or Platform/ directly.
-
+    <h2>Public headers and the PCH</h2>
+    <pre><code class="language-cpp" data-file="Engine/src/Engine.h">#pragma once
 #include "Core/Application.h"
-#include "Core/Log.h"
 #include "Math/Vector3.h"
 #include "Math/Matrix4.h"
 #include "Scene/Entity.h"
 #include "Scene/Component.h"</code></pre>
 
-        <p>Every header starts with <code>#pragma once</code>. It tells the compiler "include me at most once per translation unit," which prevents the redefinition errors you get when two files include the same header. It is a one-line, compiler-supported alternative to the old <code>#ifndef</code> include-guard dance, and every compiler we care about supports it.</p>
-
-        <div class="callout tip">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">Include what you use</div>
-            <p>Inside the Engine's own <code>.cpp</code> files, include the specific headers you need (<code>#include "Math/Vector3.h"</code>), not the umbrella <code>Engine.h</code>. The umbrella is a convenience for the <em>consumer</em>. Using it internally would create needless rebuild cascades — touch one header and everything recompiles.</p>
-          </div>
-        </div>
-
-        <h2>The precompiled header</h2>
-
-        <p>Big headers like <code>&lt;windows.h&gt;</code> and the DirectX headers are enormous and get parsed for <em>every</em> <code>.cpp</code> file that includes them. A <strong>precompiled header</strong> (PCH) parses those heavy, rarely-changing headers <em>once</em> and reuses the result, often cutting build times dramatically. We put the stable includes in <code>pch.h</code>:</p>
-
-        <pre><code class="language-cpp" data-file="Engine/src/pch.h">#pragma once
-
-// Heavy, stable headers that almost never change.
-// Precompiled once, reused across the whole Engine library.
-
-// C++ standard library
+    <pre><code class="language-cpp" data-file="Engine/src/pch.h">#pragma once
 #include &lt;cstdint&gt;
 #include &lt;memory&gt;
 #include &lt;string&gt;
-#include &lt;vector&gt;
 #include &lt;unordered_map&gt;
+#include &lt;vector&gt;</code></pre>
 
-// Windows + DirectX 11
-#include &lt;windows.h&gt;
-#include &lt;d3d11.h&gt;
-#include &lt;DirectXMath.h&gt;</code></pre>
+    <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Keep the PCH portable</div><p>Put stable standard-library headers in <code>pch.h</code>. Include Direct3D headers only in Windows renderer files and Metal headers only in macOS renderer files. CMake creates and injects the PCH correctly for Apple Clang and the Windows toolchain.</p></div></div>
 
-        <p>Then <em>every</em> <code>.cpp</code> in the Engine makes <code>pch.h</code> its very first line:</p>
+    <h2>Naming conventions</h2>
+    <div class="table-wrap"><table><thead><tr><th>Thing</th><th>Style</th><th>Example</th></tr></thead><tbody>
+      <tr><td>Types</td><td>PascalCase</td><td><code>GraphicsDevice</code></td></tr>
+      <tr><td>Functions</td><td>PascalCase</td><td><code>OnUpdate()</code></td></tr>
+      <tr><td>Locals</td><td>camelCase</td><td><code>deltaTime</code></td></tr>
+      <tr><td>Private members</td><td><code>m_</code> prefix</td><td><code>m_running</code></td></tr>
+      <tr><td>Files</td><td>Match primary type</td><td><code>Application.h</code></td></tr>
+    </tbody></table></div>
 
-        <pre><code class="language-cpp" data-file="Engine/src/Core/Application.cpp">#include "pch.h"          // must be the first include
-#include "Core/Application.h"
+    <h2>The code we are working toward</h2>
+    <pre><code class="language-cpp" data-file="Sandbox/src/main.cpp">#include &lt;Engine.h&gt;
 
-namespace Engine {
-
-    Application::Application() {
-        // The heavy DirectX/Windows headers above are already
-        // parsed thanks to the PCH, so this compiles fast.
-    }
-
-} // namespace Engine</code></pre>
-
-        <div class="callout warn">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">The PCH must come first</div>
-            <p>In Visual Studio, the PCH include line has to be the <em>first</em> non-comment line of the file, before any other <code>#include</code>. Anything above it is ignored by the compiler, which produces a confusing "unexpected end of file while looking for precompiled header" error. If you ever see that message, this is almost always the cause.</p>
-          </div>
-        </div>
-
-        <h2>Naming conventions</h2>
-
-        <p>Consistency is what makes a codebase feel professional. Pick a style now and never deviate. Here is the convention we will use for the rest of the module:</p>
-
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Thing</th><th>Style</th><th>Example</th></tr></thead>
-            <tbody>
-              <tr><td>Types (class/struct/enum)</td><td>PascalCase</td><td><code>GraphicsDevice</code>, <code>Transform</code></td></tr>
-              <tr><td>Functions &amp; methods</td><td>PascalCase</td><td><code>OnUpdate()</code>, <code>CreateBuffer()</code></td></tr>
-              <tr><td>Local variables &amp; parameters</td><td>camelCase</td><td><code>deltaTime</code>, <code>vertexCount</code></td></tr>
-              <tr><td>Private member variables</td><td><code>m_</code> prefix</td><td><code>m_device</code>, <code>m_running</code></td></tr>
-              <tr><td>Constants / enum values</td><td>PascalCase or UPPER</td><td><code>MaxEntities</code></td></tr>
-              <tr><td>Namespace</td><td>PascalCase</td><td><code>Engine</code></td></tr>
-              <tr><td>Files</td><td>match the primary type</td><td><code>Application.h</code> holds <code>Application</code></td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <p>Everything the Engine exposes lives inside a single <code>namespace Engine { ... }</code>. That prevents name clashes with the standard library or DirectX and makes engine code obvious at the call site: <code>Engine::Vector3</code> reads clearly from the Sandbox.</p>
-
-        <h2>What the Sandbox will look like</h2>
-
-        <p>To make the plan concrete, here is roughly the <code>main.cpp</code> we are working toward. It will not compile yet — the classes it names are the ones we build over the coming lessons — but it shows how little the game needs to know:</p>
-
-        <pre><code class="language-cpp" data-file="Sandbox/src/main.cpp">#include &lt;Engine.h&gt;   // the umbrella header from the Engine library
-
-// Our game derives from the engine's Application base class
-// and overrides the hooks it cares about.
 class SandboxApp : public Engine::Application {
 public:
     void OnUpdate(float deltaTime) override {
-        // Game logic will go here. deltaTime comes from the
-        // time service we built in the previous lesson.
+        // Portable game logic goes here.
     }
 };
 
 int main() {
     SandboxApp app;
-    app.Run();   // hands control to the engine's game loop
-    return 0;
+    return app.Run();
 }</code></pre>
 
-        <div class="callout">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">This is the shape of every engine</div>
-            <p>A tiny game that subclasses an <code>Application</code>, overrides a couple of hooks, and calls <code>Run()</code> — that is the same pattern Unity's <code>MonoBehaviour</code> and Unreal's <code>Actor</code> callbacks are built on. Getting the project structure right today is what lets the rest of the module stay focused on interesting graphics work instead of plumbing.</p>
-          </div>
-        </div>
-
-        <h2>Next steps</h2>
-
-        <p>You do not need to type any of this out yet — the very next lesson creates the two projects for real and writes the <code>Application</code> and <code>Window</code> classes that the Sandbox above depends on. For now, make sure the mental model is clear: one library, one executable, five folders, and a strict one-way dependency between them.</p>
-
-        <div class="recap">
-          <div class="r-title">Recap</div>
-          <ul>
-            <li>An engine is split into a reusable <strong>static library</strong> (Engine) and a thin <strong>executable</strong> (Sandbox) that links it — the same architecture as Unity and Unreal.</li>
-            <li>The library is organized into <code>Core</code>, <code>Math</code>, <code>Platform</code>, <code>Renderer</code>, and <code>Scene</code>, with dependencies pointing one way (Core/Math know nothing about rendering).</li>
-            <li>Every header uses <code>#pragma once</code>; a single <code>Engine.h</code> umbrella header exposes the public API to the game.</li>
-            <li>A <strong>precompiled header</strong> (<code>pch.h</code>) parses heavy headers like <code>&lt;windows.h&gt;</code> and <code>&lt;d3d11.h&gt;</code> once, and must be the first include in each <code>.cpp</code>.</li>
-            <li>We follow one naming convention throughout: PascalCase types and methods, camelCase locals, <code>m_</code> member prefixes, all inside <code>namespace Engine</code>.</li>
-          </ul>
-        </div>
-      </article>
-    </main>
-  </div>
+    <div class="recap"><div class="r-title">Recap</div><ul>
+      <li>Engine and Sandbox are CMake targets, so the same project opens in CLion on Windows and macOS.</li>
+      <li>GLFW provides the portable window layer; Direct3D 11 and Metal live behind separate renderer implementations.</li>
+      <li>Platform APIs stay out of shared public headers and the portable PCH.</li>
+      <li>Sandbox depends on Engine, never the reverse.</li>
+    </ul></div>
+  </article></main></div>
   <script src="../../js/curriculum.js"></script>
   <script src="../../js/main.js"></script>
 </body>

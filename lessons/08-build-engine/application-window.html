@@ -3,342 +3,173 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>The Application &amp; Window Classes — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Wrap Win32 into a Window class and an Application base class with Initialize, Run, Shutdown and virtual OnUpdate/OnRender hooks.">
+  <title>The Application &amp; Window Classes — Learn C++ Engine Development</title>
+  <meta name="description" content="Build portable Window and Application classes with GLFW, CMake, and a frame loop that works on Windows and macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
-  <div id="app">
-    <main class="content">
-      <article class="lesson">
-        <h1>The Application &amp; Window Classes</h1>
+  <div id="app"><main class="content"><article class="lesson">
+    <h1>The Application &amp; Window Classes</h1>
+    <p class="lead">Now we turn the GLFW code from the platform chapter into reusable engine classes. <code>Window</code> owns the native desktop window on both Windows and macOS, while <code>Application</code> owns the frame loop and gives the game clean update and render hooks.</p>
 
-        <p class="lead">Last lesson we carved the engine into folders and a build system. Now we start filling those folders with real code. In this lesson we wrap the raw Win32 window into a tidy <code>Window</code> class, then build an <code>Application</code> base class with an <code>Initialize</code> / <code>Run</code> / <code>Shutdown</code> lifecycle and virtual <code>OnUpdate</code> and <code>OnRender</code> hooks. This is the exact pattern Unity and Unreal use: the framework owns the loop, and <em>your</em> game just overrides a couple of methods.</p>
+    <div class="objectives"><div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div><ul>
+      <li>Use RAII to own a <code>GLFWwindow*</code>.</li>
+      <li>Expose logical and framebuffer sizes correctly on Retina displays.</li>
+      <li>Build a portable <code>Application</code> lifecycle with <code>std::chrono</code>.</li>
+      <li>Keep the native graphics surface inside the renderer backend.</li>
+    </ul></div>
 
-        <div class="objectives">
-          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
-          <ul>
-            <li>Encapsulate an <code>HWND</code>, its window class registration, and its message procedure inside a reusable <code>Window</code> class.</li>
-            <li>Route Win32's C-style <code>WndProc</code> callback back into a C++ object instance.</li>
-            <li>Design an <code>Application</code> base class with a clean lifecycle and virtual <code>OnUpdate(dt)</code> / <code>OnRender</code> hooks.</li>
-            <li>Write a non-blocking <code>Run</code> loop that pumps messages with <code>PeekMessage</code> and ticks every frame with a real delta time.</li>
-          </ul>
-        </div>
-
-        <h2>Why wrap Win32 at all?</h2>
-        <p>In earlier lessons you called <code>RegisterClassEx</code>, <code>CreateWindowEx</code>, and ran a <code>GetMessage</code> loop directly in <code>WinMain</code>. That works, but it scatters global state and mixes platform plumbing with game logic. An engine needs a clean seam: the messy operating-system details live behind a class, and everything above it stays portable and readable.</p>
-        <p>Our target design is two small classes:</p>
-        <ul>
-          <li><strong><code>Window</code></strong> — owns one <code>HWND</code>, registers the window class, creates the window, and translates Win32 messages into simple state (like "should we close?").</li>
-          <li><strong><code>Application</code></strong> — owns a <code>Window</code>, drives the frame loop, and exposes virtual methods your game subclass fills in.</li>
-        </ul>
-
-        <div class="callout tip">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
-          <div class="c-body"><div class="c-title">Separation of concerns</div><p>The rule of thumb: the <code>Window</code> class knows about Win32; the <code>Application</code> class knows about frames. Your game code should know about neither. That boundary is what lets us swap in DirectX next lesson without touching game logic.</p></div>
-        </div>
-
-        <h2>The Window class</h2>
-        <p>The tricky part of Win32 is that the message procedure — <code>WndProc</code> — is a plain C function pointer. It has no <code>this</code>, so it cannot directly reach our object's members. The standard trick is to stash a pointer to our <code>Window</code> instance inside the OS window's user data with <code>SetWindowLongPtr(GWLP_USERDATA)</code>, then read it back on every message.</p>
-
-        <pre><code class="language-cpp" data-file="Window.h">#pragma once
-#define WIN32_LEAN_AND_MEAN
-#include &lt;windows.h&gt;
+    <h2>A portable Window interface</h2>
+    <pre><code class="language-cpp" data-file="Window.h">#pragma once
+#include &lt;cstdint&gt;
 #include &lt;string&gt;
+
+struct GLFWwindow;
 
 class Window {
 public:
-    // Creates and shows the window. Returns false on failure.
-    bool Create(const std::wstring&amp; title, int width, int height);
-    void Destroy();
+    Window() = default;
+    ~Window();
 
-    // Pull all pending OS messages out of the queue.
-    // Returns false when the user asked to quit (WM_QUIT / close).
-    bool ProcessMessages();
+    Window(const Window&amp;) = delete;
+    Window&amp; operator=(const Window&amp;) = delete;
 
-    HWND Handle() const { return m_hwnd; }
-    int  Width()  const { return m_width;  }
-    int  Height() const { return m_height; }
+    bool Create(const std::string&amp; title, int width, int height);
+    void PollEvents() const;
+    bool ShouldClose() const;
+    void GetFramebufferSize(int&amp; width, int&amp; height) const;
+    GLFWwindow* NativeHandle() const { return m_handle; }
 
 private:
-    // The real per-instance message handler.
-    LRESULT HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam);
-
-    // Static thunk that Win32 calls; it forwards to HandleMessage.
-    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg,
-                                    WPARAM wParam, LPARAM lParam);
-
-    HWND        m_hwnd  = nullptr;
-    HINSTANCE   m_hinst = nullptr;
-    int         m_width  = 0;
-    int         m_height = 0;
-    bool        m_shouldClose = false;
-
-    static constexpr const wchar_t* kClassName = L"EngineWindowClass";
+    GLFWwindow* m_handle = nullptr;
 };</code></pre>
 
-        <p>Now the implementation. Watch how the static <code>WndProc</code> recovers the <code>this</code> pointer and delegates to the member function.</p>
+    <p>The forward declaration keeps GLFW out of most headers. Only the platform implementation includes <code>&lt;GLFW/glfw3.h&gt;</code>.</p>
 
-        <pre><code class="language-cpp" data-file="Window.cpp">#include "Window.h"
+    <h2>Implementing Window with GLFW</h2>
+    <pre><code class="language-cpp" data-file="GLFWWindow.cpp">#include "Window.h"
+#include &lt;GLFW/glfw3.h&gt;
+#include &lt;iostream&gt;
 
-bool Window::Create(const std::wstring&amp; title, int width, int height) {
-    m_hinst  = GetModuleHandle(nullptr);
-    m_width  = width;
-    m_height = height;
-
-    // Register the window class once.
-    WNDCLASSEX wc = {};
-    wc.cbSize        = sizeof(WNDCLASSEX);
-    wc.style         = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc   = &amp;Window::WndProc;      // static thunk
-    wc.hInstance     = m_hinst;
-    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
-    wc.lpszClassName = kClassName;
-    RegisterClassEx(&amp;wc);                     // harmless if already registered
-
-    // We want a client area of exactly width x height, so adjust for borders.
-    RECT rc = { 0, 0, width, height };
-    DWORD style = WS_OVERLAPPEDWINDOW;
-    AdjustWindowRect(&amp;rc, style, FALSE);
-
-    // Pass "this" through the last CreateWindowEx parameter so the very
-    // first messages can find our object (see WM_NCCREATE below).
-    m_hwnd = CreateWindowEx(
-        0, kClassName, title.c_str(), style,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        rc.right - rc.left, rc.bottom - rc.top,
-        nullptr, nullptr, m_hinst, this);
-
-    if (!m_hwnd) return false;
-
-    ShowWindow(m_hwnd, SW_SHOW);
-    UpdateWindow(m_hwnd);
-    return true;
+Window::~Window() {
+    if (m_handle) glfwDestroyWindow(m_handle);
+    glfwTerminate();
 }
 
-void Window::Destroy() {
-    if (m_hwnd) {
-        DestroyWindow(m_hwnd);
-        m_hwnd = nullptr;
+bool Window::Create(const std::string&amp; title, int width, int height) {
+    if (!glfwInit()) {
+        std::cerr &lt;&lt; "GLFW initialization failed\n";
+        return false;
     }
+
+    // The renderer creates a Direct3D swap chain or Metal layer later.
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    m_handle = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
+    return m_handle != nullptr;
 }
 
-// Drain the message queue without blocking. PeekMessage returns immediately
-// when the queue is empty, so the caller can keep rendering.
-bool Window::ProcessMessages() {
-    MSG msg = {};
-    while (PeekMessage(&amp;msg, nullptr, 0, 0, PM_REMOVE)) {
-        if (msg.message == WM_QUIT)
-            m_shouldClose = true;
-        TranslateMessage(&amp;msg);
-        DispatchMessage(&amp;msg);   // routes to WndProc
-    }
-    return !m_shouldClose;
+void Window::PollEvents() const { glfwPollEvents(); }
+
+bool Window::ShouldClose() const {
+    return !m_handle || glfwWindowShouldClose(m_handle);
 }
 
-LRESULT Window::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        case WM_CLOSE:
-            m_shouldClose = true;
-            return 0;
-        case WM_DESTROY:
-            PostQuitMessage(0);
-            return 0;
-        case WM_SIZE:
-            m_width  = LOWORD(lParam);
-            m_height = HIWORD(lParam);
-            return 0;
-    }
-    return DefWindowProc(m_hwnd, msg, wParam, lParam);
-}
-
-LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg,
-                                 WPARAM wParam, LPARAM lParam) {
-    // On the first creation message, store the "this" pointer we passed in.
-    if (msg == WM_NCCREATE) {
-        auto* cs   = reinterpret_cast&lt;CREATESTRUCT*&gt;(lParam);
-        auto* self = static_cast&lt;Window*&gt;(cs-&gt;lpCreateParams);
-        self-&gt;m_hwnd = hwnd;
-        SetWindowLongPtr(hwnd, GWLP_USERDATA,
-                         reinterpret_cast&lt;LONG_PTR&gt;(self));
-    }
-
-    // For every later message, fetch it back and forward to the instance.
-    auto* self = reinterpret_cast&lt;Window*&gt;(
-        GetWindowLongPtr(hwnd, GWLP_USERDATA));
-    if (self)
-        return self-&gt;HandleMessage(msg, wParam, lParam);
-
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+void Window::GetFramebufferSize(int&amp; width, int&amp; height) const {
+    glfwGetFramebufferSize(m_handle, &amp;width, &amp;height);
 }</code></pre>
 
-        <div class="callout">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
-          <div class="c-body"><div class="c-title">Why WM_NCCREATE, not WM_CREATE?</div><p><code>WM_NCCREATE</code> is the <em>first</em> message a window receives, arriving before <code>WM_CREATE</code>. Storing our pointer there means every subsequent message — including <code>WM_CREATE</code> itself — can find the object. Both messages carry the <code>CREATESTRUCT</code> with our <code>lpCreateParams</code>.</p></div>
-        </div>
+    <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Framebuffer size matters on macOS</div><p>A 1280×720 window can have a 2560×1440 framebuffer on a Retina display. Give the renderer the framebuffer size, not the logical window size, when creating or resizing render targets.</p></div></div>
 
-        <div class="callout warn">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body"><div class="c-title">PeekMessage vs. GetMessage</div><p>A game must not block. <code>GetMessage</code> sleeps until a message arrives — fine for a text editor, fatal for a render loop. <code>PeekMessage</code> with <code>PM_REMOVE</code> returns immediately when the queue is empty, letting us fall through to rendering every frame regardless of user input.</p></div>
-        </div>
-
-        <h2>The Application base class</h2>
-        <p>With the window handled, the <code>Application</code> class becomes small and expressive. It owns the lifecycle and defines the virtual hooks your game overrides. <code>OnUpdate</code> receives a delta time (seconds since last frame) so movement is frame-rate independent — exactly what we'll need when a <code>Transform</code> component integrates velocity later.</p>
-
-        <pre><code class="language-cpp" data-file="Application.h">#pragma once
+    <h2>The Application lifecycle</h2>
+    <pre><code class="language-cpp" data-file="Application.h">#pragma once
 #include "Window.h"
 #include &lt;string&gt;
 
 class Application {
 public:
-    Application(const std::wstring&amp; title, int width, int height);
+    Application(std::string title, int width, int height);
     virtual ~Application() = default;
-
-    // The template method that runs the whole show.
     int Run();
 
 protected:
-    // Game subclasses override these. Base versions do nothing.
     virtual bool OnInitialize() { return true; }
-    virtual void OnUpdate(float dt) { (void)dt; }
+    virtual void OnUpdate(float deltaTime) {}
     virtual void OnRender() {}
     virtual void OnShutdown() {}
 
-    Window m_window;
+    Window&amp; GetWindow() { return m_window; }
 
 private:
-    bool Initialize();
-    void Shutdown();
-
-    std::wstring m_title;
+    Window m_window;
+    std::string m_title;
     int m_width;
     int m_height;
 };</code></pre>
 
-        <pre><code class="language-cpp" data-file="Application.cpp">#include "Application.h"
+    <pre><code class="language-cpp" data-file="Application.cpp">#include "Application.h"
 #include &lt;chrono&gt;
 
-Application::Application(const std::wstring&amp; title, int width, int height)
-    : m_title(title), m_width(width), m_height(height) {}
-
-bool Application::Initialize() {
-    if (!m_window.Create(m_title, m_width, m_height))
-        return false;
-    // Later: create the D3D11 device + swap chain here.
-    return OnInitialize();          // let the game set itself up
-}
-
-void Application::Shutdown() {
-    OnShutdown();                   // game cleans up first...
-    m_window.Destroy();             // ...then we tear down the window
-}
+Application::Application(std::string title, int width, int height)
+    : m_title(std::move(title)), m_width(width), m_height(height) {}
 
 int Application::Run() {
-    if (!Initialize())
-        return -1;
+    if (!m_window.Create(m_title, m_width, m_height)) return 1;
+    if (!OnInitialize()) return 1;
 
-    using clock = std::chrono::high_resolution_clock;
-    auto previous = clock::now();
+    using Clock = std::chrono::steady_clock;
+    auto previous = Clock::now();
 
-    // Main loop: pump messages, then update + render one frame.
-    while (m_window.ProcessMessages()) {
-        auto now = clock::now();
-        std::chrono::duration&lt;float&gt; elapsed = now - previous;
+    while (!m_window.ShouldClose()) {
+        m_window.PollEvents();
+
+        const auto now = Clock::now();
+        const float dt = std::chrono::duration&lt;float&gt;(now - previous).count();
         previous = now;
-        float dt = elapsed.count();  // seconds since last frame
 
         OnUpdate(dt);
         OnRender();
     }
 
-    Shutdown();
+    OnShutdown();
     return 0;
 }</code></pre>
 
-        <p>Notice the shape: <code>Run</code> is a <strong>template method</strong>. It fixes the <em>order</em> of operations — initialize, loop (update then render), shut down — while delegating the <em>content</em> of each step to virtual functions. The framework is in charge; the game fills in the blanks. This inversion of control is the beating heart of every engine.</p>
+    <h2>Using the framework</h2>
+    <pre><code class="language-cpp" data-file="main.cpp">#include "Application.h"
 
-        <figure>
-          <div class="figure-box">
-            <svg viewBox="0 0 600 170" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#4aa8ff" stroke-width="2">
-              <rect x="20" y="65" width="110" height="44" rx="8"/>
-              <text x="75" y="92" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Initialize</text>
-              <rect x="185" y="35" width="230" height="104" rx="8"/>
-              <text x="300" y="26" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">while ProcessMessages()</text>
-              <rect x="205" y="55" width="90" height="34" rx="6"/>
-              <text x="250" y="77" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">OnUpdate(dt)</text>
-              <rect x="305" y="55" width="90" height="34" rx="6"/>
-              <text x="350" y="77" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">OnRender()</text>
-              <rect x="470" y="65" width="110" height="44" rx="8"/>
-              <text x="525" y="92" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Shutdown</text>
-              <path d="M130 87 H185" marker-end="url(#a)"/>
-              <path d="M415 87 H470" marker-end="url(#a)"/>
-              <path d="M300 110 V125 H210 V95" marker-end="url(#a)"/>
-              <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9 z" fill="#4aa8ff" stroke="none"/></marker></defs>
-            </svg>
-          </div>
-          <figcaption>The Application lifecycle: initialize once, loop update-then-render each frame, shut down once.</figcaption>
-        </figure>
-
-        <h2>Putting it together</h2>
-        <p>Here is what a game subclass and its entry point look like. This is a complete, compilable program: it opens a window and ticks a frame loop. Right now <code>OnRender</code> does nothing visible — next lesson the renderer fills it in.</p>
-
-        <pre><code class="language-cpp" data-file="main.cpp">#include "Application.h"
-
-// A concrete game just derives from Application and overrides hooks.
 class Game : public Application {
 public:
-    Game() : Application(L"My Engine", 1280, 720) {}
+    Game() : Application("My Engine", 1280, 720) {}
 
 protected:
-    bool OnInitialize() override {
-        // Load assets, create the scene, etc.
-        return true;
-    }
-
-    void OnUpdate(float dt) override {
-        m_time += dt;   // frame-rate independent: works at 30 or 300 FPS
-        // Later: update Transform components, run systems...
-    }
-
-    void OnRender() override {
-        // Later: clear the back buffer, draw the scene, present.
-    }
+    bool OnInitialize() override { return true; }
+    void OnUpdate(float dt) override { m_time += dt; }
+    void OnRender() override { /* renderer comes next */ }
 
 private:
     float m_time = 0.0f;
 };
 
-// Windows GUI entry point. WinMain is where a desktop app begins.
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+int main() {
     Game game;
     return game.Run();
 }</code></pre>
 
-        <div class="callout tip">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
-          <div class="c-body"><div class="c-title">Look how little the game knows</div><p><code>Game</code> never mentions <code>HWND</code>, <code>PeekMessage</code>, or <code>WinMain</code> mechanics. It just overrides three methods. That is the payoff of the wrapper: from here on, gameplay code reads like gameplay, not operating-system glue.</p></div>
-        </div>
+    <h2>Where the native APIs live</h2>
+    <div class="table-wrap"><table><thead><tr><th>Layer</th><th>Windows</th><th>macOS</th></tr></thead><tbody>
+      <tr><td>Window/events</td><td colspan="2">GLFW public API</td></tr>
+      <tr><td>Native window</td><td><code>HWND</code> via <code>glfwGetWin32Window</code></td><td><code>NSWindow*</code> via <code>glfwGetCocoaWindow</code></td></tr>
+      <tr><td>Renderer surface</td><td>DXGI swap chain</td><td><code>CAMetalLayer</code></td></tr>
+    </tbody></table></div>
+    <p>Only the selected renderer backend should include <code>glfw3native.h</code>. Game code continues to see the same <code>Window</code> and <code>Application</code> classes.</p>
 
-        <p>The two classes map cleanly onto the folders you created last lesson: <code>Window.h</code>/<code>.cpp</code> and <code>Application.h</code>/<code>.cpp</code> live under your core engine module, while <code>main.cpp</code> with the <code>Game</code> subclass sits in the app that links against it. Building on those, next lesson we give the <code>Application</code> a renderer so <code>OnRender</code> can finally draw something to the screen.</p>
-
-        <div class="callout warn">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body"><div class="c-title">One entry point only</div><p>Use <code>wWinMain</code> (wide) or <code>WinMain</code> (narrow), never both, and make sure the linker subsystem is set to <strong>Windows</strong>, not Console. A mismatch produces the classic "unresolved external symbol WinMain" link error that trips up nearly everyone the first time.</p></div>
-        </div>
-
-        <div class="recap">
-          <div class="r-title">Recap</div>
-          <ul>
-            <li>The <code>Window</code> class owns one <code>HWND</code>, registers the class, and hides Win32 message plumbing behind <code>Create</code>, <code>ProcessMessages</code>, and <code>Destroy</code>.</li>
-            <li>A static <code>WndProc</code> stores the object's <code>this</code> pointer in <code>GWLP_USERDATA</code> during <code>WM_NCCREATE</code>, then forwards every later message to the instance's <code>HandleMessage</code>.</li>
-            <li><code>PeekMessage</code> with <code>PM_REMOVE</code> keeps the loop non-blocking so we render every frame; <code>GetMessage</code> would stall waiting for input.</li>
-            <li>The <code>Application</code> base class fixes the Initialize / Run / Shutdown order and delegates behavior to virtual <code>OnInitialize</code>, <code>OnUpdate(dt)</code>, <code>OnRender</code>, and <code>OnShutdown</code> hooks.</li>
-            <li>A game subclass overrides just those hooks — no Win32 in sight — which is the same inversion of control Unity and Unreal are built on.</li>
-          </ul>
-        </div>
-      </article>
-    </main>
-  </div>
+    <div class="recap"><div class="r-title">Recap</div><ul>
+      <li><code>Window</code> owns GLFW with RAII and works on Windows and macOS.</li>
+      <li><code>Application</code> owns the lifecycle and calls portable update/render hooks.</li>
+      <li><code>std::chrono::steady_clock</code> produces frame-rate-independent delta time.</li>
+      <li>The renderer uses framebuffer pixels and keeps native window APIs in backend files.</li>
+    </ul></div>
+  </article></main></div>
   <script src="../../js/curriculum.js"></script>
   <script src="../../js/main.js"></script>
 </body>

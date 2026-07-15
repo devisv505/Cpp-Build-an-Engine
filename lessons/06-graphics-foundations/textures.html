@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Textures &amp; Sampling — Learn C++ &amp; DirectX</title>
+  <title>Textures &amp; Sampling — Learn C++ Engine Development</title>
   <meta name="description" content="Add UV coordinates, upload an ID3D11Texture2D, create a shader resource view and sampler, and sample a texture in HLSL.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -219,6 +219,20 @@ context-&gt;DrawIndexed(indexCount, 0, 0);</code></pre>
         <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">Black geometry? Check these first</div><p>If your mesh renders solid black, the usual culprits are: you forgot to call <code>PSSetShaderResources</code>/<code>PSSetSamplers</code>, the register slots in HLSL don't match the C++ binding slots, or the UVs in your vertex buffer are all zero. Turn on the D3D11 debug layer — it prints a warning when a shader samples an unbound texture.</p></div></div>
 
         <p>That is the complete pipeline: UVs travel from the vertex buffer, through the rasterizer, into the pixel shader, where a sampler reads the bound texture and returns a color. Swap the checkerboard for a WIC-loaded PNG and you have a real textured material — the same building block every asset in a modern game is built on.</p>
+
+        <h2>macOS — textures and samplers in Metal</h2>
+        <p>Create an <code>MTL::Texture</code> from a texture descriptor, upload pixels, and bind it with a sampler:</p>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::TextureDescriptor* desc =
+    MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA8Unorm, width, height, true);
+desc-&gt;setUsage(MTL::TextureUsageShaderRead);
+
+MTL::Texture* texture = device-&gt;newTexture(desc);
+// Upload decoded RGBA bytes to mip level 0, then generate or upload mips.
+
+encoder-&gt;setFragmentTexture(texture, 0);
+encoder-&gt;setFragmentSamplerState(sampler, 0);</code></pre>
+        <p>An HLSL <code>Texture2D</code>/<code>SamplerState</code> pair maps directly to MSL <code>texture2d&lt;float&gt;</code>/<code>sampler</code> arguments. Asset decoding and mip data stay shared C++; resource creation and binding stay in the backend.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

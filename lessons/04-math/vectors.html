@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vectors: the Language of 3D — Learn C++ &amp; DirectX</title>
+  <title>Vectors: the Language of 3D — Learn C++ Engine Development</title>
   <meta name="description" content="Learn what a 3D vector is, how to add, subtract, scale, measure, and normalize it, then wire it into a reusable Vector3 for your engine.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -215,6 +215,14 @@ XMStoreFloat3(&amp;result, unit);</code></pre>
             <p>DirectXMath splits these on purpose: <code>XMFLOAT3</code> is compact <em>storage</em>, while <code>XMVECTOR</code> is the <em>math</em> type your CPU processes quickly. You load, compute, then store. Keep them straight and the API stops feeling mysterious.</p>
           </div>
         </div>
+
+        <h2>A preview of Apple simd</h2>
+        <p>On macOS, the SDK provides <code>simd_float3</code> for compact vector math and functions such as <code>simd_length</code> and <code>simd_normalize</code>. Our engine's <code>Vector3</code> wrapper will expose the same API regardless of whether DirectXMath or Apple <code>simd</code> performs the calculation.</p>
+
+        <pre><code class="language-cpp" data-file="preview_apple.cpp">#include &lt;simd/simd.h&gt;
+
+simd_float3 position{1.0f, 2.0f, 3.0f};
+simd_float3 direction = simd_normalize(position);</code></pre>
 
         <div class="recap">
           <div class="r-title">Recap</div>

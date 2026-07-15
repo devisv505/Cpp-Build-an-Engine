@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Index Buffers &amp; Drawing a Cube — Learn C++ &amp; DirectX</title>
+  <title>Index Buffers &amp; Drawing a Cube — Learn C++ Engine Development</title>
   <meta name="description" content="Reuse vertices with an index buffer, define a cube with 8 vertices and 36 indices, and render it with DrawIndexed and your MVP matrix.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -293,6 +293,18 @@ VSOutput main(VSInput input)
             <p>Once you're indexing, use <code>DrawIndexed</code>, not <code>Draw</code>. <code>Draw</code> ignores the index buffer entirely and reads vertices in sequence, so it would try to draw only 8 vertices as raw triangles and produce garbage. Matching the draw call to the buffers you bound is a common early mistake.</p>
           </div>
         </div>
+
+        <h2>macOS — indexed drawing in Metal</h2>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::Buffer* indexBuffer = device-&gt;newBuffer(
+    indices, sizeof(indices), MTL::ResourceStorageModeShared);
+
+encoder-&gt;drawIndexedPrimitives(
+    MTL::PrimitiveTypeTriangle,
+    indexCount,
+    MTL::IndexTypeUInt32,
+    indexBuffer,
+    0);</code></pre>
+        <p>This is Metal's equivalent of binding an index buffer and calling <code>DrawIndexed</code>. Mesh data and index ordering stay shared; only the backend draw command changes.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

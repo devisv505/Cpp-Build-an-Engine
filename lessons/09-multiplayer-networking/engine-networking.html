@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Networking MiniEngine — Learn C++ &amp; DirectX</title>
+  <title>Networking MiniEngine — Learn C++ Engine Development</title>
   <meta name="description" content="Build a NetworkSystem subsystem for MiniEngine that sends and receives Transforms over UDP, then finish the course.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -13,7 +13,7 @@
       <article class="lesson">
         <h1>Networking MiniEngine</h1>
 
-        <p class="lead">This is it — the finale. You already have a component-based DirectX engine with a
+        <p class="lead">This is it — the finale. You already have a component-based engine running with Direct3D on Windows or Metal on macOS, with a
         GameObject/Component scene, a scripting-style <code>Behaviour</code> system, a UDP socket, packet
         serialization, and interpolation. In this last lesson we wire all of it together into a
         <strong>NetworkSystem</strong> subsystem so two copies of MiniEngine can see each other move in real
@@ -62,7 +62,7 @@
         <h2>The NetworkSystem subsystem</h2>
 
         <p>A subsystem in MiniEngine is a plain object owned by the engine, with an <code>Update</code> that the
-        loop calls. <code>NetworkSystem</code> owns the UDP socket from the Winsock lessons and the address of
+        loop calls. <code>NetworkSystem</code> owns the UDP socket from the portable sockets lessons and the address of
         the peer we're talking to. It exposes two methods instead of one <code>Update</code>, because Send and
         Receive happen at different points in the frame.</p>
 
@@ -71,14 +71,11 @@
         elapses. <code>Receive</code> drains the socket every frame — packets arrive whenever they arrive.</p>
 
         <pre><code class="language-cpp" data-file="NetworkSystem.h">#pragma once
-#include &lt;winsock2.h&gt;
-#include &lt;ws2tcpip.h&gt;
+#include "SocketPlatform.h"
 #include &lt;cstdint&gt;
 #include &lt;vector&gt;
 #include "Transform.h"      // your engine's Transform (position, rotation, scale)
 #include "Scene.h"
-
-#pragma comment(lib, "ws2_32.lib")
 
 // One 32-byte packet: a player id + a position + a yaw. Fixed layout, little-endian.
 struct StatePacket {
@@ -101,7 +98,8 @@ public:
     void ReceiveAndApply(Scene&amp; scene, float dt);
 
 private:
-    SOCKET      m_sock       = INVALID_SOCKET;
+    SocketRuntime m_runtime;
+    SocketHandle  m_sock       = InvalidSocket;
     sockaddr_in m_peerAddr   {};
     uint32_t    m_localId    = 0;
     uint32_t    m_tick       = 0;
@@ -114,7 +112,7 @@ private:
 
         <h2>Starting the socket</h2>
 
-        <p>This is the Winsock setup you already wrote, packaged as <code>Start</code>. We create a
+        <p>This is the portable socket setup you already wrote, packaged as <code>Start</code>. We create a
         non-blocking UDP socket, bind it so we can receive, and remember the peer's address for
         <code>sendto</code>. Non-blocking matters: our game loop must never stall waiting on a packet.</p>
 
@@ -123,24 +121,22 @@ private:
 
 bool NetworkSystem::Start(uint16_t bindPort, const char* peerIp,
                           uint16_t peerPort, uint32_t localId) {
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &amp;wsa) != 0) return false;
+    if (!m_runtime.Ready()) return false;
 
     m_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (m_sock == INVALID_SOCKET) return false;
+    if (m_sock == InvalidSocket) return false;
 
     // Bind to our local port so recvfrom() works.
     sockaddr_in local{};
     local.sin_family = AF_INET;
     local.sin_addr.s_addr = INADDR_ANY;
     local.sin_port = htons(bindPort);
-    if (bind(m_sock, (sockaddr*)&amp;local, sizeof(local)) == SOCKET_ERROR) {
-        return false; // check WSAGetLastError() to see why
+    if (bind(m_sock, (sockaddr*)&amp;local, sizeof(local)) != 0) {
+        return false; // inspect LastSocketError() to see why
     }
 
     // Non-blocking: recvfrom returns immediately if no data is waiting.
-    u_long nonBlocking = 1;
-    ioctlsocket(m_sock, FIONBIO, &amp;nonBlocking);
+    if (!SetNonBlocking(m_sock)) return false;
 
     // Remember where to send our updates.
     m_peerAddr.sin_family = AF_INET;
@@ -152,9 +148,8 @@ bool NetworkSystem::Start(uint16_t bindPort, const char* peerIp,
 }
 
 void NetworkSystem::Stop() {
-    if (m_sock != INVALID_SOCKET) closesocket(m_sock);
-    m_sock = INVALID_SOCKET;
-    WSACleanup();
+    if (m_sock != InvalidSocket) CloseSocket(m_sock);
+    m_sock = InvalidSocket;
 }
 </code></pre>
 
@@ -184,9 +179,9 @@ void NetworkSystem::Stop() {
 
     int sent = sendto(m_sock, (const char*)buffer, (int)sizeof(buffer), 0,
                       (sockaddr*)&amp;m_peerAddr, sizeof(m_peerAddr));
-    if (sent == SOCKET_ERROR) {
+    if (sent &lt; 0) {
         // A dropped UDP send is normal-ish; log and move on. Never block the loop.
-        // int err = WSAGetLastError();
+        // int error = LastSocketError();
     }
 }
 </code></pre>
@@ -202,15 +197,15 @@ void NetworkSystem::Stop() {
         <pre><code class="language-cpp" data-file="NetworkSystem.cpp">void NetworkSystem::ReceiveAndApply(Scene&amp; scene, float dt) {
     uint8_t buffer[sizeof(StatePacket)];
     sockaddr_in from{};
-    int fromLen = sizeof(from);
+    SocketLength fromLen = sizeof(from);
 
     // Drain the socket: keep reading until there's nothing left this frame.
     while (true) {
         int n = recvfrom(m_sock, (char*)buffer, (int)sizeof(buffer), 0,
                          (sockaddr*)&amp;from, &amp;fromLen);
-        if (n == SOCKET_ERROR) {
-            // WSAEWOULDBLOCK just means "no more packets right now".
-            if (WSAGetLastError() == WSAEWOULDBLOCK) break;
+        if (n &lt; 0) {
+            // WouldBlock means "no more packets right now" on either platform.
+            if (WouldBlock(LastSocketError())) break;
             break; // any other error: stop draining this frame
         }
         if (n != (int)sizeof(StatePacket)) continue; // ignore malformed sizes
@@ -237,7 +232,7 @@ void NetworkSystem::Stop() {
 }
 </code></pre>
 
-        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why drain in a loop</div><p>UDP can deliver several packets between frames. If you called <code>recvfrom</code> once per frame you'd fall behind and lag would grow without bound. The <code>while</code> loop empties the buffer every frame; <code>WSAEWOULDBLOCK</code> is the normal signal that you're caught up.</p></div></div>
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why drain in a loop</div><p>UDP can deliver several packets between frames. If you called <code>recvfrom</code> once per frame you'd fall behind and lag would grow without bound. The <code>while</code> loop empties the buffer every frame; a “would block” result is the normal signal that you're caught up.</p></div></div>
 
         <h2>Keeping it component-based: NetworkBehaviour</h2>
 
@@ -306,8 +301,8 @@ private:
     // 4. Apply remote state, then interpolate networked objects smoothly.
     net.ReceiveAndApply(scene, dt);
 
-    renderer.DrawScene(scene);             // 5. DirectX draw calls
-    renderer.Present();                    // 6. flip the swap chain
+    renderer.DrawScene(scene);             // 5. selected graphics backend draws
+    renderer.Present();                    // 6. present swap chain or Metal drawable
 }
 </code></pre>
 
@@ -326,7 +321,7 @@ private:
             <tr><td>Remote object jitters / snaps</td><td>Interpolation window too short, or applying packets directly to Transform</td></tr>
             <tr><td>Lag grows over time</td><td><code>recvfrom</code> not looped — draining only one packet per frame</td></tr>
             <tr><td>Nothing received</td><td>Wrong port, firewall, or forgot to <code>bind</code></td></tr>
-            <tr><td>Loop stalls / stutters</td><td>Socket left blocking — set <code>FIONBIO</code></td></tr>
+            <tr><td>Loop stalls / stutters</td><td>Socket left blocking — call the portable <code>SetNonBlocking</code> helper</td></tr>
           </tbody>
         </table></div>
 
@@ -354,9 +349,9 @@ private:
           <li><strong>Client-side prediction &amp; reconciliation</strong> — hide latency on your own player, not just remote ones.</li>
         </ul>
 
-        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">You did it</div><p>Look back at where you started: not knowing what a variable was. You now understand C++, the math behind 3D, DirectX 11 rendering, a component-based GameObject engine with scripting, and real network code — the same architecture Unity and Unreal are built on. That's an enormous distance. MiniEngine is <em>yours</em> now. Give it a name, pick a small game, and go build it.</p></div></div>
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">You did it</div><p>Look back at where you started: not knowing what a variable was. You now understand C++, 3D math, Direct3D 11 and Metal rendering, a component-based GameObject engine with scripting, and portable network code. That's an enormous distance. MiniEngine is <em>yours</em> now. Give it a name, pick a small game, and go build it.</p></div></div>
 
-        <p>Thank you for going the whole way. From zero to a networked, component-based DirectX engine — that's a
+        <p>Thank you for going the whole way. From zero to a cross-platform, networked, component-based engine — that's a
         genuine achievement. The rest is just more building, and you already know how to build.</p>
 
         <div class="recap">

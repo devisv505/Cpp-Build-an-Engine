@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Subsystems &amp; the Main Loop — Learn C++ &amp; DirectX</title>
+  <title>Subsystems &amp; the Main Loop — Learn C++ Engine Development</title>
   <meta name="description" content="Learn the core engine subsystems and the Initialize, loop, Shutdown lifecycle that drives every frame of your engine.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -36,7 +36,7 @@
               <tr><td><strong>Time</strong></td><td>Measures how long the last frame took (<em>delta time</em>) and tracks total elapsed time.</td><td>start of the loop</td></tr>
               <tr><td><strong>Input</strong></td><td>Reads keyboard and mouse state so gameplay can ask "is W held?"</td><td>ProcessInput</td></tr>
               <tr><td><strong>Scene</strong></td><td>Holds the objects in the world and advances their logic.</td><td>Update</td></tr>
-              <tr><td><strong>Renderer</strong></td><td>Wraps DirectX 11 and draws the scene to the screen.</td><td>Render</td></tr>
+              <tr><td><strong>Renderer</strong></td><td>Wraps Direct3D 11 on Windows or Metal on macOS.</td><td>Render</td></tr>
               <tr><td><strong>ResourceManager</strong></td><td>Loads and caches meshes, textures and shaders so they load once, not per-frame.</td><td>on demand (not every frame)</td></tr>
             </tbody>
           </table>
@@ -95,14 +95,14 @@
         <p>Every engine follows the same three-phase lifecycle. It is worth memorising, because it never changes no matter how big the engine grows:</p>
 
         <ol>
-          <li><strong>Initialize</strong> — create the window, spin up DirectX, load startup resources, build the scene. Runs <em>once</em>.</li>
+          <li><strong>Initialize</strong> — create the GLFW window, initialize the selected graphics backend, load resources, and build the scene. Runs <em>once</em>.</li>
           <li><strong>The loop</strong> — repeat <strong>ProcessInput &rarr; Update &rarr; Render</strong> until the user quits. Runs thousands of times per second.</li>
           <li><strong>Shutdown</strong> — release GPU resources, close the window, free memory. Runs <em>once</em>.</li>
         </ol>
 
         <div class="callout warn">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body"><div class="c-title">Order matters — both ways</div><p>Subsystems must initialize in dependency order (the Renderer needs a window before it can create a DirectX device) and shut down in the <em>reverse</em> order. Destroying the window while the GPU still references it is a classic crash. Owning everything in a single <code>Engine</code> makes this ordering explicit and reliable.</p></div>
+          <div class="c-body"><div class="c-title">Order matters — both ways</div><p>The Renderer needs a GLFW window before it creates a Direct3D device or Metal layer. Shut down in reverse so the GPU releases its surface before GLFW destroys the window.</p></div>
         </div>
 
         <h3>Why input, update, render — in that order?</h3>
@@ -143,7 +143,7 @@ private:
     // --- the three loop stages, called once per frame ---
     void ProcessInput();     // snapshot keyboard / mouse
     void Update(float dt);   // advance game logic by dt seconds
-    void Render();           // draw the scene via DirectX
+    void Render();           // draw through the selected backend
 
     void Shutdown();         // release subsystems in reverse order
 
@@ -202,7 +202,7 @@ void Engine::Render() {
 int main() {
     Engine engine;                 // subsystems created here
 
-    if (!engine.Initialize())      // window + DirectX + resources
+    if (!engine.Initialize())      // window + graphics + resources
         return -1;                 // bail out if boot failed
 
     engine.Run();                  // loop until quit, then Shutdown()
@@ -217,7 +217,7 @@ int main() {
         </div>
 
         <h2>Where this is heading</h2>
-        <p>Right now the subsystems are empty shells, but the architecture is real. Over the next modules we'll fill each one in: DirectX 11 device and swap chain inside <code>Renderer</code>, a high-resolution timer inside <code>Time</code>, keyboard and mouse handling inside <code>Input</code>. In the very next lesson we crack open <code>Scene</code> and introduce the <strong>GameObject–Component model</strong> — the same pattern Unity uses — which is what those objects the Scene updates each frame will actually be built from.</p>
+        <p>Right now the subsystems are empty shells, but the architecture is real. We will put D3D11 or Metal behind <code>Renderer</code>, a portable clock inside <code>Time</code>, and GLFW keyboard/mouse state inside <code>Input</code>. Next we introduce the GameObject–Component model.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

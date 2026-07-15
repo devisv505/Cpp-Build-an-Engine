@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Abstracting the Renderer — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Wrap the D3D11 device, context, swap chain, and depth buffer in a clean GraphicsDevice class with BeginFrame and EndFrame.">
+  <title>Abstracting the Renderer — Learn C++ Engine Development</title>
+  <meta name="description" content="Hide Direct3D 11 on Windows and Metal on macOS behind one renderer interface with Initialize, BeginFrame, Resize, and EndFrame.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -15,21 +15,20 @@
         <h1>Abstracting the Renderer</h1>
 
         <p class="lead">
-          Over the last few lessons you learned how to create a Direct3D 11 device, build a swap chain, clear the
-          screen, and add a depth buffer — one long, ceremony-heavy block of setup code. In this lesson we fold all
-          of that into a single <code>GraphicsDevice</code> class. Instead of scattering raw DirectX calls through your
-          game loop, you will call <code>BeginFrame()</code> and <code>EndFrame()</code>. This is exactly how real
-          engines like Unity and Unreal hide the graphics API behind a clean surface.
+          Over the last few lessons you learned the graphics pipeline through Direct3D 11 on Windows and Metal on
+          macOS. Now we put those platform APIs behind one renderer boundary. The game loop calls
+          <code>BeginFrame()</code> and <code>EndFrame()</code> regardless of which backend CLion compiled.
         </p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>Why we wrap the raw D3D11 objects behind one <strong>Renderer</strong> class.</li>
+            <li>Why we wrap raw D3D11 and Metal objects behind one <strong>Renderer</strong> interface.</li>
             <li>How <code>Microsoft::WRL::ComPtr</code> frees GPU resources automatically.</li>
             <li>Building <code>Initialize</code>, <code>BeginFrame</code>, and <code>EndFrame</code> around the device, context, swap chain, RTV, and DSV.</li>
             <li>Exposing the device and context so other systems can issue draw calls.</li>
-            <li>Handling window resize cleanly by recreating the render targets.</li>
+            <li>How the Metal backend performs the same lifecycle on macOS.</li>
+            <li>Handling window resize cleanly by recreating platform render targets.</li>
           </ul>
         </div>
 
@@ -44,8 +43,24 @@
           The fix is an <strong>abstraction</strong>: a class that <em>owns</em> the graphics objects and offers a small,
           friendly set of methods. Callers say "begin the frame, clear to this color" and "end the frame, show it on
           screen." They never touch a raw <code>ID3D11DeviceContext</code> pointer unless they truly need one. When you
-          later add DirectX 12 support or a debug overlay, you change one class instead of your whole codebase.
+          later change graphics API or add a debug overlay, you change one backend instead of your whole codebase.
         </p>
+
+        <h2>The shared renderer contract</h2>
+        <p>Start with a platform-neutral interface. It uses plain C++ types and the GLFW window handle; no Direct3D or Metal type can leak into the scene layer.</p>
+        <pre><code class="language-cpp" data-file="Renderer.h">#pragma once
+#include &lt;array&gt;
+
+struct GLFWwindow;
+
+class Renderer {
+public:
+    virtual ~Renderer() = default;
+    virtual bool Initialize(GLFWwindow* window) = 0;
+    virtual void BeginFrame(const std::array&lt;float, 4&gt;&amp; clearColor) = 0;
+    virtual void EndFrame() = 0;
+    virtual void Resize(int pixelWidth, int pixelHeight) = 0;
+};</code></pre>
 
         <div class="callout tip">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
@@ -216,7 +231,7 @@ bool GraphicsDevice::Initialize(HWND window, uint32_t width, uint32_t height) {
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
           <div class="c-body">
             <div class="c-title">Link against d3d11.lib</div>
-            <p>These calls live in the Direct3D 11 runtime, so tell the linker to include it. Add <code>#pragma comment(lib, "d3d11.lib")</code> near the top of the <code>.cpp</code>, or add <code>d3d11.lib</code> to your linker inputs. Forget it and you get unresolved-symbol errors, not a runtime crash.</p>
+            <p>These calls live in the Direct3D 11 runtime. Configure them in CMake with <code>target_link_libraries(Engine PRIVATE d3d11 dxgi d3dcompiler)</code> inside the <code>WIN32</code> branch. If a library is missing, the build fails with unresolved symbols.</p>
           </div>
         </div>
 
@@ -297,14 +312,71 @@ while (window.ProcessMessages()) {
           leans on it.
         </p>
 
+        <h2>The Metal backend on macOS</h2>
+        <p><code>MetalRenderer</code> implements the same public lifecycle. Its private state is a Metal device, command queue, <code>CAMetalLayer</code>, depth texture, and current command buffer. With metal-cpp, these types stay in a macOS-only <code>.mm</code> file.</p>
+
+        <pre><code class="language-cpp" data-file="MetalRenderer.mm">#define NS_PRIVATE_IMPLEMENTATION
+#define CA_PRIVATE_IMPLEMENTATION
+#define MTL_PRIVATE_IMPLEMENTATION
+#include &lt;Metal/Metal.hpp&gt;
+#include &lt;QuartzCore/QuartzCore.hpp&gt;
+#include "MetalRenderer.h"
+
+bool MetalRenderer::Initialize(GLFWwindow* window) {
+    m_device = MTL::CreateSystemDefaultDevice();
+    if (!m_device) return false;
+    m_queue = m_device-&gt;newCommandQueue();
+
+    // Attach a CAMetalLayer to the NSWindow supplied by GLFW.
+    m_layer = CreateMetalLayer(window, m_device);
+    return m_queue &amp;&amp; m_layer;
+}
+
+void MetalRenderer::BeginFrame(const std::array&lt;float, 4&gt;&amp; color) {
+    m_drawable = m_layer-&gt;nextDrawable();
+    m_commands = m_queue-&gt;commandBuffer();
+
+    MTL::RenderPassDescriptor* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
+    auto* target = pass-&gt;colorAttachments()-&gt;object(0);
+    target-&gt;setTexture(m_drawable-&gt;texture());
+    target-&gt;setLoadAction(MTL::LoadActionClear);
+    target-&gt;setStoreAction(MTL::StoreActionStore);
+    target-&gt;setClearColor(MTL::ClearColor(color[0], color[1], color[2], color[3]));
+    m_encoder = m_commands-&gt;renderCommandEncoder(pass);
+}
+
+void MetalRenderer::EndFrame() {
+    m_encoder-&gt;endEncoding();
+    m_commands-&gt;presentDrawable(m_drawable);
+    m_commands-&gt;commit();
+}</code></pre>
+
+        <div class="table-wrap"><table><thead><tr><th>Engine action</th><th>Windows backend</th><th>macOS backend</th></tr></thead><tbody>
+          <tr><td>Own GPU</td><td><code>ID3D11Device</code></td><td><code>MTL::Device</code></td></tr>
+          <tr><td>Record work</td><td>device context</td><td>command buffer + encoder</td></tr>
+          <tr><td>Display</td><td>DXGI swap chain</td><td><code>CAMetalLayer</code> drawable</td></tr>
+          <tr><td>Clear</td><td><code>ClearRenderTargetView</code></td><td>render-pass load action</td></tr>
+          <tr><td>Resize</td><td>recreate swap-chain views</td><td>update layer drawable size and depth texture</td></tr>
+        </tbody></table></div>
+
+        <pre><code class="language-cmake" data-file="Engine/CMakeLists.txt">if(WIN32)
+  target_sources(Engine PRIVATE Renderer/D3D11Renderer.cpp)
+  target_link_libraries(Engine PRIVATE d3d11 dxgi d3dcompiler)
+elseif(APPLE)
+  target_sources(Engine PRIVATE Renderer/MetalRenderer.mm)
+  target_link_libraries(Engine PRIVATE "-framework Metal" "-framework QuartzCore")
+endif()</code></pre>
+
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>A <code>GraphicsDevice</code> class owns the device, context, swap chain, RTV, and DSV, hiding raw D3D11 behind a small surface.</li>
+            <li>A shared <code>Renderer</code> contract keeps D3D11 and Metal types out of game code.</li>
+            <li>The Windows backend owns the device, context, swap chain, RTV, and DSV behind that surface.</li>
+            <li>The macOS backend owns the Metal device, command queue, layer, drawable, and render encoder.</li>
             <li><code>Microsoft::WRL::ComPtr</code> releases every GPU resource automatically, so the class needs no destructor.</li>
             <li><code>Initialize</code> does one-time setup; <code>CreateRenderTargets</code> is shared with <code>Resize</code>.</li>
             <li><code>BeginFrame</code> binds and clears the targets; <code>EndFrame</code> presents the swap chain.</li>
-            <li><code>Device()</code> and <code>Context()</code> let other engine systems record draw calls without touching setup code.</li>
+            <li>CMake selects exactly one backend with <code>WIN32</code> or <code>APPLE</code>.</li>
           </ul>
         </div>
 

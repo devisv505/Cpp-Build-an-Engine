@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>The Transform Component &amp; Hierarchy — Learn C++ &amp; DirectX</title>
+  <title>The Transform Component &amp; Hierarchy — Learn C++ Engine Development</title>
   <meta name="description" content="Build a Unity-style Transform component in C++: position, rotation, scale, local and world matrices, parenting, and dirty-flag caching.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -261,6 +261,16 @@ XMMATRIX barrelWorld = barrel.GetWorldMatrix();
           materials, scripts), the same architecture Unity and Unreal use. The world matrix we just built is
           exactly what a renderer will hand to the vertex shader to place geometry on screen.
         </p>
+
+        <h2>Building the same Transform on macOS</h2>
+        <p>The hierarchy, dirty flags, and public <code>Transform</code> API are ordinary C++ and do not change. Only the math backend changes. In the Apple implementation, store or convert to <code>simd_float4x4</code>, build translation/rotation/scale matrices with Apple <code>simd</code>, then use <code>simd_mul</code> in the order required by the engine's chosen convention. Metal shaders should consume that same convention consistently.</p>
+
+        <pre><code class="language-cpp" data-file="TransformApple.cpp">#include &lt;simd/simd.h&gt;
+
+simd_float4x4 Transform::GetWorldMatrixApple() const {
+    simd_float4x4 local = MakeTRS(position, rotation, scale);
+    return parent ? simd_mul(parent-&gt;GetWorldMatrixApple(), local) : local;
+}</code></pre>
 
         <div class="recap">
           <div class="r-title">Recap</div>

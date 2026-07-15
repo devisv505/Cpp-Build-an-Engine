@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>The Graphics Pipeline Explained — Learn C++ &amp; DirectX</title>
+  <title>The Graphics Pipeline Explained — Learn C++ Engine Development</title>
   <meta name="description" content="A beginner-friendly tour of the Direct3D 11 graphics pipeline: how vertices flow through stages and become the pixels you see.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -284,6 +284,17 @@ float4 PSMain(VSOutput input) : SV_TARGET
           head will make the upcoming, more detailed lessons feel like filling in a diagram you already
           understand rather than memorizing disconnected API calls.
         </p>
+
+        <h2>macOS — the same pipeline in Metal</h2>
+        <p>Metal exposes the same programmable pipeline with different object names. The engine-level stages do not change:</p>
+        <div class="table-wrap"><table><thead><tr><th>Pipeline job</th><th>Direct3D 11</th><th>Metal</th></tr></thead><tbody>
+          <tr><td>Vertex input description</td><td>Input layout</td><td><code>MTLVertexDescriptor</code></td></tr>
+          <tr><td>Vertex program</td><td>HLSL vertex shader</td><td>Metal vertex function</td></tr>
+          <tr><td>Rasterization</td><td>Rasterizer state</td><td>Render encoder state</td></tr>
+          <tr><td>Pixel program</td><td>HLSL pixel shader</td><td>Metal fragment function</td></tr>
+          <tr><td>Final target</td><td>Render-target view</td><td>Color attachment texture</td></tr>
+        </tbody></table></div>
+        <p>Direct3D commands go through a device context. Metal records commands through an <code>MTL::RenderCommandEncoder</code> inside a command buffer. Our renderer interface names the intent—bind pipeline, bind mesh, draw—so gameplay never depends on either vocabulary.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

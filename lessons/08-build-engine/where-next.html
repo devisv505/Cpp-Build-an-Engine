@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Where to Go Next — Learn C++ &amp; DirectX</title>
+  <title>Where to Go Next — Learn C++ Engine Development</title>
   <meta name="description" content="You built a real engine loop. Here is the road ahead: lighting, materials, shadows, physics, audio, an editor, asset importing, and modern GPU APIs.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -56,7 +56,7 @@
               <tr><td>Physics &amp; collision</td><td>Gravity, rigid bodies, triggers — the world reacts</td><td>Advanced</td></tr>
               <tr><td>Audio</td><td>Sound effects and music tied to entities</td><td>Moderate</td></tr>
               <tr><td>Scripting</td><td>Gameplay logic without recompiling the engine</td><td>Advanced</td></tr>
-              <tr><td>Direct3D 12 / Vulkan</td><td>Explicit, modern GPU control; where the industry is heading</td><td>Advanced</td></tr>
+              <tr><td>Direct3D 12 / Metal / Vulkan</td><td>Explicit, modern GPU control across Windows, macOS, and other platforms</td><td>Advanced</td></tr>
             </tbody>
           </table>
         </div>
@@ -118,7 +118,7 @@ float4 PSMain(PSInput input) : SV_TARGET
 
         <h3>Physics, audio, and going modern</h3>
 
-        <p>For <strong>physics</strong>, do not write your own at first — integrate a mature library like Jolt or Bullet, feed it your transforms, and read the results back each frame. <strong>Audio</strong> can start with a simple library that plays a sound at a position. And when you want to see how the cutting edge works, <strong>Direct3D 12</strong> or <strong>Vulkan</strong> hand you explicit control over memory and command submission. They are more verbose, but every concept maps back to what you already learned in D3D11 — you are relabeling ideas, not starting over.</p>
+        <p>For <strong>physics</strong>, do not write your own at first — integrate a mature library like Jolt or Bullet, feed it your transforms, and read the results back each frame. <strong>Audio</strong> can start with a simple cross-platform library that plays a sound at a position. When you want lower-level GPU control, continue with <strong>Direct3D 12</strong> on Windows, deepen your <strong>Metal</strong> knowledge on macOS, or explore <strong>Vulkan</strong> where it is supported. The concepts map back to the renderer boundary you already built.</p>
 
         <h2>How to learn the hard parts</h2>
 
@@ -129,7 +129,7 @@ float4 PSMain(PSInput input) : SV_TARGET
           <li><strong>Find one good book or course</strong> and follow it end to end rather than hopping between ten half-tutorials. Depth beats breadth here.</li>
           <li><strong>Read other engines' source.</strong> Small open-source engines are a goldmine; seeing how someone else structured a renderer is worth a dozen articles.</li>
           <li><strong>Ask a community.</strong> Active graphics and game-dev forums and chat servers are full of people who enjoy these problems. Post a minimal example and the exact error.</li>
-          <li><strong>Use the debug layer.</strong> Direct3D's debug layer prints precise messages when you misuse the API — turn it on and read every warning. It is the best teacher you have.</li>
+          <li><strong>Use API validation.</strong> Enable the Direct3D debug layer on Windows and Metal API Validation on macOS, then read every warning.</li>
         </ol>
 
         <div class="callout warn">

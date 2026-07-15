@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Constant Buffers — Learn C++ &amp; DirectX</title>
+  <title>Constant Buffers — Learn C++ Engine Development</title>
   <meta name="description" content="Send matrices and colors to your HLSL shaders each frame with Direct3D 11 constant buffers, and master the 16-byte alignment rule.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -254,6 +254,21 @@ void UpdatePerObjectDefault(ID3D11DeviceContext* ctx, const PerObject&amp; data)
 
         <h2>How this fits the engine</h2>
         <p>You've just built the exact mechanism our engine will use to render moving, transformed objects. When we add a <code>Transform</code> component, its world matrix will be stored into a <code>PerObject</code> buffer like this one; when we add a <code>Camera</code>, its view and projection will fill a per-frame buffer. The renderer will loop over every object, update the per-object buffer, bind it, and draw — precisely the pattern above. Next lesson we finally build those world, view, and projection matrices properly, so the numbers we're shoveling into <code>ViewProj</code> actually put things on screen where you expect.</p>
+
+        <h2>macOS — upload uniforms with an <code>MTLBuffer</code></h2>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">struct FrameUniforms
+{
+    simd_float4x4 viewProjection;
+};
+
+MTL::Buffer* uniformBuffer = device-&gt;newBuffer(
+    sizeof(FrameUniforms), MTL::ResourceStorageModeShared);
+
+auto* uniforms = static_cast&lt;FrameUniforms*&gt;(uniformBuffer-&gt;contents());
+uniforms-&gt;viewProjection = viewProjection;
+
+encoder-&gt;setVertexBuffer(uniformBuffer, 0, 1);</code></pre>
+        <p>The Metal shader declares the matching value at <code>[[buffer(1)]]</code>. Direct3D constant buffers and Metal uniform buffers both provide small per-frame or per-object data; the renderer backend owns binding slots and alignment rules.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

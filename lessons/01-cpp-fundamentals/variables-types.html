@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Variables &amp; Fundamental Types — Learn C++ &amp; DirectX</title>
+  <title>Variables &amp; Fundamental Types — Learn C++ Engine Development</title>
   <meta name="description" content="Declare and initialize C++ variables, meet the fundamental types int, float, double, bool and char, and see why graphics code lives on float.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -74,7 +74,7 @@ int b{3.9};     // ERROR: brace init won't narrow a double to an int</code></pre
         </ul>
 
         <h2>Why graphics code lives on <code>float</code></h2>
-        <p>Here's a habit to lock in early: <strong>almost all graphics math uses <code>float</code>, not <code>double</code></strong>. A GPU is built to chew through millions of 32-bit floats per frame. Vertex positions, colors, matrices, and shader variables are overwhelmingly <code>float</code>. Direct3D's own math library, DirectXMath, is entirely <code>float</code>-based.</p>
+        <p>Here's a habit to lock in early: <strong>almost all graphics math uses <code>float</code>, not <code>double</code></strong>. GPUs process millions of 32-bit values per frame. DirectXMath on Windows and Apple <code>simd</code> on macOS both provide float-based graphics types.</p>
 
         <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Get comfortable with the <code>f</code></div><p>When you write a graphics constant, add the <code>f</code>: <code>0.0f</code>, <code>1.0f</code>, <code>0.5f</code>. It keeps the value a <code>float</code> and avoids needless <code>double</code>-to-<code>float</code> conversions. You'll type it thousands of times building the engine, so it becomes muscle memory fast.</p></div></div>
 
@@ -97,7 +97,7 @@ auto ready = true;     // deduced as bool</code></pre>
         <p><code>auto</code> shines later when types get long — think iterators or template types — where writing the full name is tedious and error-prone. For simple literals it's a matter of taste, but it's worth recognizing now because you'll see it everywhere in real engine code.</p>
 
         <h2>Measuring types with <code>sizeof</code></h2>
-        <p>The <code>sizeof</code> operator reports how many bytes a type occupies. Knowing this matters in graphics: when we later hand a buffer of vertices to the GPU, we tell Direct3D the exact byte size, and getting it wrong corrupts the whole mesh.</p>
+        <p>The <code>sizeof</code> operator reports how many bytes a type occupies. When we hand vertex buffers to Direct3D or Metal, the backend needs the exact byte count; getting it wrong corrupts the mesh.</p>
 
         <p>Let's put everything together in a small, complete program you can compile and run:</p>
 
@@ -130,7 +130,7 @@ int main()
     return 0;
 }</code></pre>
 
-        <p>On a typical 64-bit Windows setup, this prints something like:</p>
+        <p>On a typical 64-bit Windows or macOS setup, this prints something like:</p>
 
         <pre><code class="language-console">health : 100
 speed  : 5.5

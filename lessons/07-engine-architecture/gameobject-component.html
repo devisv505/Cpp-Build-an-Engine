@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>The GameObject–Component Model (Unity) — Learn C++ &amp; DirectX</title>
+  <title>The GameObject–Component Model (Unity) — Learn C++ Engine Development</title>
   <meta name="description" content="Learn Unity's GameObject-Component architecture: composition over inheritance, GetComponent, and the Awake/Start/Update lifecycle in C++.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -208,7 +208,7 @@ int main() {
         <p>This maps cleanly onto the main loop from the previous lesson: the loop calls <code>UpdateAll(dt)</code> on every active GameObject each frame, right between polling input and rendering. Later we'll add sibling passes like <code>FixedUpdate</code> (for physics) and <code>LateUpdate</code> (for cameras that must follow objects <em>after</em> they've moved), but Awake/Start/Update are the foundation.</p>
 
         <h2>Why we're building this model</h2>
-        <p>This architecture is not a toy — it's how Unity ships real games, and it's what we'll implement as the backbone of our engine over the coming modules. When we write our <code>Transform</code> component, our <code>MeshRenderer</code> that talks to DirectX 11, and our <code>Camera</code> that produces a view matrix, each will be a plain <code>Component</code> subclass slotted into exactly the machinery you just saw. The renderer will walk the scene, call <code>GetComponent&lt;MeshRenderer&gt;()</code> on each object, and draw. Data-driven, flexible, and easy to extend — add a feature by writing one small component, not by rewriting a class tree.</p>
+        <p>This architecture is not a toy — it is the engine backbone. <code>Transform</code>, <code>MeshRenderer</code>, and <code>Camera</code> are ordinary Components; the renderer walks the scene and forwards draw data to Direct3D on Windows or Metal on macOS. Add a feature by writing one small component, not by rewriting a class tree.</p>
         <p>In the next lesson we'll look at Unreal Engine's alternative — the Actor model — which makes different trade-offs. Seeing both will help you understand <em>why</em> we chose the Unity-style approach for what we're building.</p>
 
         <div class="recap">

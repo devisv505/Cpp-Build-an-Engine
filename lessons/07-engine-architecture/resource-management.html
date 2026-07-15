@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Assets &amp; Resource Management — Learn C++ &amp; DirectX</title>
+  <title>Assets &amp; Resource Management — Learn C++ Engine Development</title>
   <meta name="description" content="Load meshes, textures and shaders once and share them across the scene with a shared_ptr resource cache backed by RAII and ComPtr.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -74,7 +74,7 @@
 
         <h2>Lifetime of GPU resources: RAII and ComPtr</h2>
         <p>
-          A <code>shared_ptr</code> handles the C++ object, but the real payload lives on the GPU behind Direct3D
+          A <code>shared_ptr</code> handles the C++ object, but the Windows payload lives on the GPU behind Direct3D
           interfaces like <code>ID3D11Texture2D</code>. Those are COM objects with their own reference count that
           you release by calling <code>Release()</code>. Forgetting that call leaks video memory. We never call it
           by hand — we wrap every Direct3D interface in <code>Microsoft::WRL::ComPtr</code>, which calls
@@ -211,12 +211,15 @@ std::shared_ptr&lt;Texture&gt; sameBrick = textures.Load("assets/brick.png");
           everywhere" model that Unity's meshes and Unreal's static meshes are built on.
         </p>
 
+        <h2>The same cache with Metal</h2>
+        <p>On macOS, the cache and <code>shared_ptr&lt;Texture&gt;</code> ownership remain identical. Only the private payload changes from Direct3D interfaces to <code>MTL::Texture</code>. Keep that object inside the Metal implementation so callers still request a portable <code>Texture</code> by path.</p>
+
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
             <li>Assets (meshes, textures, shaders) are expensive to load and upload, so load each one once and share it.</li>
             <li><code>std::shared_ptr&lt;T&gt;</code> gives many objects safe co-ownership; the asset frees when the last owner releases it.</li>
-            <li>Wrap every Direct3D interface in <code>ComPtr</code> so RAII releases GPU memory automatically — never call <code>Release()</code> by hand.</li>
+            <li>Use <code>ComPtr</code> for Direct3D on Windows and metal-cpp ownership helpers for Metal on macOS so RAII releases GPU resources.</li>
             <li>A <code>ResourceManager&lt;T&gt;</code> caches by file path in an <code>unordered_map</code>, turning duplicate load requests into one real load.</li>
             <li>Storing <code>weak_ptr</code> in the cache lets it track resources without keeping them alive, so unused assets free themselves.</li>
           </ul>

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tying It Together: the Engine Loop — Learn C++ &amp; DirectX</title>
+  <title>Tying It Together: the Engine Loop — Learn C++ Engine Development</title>
   <meta name="description" content="Assemble Renderer, Input, Time and a Scene of GameObjects into one main loop that renders a spinning cube — a real engine skeleton.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -64,7 +64,7 @@
             <thead><tr><th>Owner</th><th>Responsibility</th></tr></thead>
             <tbody>
               <tr><td><code>Application</code></td><td>Creates the window, owns all subsystems, runs the loop.</td></tr>
-              <tr><td><code>Renderer</code></td><td>Owns the D3D11 device/context/swap chain; draws meshes.</td></tr>
+              <tr><td><code>Renderer</code></td><td>Owns the selected D3D11 or Metal backend; draws meshes.</td></tr>
               <tr><td><code>Input</code></td><td>Tracks which keys and mouse buttons are down this frame.</td></tr>
               <tr><td><code>Time</code></td><td>Measures delta time between frames.</td></tr>
               <tr><td><code>Scene</code></td><td>Holds the list of <code>GameObject</code>s; updates them all.</td></tr>
@@ -256,6 +256,17 @@ int Application::Run() {
         <h3>Finding the active camera</h3>
         <p>Here we pass the camera pointer in directly because we know it. In a bigger engine you'd let the Scene find it: iterate the GameObjects, ask each for a <code>Camera</code> component, and use the first one flagged active. That keeps <code>Run()</code> free of hard-coded object knowledge and lets designers add or swap cameras in data. The principle is the same — the Renderer needs exactly one camera's view-projection per frame.</p>
 
+        <h2>The same loop on macOS</h2>
+        <p>No alternate application loop is needed. GLFW polls Cocoa events, the shared Scene updates, and the <code>MetalRenderer</code> implementation receives the same <code>BeginFrame</code>, <code>DrawScene</code>, and <code>EndFrame</code> calls. It converts matrices to Metal's convention, encodes commands, presents the drawable, and commits the command buffer.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Loop step</th><th>Windows</th><th>macOS</th></tr></thead><tbody>
+          <tr><td>Events/input</td><td colspan="2">GLFW</td></tr>
+          <tr><td>Update</td><td colspan="2">shared Scene and Components</td></tr>
+          <tr><td>Begin frame</td><td>bind/clear D3D render targets</td><td>create Metal command buffer and render pass</td></tr>
+          <tr><td>Draw</td><td>D3D context calls</td><td>Metal encoder calls</td></tr>
+          <tr><td>Present</td><td>DXGI swap chain</td><td>Metal drawable</td></tr>
+        </tbody></table></div>
+
         <h2>What you actually built</h2>
         <p>Step back and look at what that loop represents. You have a data-driven world (the Scene), uniform objects made of composable Components, a subsystem that advances simulation by real time, and a subsystem that turns world state into pixels — with a clean seam between them. That is the same architecture Unity calls GameObjects and MonoBehaviours, and Unreal calls Actors and Components. Yours is smaller, but it is genuinely the same idea, and every feature from here (lighting, multiple meshes, physics) is just another Component or another draw in the same loop.</p>
 
@@ -266,7 +277,7 @@ int Application::Run() {
             <li>One frame is always <strong>Input.Update &rarr; Scene.Update(dt) &rarr; Render</strong>, in that order.</li>
             <li><code>Scene.Update(dt)</code> walks every GameObject, which updates each of its Components; multiply motion by <code>dt</code> for frame-rate independence.</li>
             <li>The Renderer computes the camera's view-projection once, then draws each object using its world matrix uploaded to a constant buffer.</li>
-            <li>Transpose matrices going into HLSL, and match the cbuffer layout to the shader — the two most common bugs.</li>
+            <li>Convert matrices and match parameter layouts at the backend boundary for HLSL or Metal Shading Language.</li>
             <li>This small skeleton mirrors how Unity and Unreal are architected: composable Components running inside one central loop.</li>
           </ul>
         </div>

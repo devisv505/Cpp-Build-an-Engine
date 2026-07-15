@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Initializing Direct3D 11 — Learn C++ &amp; DirectX</title>
+  <title>Initializing Direct3D 11 &amp; Metal — Learn C++ Engine Development</title>
   <meta name="description" content="Create a D3D11 device, context and swap chain with D3D11CreateDeviceAndSwapChain, then build a render target view from the back buffer.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -11,7 +11,7 @@
   <div id="app">
     <main class="content">
       <article class="lesson">
-        <h1>Initializing Direct3D 11</h1>
+        <h1>Initializing Direct3D 11 &amp; Metal</h1>
 
         <p class="lead">Last lesson we walked the graphics pipeline conceptually: vertices in, pixels out. Now we make it real. In this lesson you will create the three core objects every Direct3D 11 program owns — the <strong>device</strong>, the <strong>device context</strong>, and the <strong>swap chain</strong> — and connect them to the window you built earlier. This is the boot sequence of our engine's renderer, and every future lesson builds directly on the objects you create here.</p>
 
@@ -123,7 +123,7 @@ if (FAILED(hr)) {
     return false;
 }</code></pre>
 
-        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Check every HRESULT</div><p>Almost every Direct3D function returns an <code>HRESULT</code>. Use the <code>SUCCEEDED(hr)</code> and <code>FAILED(hr)</code> macros — a negative code means failure. The debug layer, enabled by <code>D3D11_CREATE_DEVICE_DEBUG</code>, prints a detailed reason to the Visual Studio Output window, which turns baffling failures into readable messages. It requires the Graphics Tools optional feature installed on Windows.</p></div></div>
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Check every HRESULT</div><p>Almost every Direct3D function returns an <code>HRESULT</code>. Use the <code>SUCCEEDED(hr)</code> and <code>FAILED(hr)</code> macros — a negative code means failure. The debug layer, enabled by <code>D3D11_CREATE_DEVICE_DEBUG</code>, sends detailed reasons to the Windows debug stream; view them while debugging in CLion or with a debug-output viewer. It requires the Graphics Tools optional feature on Windows.</p></div></div>
 
         <h2>From back buffer to render target view</h2>
         <p>The swap chain owns the back buffer texture, but you cannot draw into a raw texture directly. Direct3D wants a <strong>view</strong> — a small object that says "treat this resource as a render target." So we ask the swap chain for buffer index <code>0</code> (the back buffer), then create an <code>ID3D11RenderTargetView</code> from it.</p>
@@ -167,6 +167,32 @@ if (FAILED(hr)) return false;
         <p>That render target view is the object we bind to the output-merger stage before drawing. In the next lesson we will hand it to the context and use it to clear the screen to a solid color — your first visible sign of life from the GPU.</p>
 
         <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Where this lives in the engine</div><p>Wrap these five members — device, context, swap chain, back buffer and render target view — in a <code>Renderer</code> class, and put this whole sequence in an <code>Initialize(HWND hwnd)</code> method. Because every member is a <code>ComPtr</code>, the destructor cleans up automatically. That class becomes the foundation the rest of our engine renders through.</p></div></div>
+
+        <h2>macOS — initialize Metal with metal-cpp</h2>
+        <p>Apple's metal-cpp headers expose Metal objects directly to C++. Download metal-cpp into <code>external/metal-cpp</code>, add that directory to the macOS target, and link the native frameworks:</p>
+        <pre><code class="language-cmake" data-file="CMakeLists.txt">if (APPLE)
+    target_include_directories(MiniEngine PRIVATE external/metal-cpp)
+    target_link_libraries(MiniEngine PRIVATE
+        "-framework Foundation"
+        "-framework Metal"
+        "-framework QuartzCore")
+endif()</code></pre>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">#define NS_PRIVATE_IMPLEMENTATION
+#define CA_PRIVATE_IMPLEMENTATION
+#define MTL_PRIVATE_IMPLEMENTATION
+#include &lt;Foundation/Foundation.hpp&gt;
+#include &lt;Metal/Metal.hpp&gt;
+#include &lt;QuartzCore/QuartzCore.hpp&gt;
+
+MTL::Device* device = MTL::CreateSystemDefaultDevice();
+if (device == nullptr)
+    throw std::runtime_error("Metal is unavailable");
+
+MTL::CommandQueue* commandQueue = device-&gt;newCommandQueue();
+if (commandQueue == nullptr)
+    throw std::runtime_error("Could not create Metal command queue");</code></pre>
+        <p>The Direct3D device maps to <code>MTL::Device</code>; the immediate context's submission role maps to a command queue plus per-frame command buffers. Attach a <code>CA::MetalLayer</code> to the Cocoa window from GLFW so each frame can request a drawable.</p>
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Define implementation macros once</div><p>The three metal-cpp <code>*_PRIVATE_IMPLEMENTATION</code> macros belong in exactly one <code>.cpp</code> file. Other files include the headers without defining them.</p></div></div>
 
         <div class="recap">
           <div class="r-title">Recap</div>

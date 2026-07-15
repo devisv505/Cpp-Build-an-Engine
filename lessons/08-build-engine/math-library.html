@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Building a Small Math Library — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Design thin, ergonomic Vector3, Vector4, and Matrix types that wrap DirectXMath so your engine and game code stay clean and readable.">
+  <title>Building a Small Math Library — Learn C++ Engine Development</title>
+  <meta name="description" content="Design portable Vector3 and Matrix types backed by DirectXMath on Windows and Apple simd on macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -13,12 +13,12 @@
       <article class="lesson">
         <h1>Building a Small Math Library</h1>
 
-        <p class="lead">Every engine runs on math: positions, rotations, and the matrices that turn a 3D model into pixels on screen. In the last lesson we abstracted the renderer so our game code never touches a raw device pointer. Now we'll do the same for math — building thin, friendly <code>Vector3</code> and <code>Matrix</code> types so your gameplay code reads like English while DirectXMath quietly does the heavy lifting underneath.</p>
+        <p class="lead">Every engine runs on math: positions, rotations, and the matrices that turn a 3D model into pixels. Now we will hide the platform SIMD library behind friendly <code>Vector3</code> and <code>Matrix</code> types. The public API stays identical while DirectXMath does the work on Windows and Apple <code>simd</code> does it on macOS.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>Why we wrap DirectXMath instead of using <code>XMFLOAT3</code> and <code>XMMATRIX</code> everywhere</li>
+            <li>Why we wrap DirectXMath and Apple <code>simd</code> instead of exposing either library everywhere</li>
             <li>How to build a header-only <code>Vector3</code> with operators and helpers like <code>Length</code> and <code>Normalize</code></li>
             <li>How to build a <code>Matrix</code> type with factory helpers: <code>Translation</code>, <code>Rotation</code>, <code>Scale</code>, <code>LookAt</code>, and <code>Perspective</code></li>
             <li>How to combine them to build a world matrix — the exact thing our future <code>Transform</code> component needs</li>
@@ -232,6 +232,39 @@ int main() {
 
         <p>The game code above never once mentions <code>XMVECTOR</code>, <code>XMLoadFloat3</code>, or <code>XMMatrixMultiply</code>. It speaks in <code>Vector3</code>, <code>Matrix</code>, <code>Scale</code>, <code>Rotation</code>, and <code>LookAt</code> — a vocabulary any beginner can read. That <code>worldViewProj</code> matrix at the end is precisely what we'll pack into a constant buffer and send to a shader, keeping the boundary between "engine math" and "GPU details" crisp.</p>
 
+        <h2>The Apple simd backend on macOS</h2>
+        <p>Keep the same public <code>Vector3</code> and <code>Matrix</code> API, but implement its calculations with the SIMD types included in Apple's SDK. For example:</p>
+
+        <pre><code class="language-cpp" data-file="MathBackendApple.cpp">#include &lt;simd/simd.h&gt;
+
+simd_float3 ToNative(const Vector3&amp; v) {
+    return {v.x, v.y, v.z};
+}
+
+Vector3 Normalize(const Vector3&amp; v) {
+    simd_float3 result = simd_normalize(ToNative(v));
+    return {result.x, result.y, result.z};
+}
+
+float Dot(const Vector3&amp; a, const Vector3&amp; b) {
+    return simd_dot(ToNative(a), ToNative(b));
+}
+
+Vector3 Cross(const Vector3&amp; a, const Vector3&amp; b) {
+    simd_float3 result = simd_cross(ToNative(a), ToNative(b));
+    return {result.x, result.y, result.z};
+}</code></pre>
+
+        <div class="table-wrap"><table><thead><tr><th>Engine operation</th><th>Windows</th><th>macOS</th></tr></thead><tbody>
+          <tr><td>3D vector</td><td><code>XMVECTOR</code></td><td><code>simd_float3</code></td></tr>
+          <tr><td>Normalize</td><td><code>XMVector3Normalize</code></td><td><code>simd_normalize</code></td></tr>
+          <tr><td>Matrix</td><td><code>XMMATRIX</code></td><td><code>simd_float4x4</code></td></tr>
+          <tr><td>Multiply</td><td><code>XMMatrixMultiply</code></td><td><code>simd_mul</code></td></tr>
+          <tr><td>Shader upload</td><td>match HLSL layout</td><td>match Metal layout</td></tr>
+        </tbody></table></div>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Choose one convention</div><p>DirectXMath examples here use row vectors; Metal examples commonly use column vectors. Define the engine's handedness, matrix storage, multiplication order, and shader-upload transpose in one backend boundary. Do not mix conventions inside gameplay code.</p></div></div>
+
         <h3>Quick reference of what we built</h3>
 
         <div class="table-wrap"><table>
@@ -257,7 +290,8 @@ int main() {
             <li>We built a header-only <code>Vector3</code> that stores plain floats, provides <code>+</code>, <code>-</code>, <code>*</code>, and delegates heavier work like <code>Normalize</code>, <code>Dot</code>, and <code>Cross</code> to DirectXMath.</li>
             <li>Our <code>Matrix</code> stores an <code>XMFLOAT4X4</code> and exposes factory helpers — <code>Translation</code>, <code>Rotation</code>, <code>Scale</code>, <code>LookAt</code>, and <code>Perspective</code> — plus a <code>*</code> operator.</li>
             <li>Combining <code>Scale * Rotation * Translation</code> yields a world matrix in three readable lines, with no raw XM types leaking into game code — the foundation for next lesson's <code>Transform</code> component.</li>
-            <li>Remember the conventions: left-handed, row-major, and angles always in radians.</li>
+            <li>The same engine API can use DirectXMath on Windows and Apple <code>simd</code> on macOS; backend conversion owns any transpose.</li>
+            <li>Remember the chosen conventions and keep angles in radians.</li>
           </ul>
         </div>
       </article>

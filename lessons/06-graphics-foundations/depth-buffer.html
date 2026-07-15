@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>The Depth Buffer &amp; Culling — Learn C++ &amp; DirectX</title>
+  <title>The Depth Buffer &amp; Culling — Learn C++ Engine Development</title>
   <meta name="description" content="Add a depth-stencil buffer and back-face culling to Direct3D 11 so your 3D cube renders solidly instead of showing through itself.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -186,6 +186,20 @@ context-&gt;RSSetState(rasterState.Get());</code></pre>
         </div>
 
         <p>Compile and run. Rotate the cube and it should now look like a solid object: near faces cleanly cover far ones, and the interior triangles you never see are culled away. You have just added two of the most fundamental pieces of any 3D renderer.</p>
+
+        <h2>macOS — depth testing and culling in Metal</h2>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::DepthStencilDescriptor* depth =
+    MTL::DepthStencilDescriptor::alloc()-&gt;init();
+depth-&gt;setDepthCompareFunction(MTL::CompareFunctionLess);
+depth-&gt;setDepthWriteEnabled(true);
+
+MTL::DepthStencilState* depthState =
+    device-&gt;newDepthStencilState(depth);
+
+encoder-&gt;setDepthStencilState(depthState);
+encoder-&gt;setCullMode(MTL::CullModeBack);
+encoder-&gt;setFrontFacingWinding(MTL::WindingCounterClockwise);</code></pre>
+        <p>The render pass also needs a depth attachment texture matching the drawable dimensions. As with Direct3D, clear depth to <code>1.0</code>, recreate it on resize, and keep winding conventions consistent with the projection matrix.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

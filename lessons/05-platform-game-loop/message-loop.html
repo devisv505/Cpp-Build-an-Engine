@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Events &amp; Input with GLFW — Learn C++ Engine Development</title>
+  <meta name="description" content="Process window events and keyboard, mouse, resize, and close input with GLFW in the same CLion project on Windows and macOS.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Events &amp; Input with GLFW</h1>
+
+        <p class="lead">A game window must react to keys, mouse movement, resizing, focus changes, and closing. Windows and macOS deliver those events differently, but GLFW translates both native event systems into one set of callbacks and query functions. Our engine can therefore keep input state in ordinary C++.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How <code>glfwPollEvents</code> pumps Win32 or Cocoa events without blocking</li>
+            <li>When to query key state and when to install a callback</li>
+            <li>How to handle keyboard, mouse, framebuffer resize, and close events</li>
+            <li>How a window user pointer routes C callbacks into a C++ object</li>
+          </ul>
+        </div>
+
+        <h2>One event pump, two operating systems</h2>
+        <p>GUI systems are event-driven. The OS queues hardware and window events; the application must regularly process them. GLFW's non-blocking event pump performs the native work for the current system:</p>
+
+        <pre><code class="language-cpp">while (!glfwWindowShouldClose(window))
+{
+    glfwPollEvents(); // pumps Windows messages or Cocoa events
+
+    Update();
+    Render();
+}</code></pre>
+
+        <p><code>glfwPollEvents</code> returns after processing currently queued events, so the game continues updating even when the player does nothing. <code>glfwWaitEvents</code> blocks until something happens and is better suited to paused tools than a real-time game.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Poll on the main thread</div><p>Window event processing must stay on the main thread on macOS, and doing the same on Windows keeps the platform layer consistent. Worker threads can load assets or prepare commands, but the window pump belongs in the main loop.</p></div></div>
+
+        <h2>Polling held keys</h2>
+        <p>For continuous actions such as movement, query whether a key is down during each update:</p>
+
+        <pre><code class="language-cpp">void UpdateInput(GLFWwindow* window)
+{
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        MoveForward();
+
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+}</code></pre>
+
+        <p>This code is unchanged between Windows and macOS. GLFW key constants describe physical keyboard keys; later, the engine's input service will translate them into actions such as <code>MoveForward</code>.</p>
+
+        <h2>Callbacks for discrete events</h2>
+        <p>Callbacks are better for transitions such as one press, one release, text entry, or a resize. GLFW invokes the callback while <code>glfwPollEvents</code> is running.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">void OnKey(GLFWwindow* window, int key, int scancode,
+           int action, int mods)
+{
+    if (key == GLFW_KEY_ESCAPE &amp;&amp; action == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+}
+
+void OnMouseMove(GLFWwindow* window, double x, double y)
+{
+    // Store the latest cursor position for the input system.
+}
+
+void OnFramebufferResize(GLFWwindow* window, int width, int height)
+{
+    // Mark the Direct3D back buffer or Metal drawable for recreation.
+    // Do not recreate while width or height is zero.
+}
+
+// After creating the window:
+glfwSetKeyCallback(window, OnKey);
+glfwSetCursorPosCallback(window, OnMouseMove);
+glfwSetFramebufferSizeCallback(window, OnFramebufferResize);</code></pre>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Need</th><th>GLFW API</th><th>Use</th></tr></thead>
+          <tbody>
+            <tr><td>Key currently held</td><td><code>glfwGetKey</code></td><td>Movement and continuous controls</td></tr>
+            <tr><td>Press/release transition</td><td>Key callback</td><td>Toggles, menus, one-shot actions</td></tr>
+            <tr><td>Typed Unicode text</td><td>Character callback</td><td>Console and UI text fields</td></tr>
+            <tr><td>Mouse position</td><td>Cursor-position callback</td><td>Camera look and pointer UI</td></tr>
+            <tr><td>Drawable resized</td><td>Framebuffer-size callback</td><td>Recreate graphics targets</td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Routing callbacks into a C++ class</h2>
+        <p>GLFW callbacks are plain function pointers, so a non-static member function cannot be registered directly. Store <code>this</code> in the window's user pointer and forward through a captureless callback:</p>
+
+        <pre><code class="language-cpp" data-file="Window.cpp">class Window
+{
+public:
+    explicit Window(GLFWwindow* handle) : m_handle(handle)
+    {
+        glfwSetWindowUserPointer(m_handle, this);
+
+        glfwSetFramebufferSizeCallback(
+            m_handle,
+            [](GLFWwindow* raw, int width, int height)
+            {
+                auto* self = static_cast&lt;Window*&gt;(
+                    glfwGetWindowUserPointer(raw));
+                self-&gt;OnFramebufferResize(width, height);
+            });
+    }
+
+private:
+    void OnFramebufferResize(int width, int height)
+    {
+        m_framebufferWidth = width;
+        m_framebufferHeight = height;
+        m_resized = width &gt; 0 &amp;&amp; height &gt; 0;
+    }
+
+    GLFWwindow* m_handle = nullptr;
+    int m_framebufferWidth = 0;
+    int m_framebufferHeight = 0;
+    bool m_resized = false;
+};</code></pre>
+
+        <p>This pattern keeps GLFW at the boundary while the rest of the engine works with a normal class.</p>
+
+        <h2>macOS command-key note</h2>
+        <p>GLFW exposes modifier flags such as <code>GLFW_MOD_CONTROL</code> and <code>GLFW_MOD_SUPER</code>. On macOS, Command maps to <code>GLFW_MOD_SUPER</code>; on Windows, the Windows key does. Bind editor-style shortcuts through an engine action map so each platform can use its conventional modifier without changing gameplay code.</p>
+
+        <h2>Input state for an engine</h2>
+        <p>A useful input system records three states per key: <strong>pressed this frame</strong>, <strong>held</strong>, and <strong>released this frame</strong>. At the start of each frame, clear the transition flags; callbacks set transitions while polling; queries read the stable state during updates.</p>
+
+        <pre><code class="language-cpp">input.BeginFrame();
+glfwPollEvents();       // callbacks update the input object
+
+if (input.WasPressed(Key::Jump))
+    player.Jump();
+
+input.EndFrame();</code></pre>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><code>glfwPollEvents</code> processes queued native events without blocking the game loop.</li>
+            <li>Poll key state for continuous controls; use callbacks for transitions, text, mouse, and resize events.</li>
+            <li>The framebuffer-size callback is the correct place to mark render targets for recreation.</li>
+            <li>A GLFW user pointer forwards C callbacks into a C++ <code>Window</code> or <code>Input</code> object.</li>
+            <li>The same event and input code runs in CLion on Windows and macOS.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

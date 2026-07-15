@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Game Loop &amp; Delta Time — Learn C++ Engine Development</title>
+  <meta name="description" content="Build a portable GLFW game loop and measure delta time with std::chrono for frame-rate-independent movement on Windows and macOS.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>The Game Loop &amp; Delta Time</h1>
+
+        <p class="lead">A game is alive even when no input arrives: every frame it processes events, updates the world, and renders. We'll build that loop once with GLFW and measure time with the standard C++ clock, giving Windows and macOS the same frame-rate-independent behavior.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The three phases of a frame: input, <code>Update(dt)</code>, and render</li>
+            <li>How <code>std::chrono::steady_clock</code> measures portable delta time</li>
+            <li>Why movement must be multiplied by <code>dt</code></li>
+            <li>How variable and fixed timesteps serve different systems</li>
+          </ul>
+        </div>
+
+        <h2>The portable real-time loop</h2>
+
+        <pre><code class="language-cpp" data-file="main.cpp">while (!glfwWindowShouldClose(window))
+{
+    input.BeginFrame();
+    glfwPollEvents();
+
+    const float dt = timer.Tick();
+    Update(dt);
+    Render();
+}</code></pre>
+
+        <p>Everything an engine does fits around those phases. GLFW pumps the native Windows or Cocoa event system. The update advances gameplay by elapsed time. The selected renderer backend records Direct3D 11 commands on Windows or Metal commands on macOS.</p>
+
+        <h2>Measure time with the standard library</h2>
+        <p><code>std::chrono::steady_clock</code> is monotonic: it never jumps backward if the wall clock changes. That makes it the correct portable clock for frame intervals.</p>
+
+        <pre><code class="language-cpp" data-file="Timer.h">#pragma once
+#include &lt;algorithm&gt;
+#include &lt;chrono&gt;
+
+class Timer
+{
+public:
+    Timer() : m_previous(Clock::now()) {}
+
+    float Tick()
+    {
+        const auto now = Clock::now();
+        const std::chrono::duration&lt;float&gt; elapsed = now - m_previous;
+        m_previous = now;
+
+        // A debugger pause or dragged window should not launch physics
+        // several seconds into the future.
+        return std::min(elapsed.count(), 0.25f);
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point m_previous;
+};</code></pre>
+
+        <p>This one class replaces platform-specific performance-counter code. MinGW and Apple Clang both implement the standard clock with the appropriate high-resolution native source.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Seconds make engine math readable</div><p><code>duration&lt;float&gt;</code> returns seconds, so a speed of <code>5.0f</code> naturally means five units per second. Avoid mixing milliseconds and seconds between systems.</p></div></div>
+
+        <h2>Frame-rate-independent movement</h2>
+        <p>Moving a fixed amount per frame makes the game run faster on a faster computer:</p>
+
+        <pre><code class="language-cpp">// Wrong: five units per frame.
+playerX += 5.0f;</code></pre>
+
+        <p>Express velocity in units per second and multiply by the seconds elapsed:</p>
+
+        <pre><code class="language-cpp">void Update(GLFWwindow* window, float dt)
+{
+    constexpr float speed = 5.0f;
+
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        playerX += speed * dt;
+
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        playerX -= speed * dt;
+}</code></pre>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Frame rate</th><th>Typical dt</th><th>Move per frame at 5 u/s</th><th>Move per second</th></tr></thead>
+          <tbody>
+            <tr><td>30 FPS</td><td>0.0333 s</td><td>0.167 units</td><td>5 units</td></tr>
+            <tr><td>60 FPS</td><td>0.0167 s</td><td>0.083 units</td><td>5 units</td></tr>
+            <tr><td>144 FPS</td><td>0.0069 s</td><td>0.035 units</td><td>5 units</td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Variable vs fixed timestep</h2>
+        <p>Rendering and most gameplay can use the actual variable <code>dt</code>. Physics often needs a fixed step so its results remain stable and reproducible:</p>
+
+        <pre><code class="language-cpp">constexpr float kFixedStep = 1.0f / 60.0f;
+float accumulator = 0.0f;
+
+while (!glfwWindowShouldClose(window))
+{
+    input.BeginFrame();
+    glfwPollEvents();
+
+    const float dt = timer.Tick();
+    accumulator += dt;
+
+    while (accumulator &gt;= kFixedStep)
+    {
+        FixedUpdate(kFixedStep);
+        accumulator -= kFixedStep;
+    }
+
+    Update(dt);
+    Render();
+}</code></pre>
+
+        <p>The accumulator converts uneven real frames into uniform simulation steps. A slow frame may run several fixed updates; a fast frame may run none. Rendering still occurs once per outer loop.</p>
+
+        <h2>Do not spin wastefully</h2>
+        <p>Later, swap-chain presentation provides frame pacing: Direct3D can wait for vertical sync, and Metal schedules presentation through its drawable. Until rendering exists, this empty loop may consume a full CPU core. That is expected for the temporary window exercise; do not add arbitrary sleeps to the final renderer loop.</p>
+
+        <figure><div class="figure-box">
+          <svg viewBox="0 0 600 150" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="20" y="55" width="150" height="44" rx="8" stroke="#4aa8ff" stroke-width="2"/>
+            <text x="95" y="82" fill="currentColor" font-size="15" text-anchor="middle">Poll Events</text>
+            <rect x="225" y="55" width="150" height="44" rx="8" stroke="#4aa8ff" stroke-width="2"/>
+            <text x="300" y="82" fill="currentColor" font-size="15" text-anchor="middle">Update(dt)</text>
+            <rect x="430" y="55" width="150" height="44" rx="8" stroke="#4aa8ff" stroke-width="2"/>
+            <text x="505" y="82" fill="currentColor" font-size="15" text-anchor="middle">Render</text>
+            <path d="M170 77 H225" stroke="currentColor" stroke-width="2"/>
+            <path d="M375 77 H430" stroke="currentColor" stroke-width="2"/>
+            <path d="M505 99 V125 H95 V99" stroke="currentColor" stroke-width="2" stroke-dasharray="5 5"/>
+            <text x="300" y="142" fill="currentColor" font-size="13" text-anchor="middle" opacity="0.75">repeat every frame</text>
+          </svg>
+        </div><figcaption>The same main loop drives both native platform backends.</figcaption></figure>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Every frame processes events, advances simulation, and renders.</li>
+            <li><code>std::chrono::steady_clock</code> measures portable monotonic delta time.</li>
+            <li>Multiply velocities by <code>dt</code> so behavior does not depend on frame rate.</li>
+            <li>Clamp exceptional deltas caused by debugger pauses or window interactions.</li>
+            <li>Use variable time for rendering/gameplay and a fixed-step accumulator for physics.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

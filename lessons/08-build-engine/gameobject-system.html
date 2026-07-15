@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GameObjects &amp; Components — Learn C++ &amp; DirectX</title>
+  <title>GameObjects &amp; Components — Learn C++ Engine Development</title>
   <meta name="description" content="Build a Unity-style GameObject that owns a Transform and a list of Components, with templated AddComponent and GetComponent.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -238,7 +238,7 @@ int main() {
         <p>
           Because <code>dt</code> is <sup>1</sup>&frasl;<sub>60</sub> of a second and the speed is 90 deg/s, each
           frame adds 1.5 degrees. Run it and you'll see the rotation climb 1.5, 3.0, 4.5 — motion that stays the
-          same speed no matter the frame rate. When we render meshes with DirectX later, this same
+          same speed no matter the frame rate. When we render meshes with Direct3D on Windows or Metal on macOS later, this same
           <code>Transform</code> becomes a world matrix fed to the vertex shader.
         </p>
 
@@ -289,7 +289,7 @@ int main() {
           <code>GetComponent&lt;T&gt;()</code>, a <code>Transform</code> that's always present, and
           <code>MonoBehaviour</code>'s <code>Update()</code> callback. We've just built the C++ bones of that same
           idea. In the coming lessons we'll add a scene that owns many GameObjects, then a
-          <code>CameraComponent</code> that produces the view and projection matrices DirectX needs.
+          <code>CameraComponent</code> that produces the view and projection matrices either graphics backend needs.
         </p>
 
         <div class="recap">

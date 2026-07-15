@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Meshes &amp; Loading Models — Learn C++ &amp; DirectX</title>
+  <title>Meshes &amp; Loading Models — Learn C++ Engine Development</title>
   <meta name="description" content="Build a reusable Mesh class that owns a vertex and index buffer, upload it to the GPU, draw it, and generate a cube with a factory.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -261,6 +261,24 @@ if (!cube.Upload(device.Get())) {
 // (bind vertex/pixel shaders, input layout, and camera constants first)
 cube.Draw(context.Get());</code></pre>
 
+        <h2>Uploading and drawing with Metal on macOS</h2>
+        <p>The CPU-side <code>Vertex</code> and index vectors are shared. The Metal backend copies those bytes into <code>MTLBuffer</code> objects and draws the same indexed triangle list:</p>
+
+        <pre><code class="language-cpp" data-file="MetalMesh.mm">m_vertexBuffer = device-&gt;newBuffer(
+    vertices.data(), vertices.size() * sizeof(Vertex), MTL::ResourceStorageModeShared);
+m_indexBuffer = device-&gt;newBuffer(
+    indices.data(), indices.size() * sizeof(uint32_t), MTL::ResourceStorageModeShared);
+
+encoder-&gt;setVertexBuffer(m_vertexBuffer, 0, 0);
+encoder-&gt;drawIndexedPrimitives(
+    MTL::PrimitiveTypeTriangle,
+    indices.size(),
+    MTL::IndexTypeUInt32,
+    m_indexBuffer,
+    0);</code></pre>
+
+        <p>Keep <code>vertices</code>, <code>indices</code>, bounds, and model loading in the shared <code>Mesh</code>. Put <code>ID3D11Buffer</code> and <code>MTL::Buffer</code> ownership in their respective GPU-mesh backends.</p>
+
         <h2>From cubes to real models</h2>
 
         <p>
@@ -300,7 +318,7 @@ cube.Draw(context.Get());</code></pre>
           <ul>
             <li>A mesh is a list of <strong>vertices</strong> (position, normal, UV) plus <strong>indices</strong> that connect them into triangles.</li>
             <li>The <code>Mesh</code> class owns a vertex buffer, an index buffer, and an index count, using <code>ComPtr</code> for automatic cleanup.</li>
-            <li><code>Upload(device)</code> creates immutable GPU buffers; <code>Draw(context)</code> binds them and issues a single <code>DrawIndexed</code>.</li>
+            <li>The backend uploads the shared vertex/index data: D3D11 buffers on Windows or <code>MTLBuffer</code> objects on macOS.</li>
             <li>A cube needs 24 vertices (4 per face) and 36 indices; a factory function generates it in code — and winding order controls which side faces out.</li>
             <li>Real models (OBJ, glTF, Assimp) fill the same two vectors, and a <code>MeshRenderer</code> component will pair a shared mesh with a Transform and material.</li>
           </ul>

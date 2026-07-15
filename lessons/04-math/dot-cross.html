@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dot &amp; Cross Products — Learn C++ &amp; DirectX</title>
+  <title>Dot &amp; Cross Products — Learn C++ Engine Development</title>
   <meta name="description" content="Master the dot and cross products in 3D: angles, projection, lighting with N·L, surface normals, handedness, and clean C++ code for your engine.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -227,6 +227,9 @@ int main() {
           <tr><td>Zero when</td><td>Vectors are perpendicular</td><td>Vectors are parallel</td></tr>
           <tr><td>Used for</td><td>Lighting (N·L), facing tests, projection</td><td>Surface normals, coordinate frames</td></tr>
         </tbody></table></div>
+
+        <h2>The same operations in Metal</h2>
+        <p>Metal Shading Language provides the same <code>dot</code>, <code>cross</code>, <code>normalize</code>, and <code>max</code> functions as HLSL. The lighting equation is unchanged on macOS; only the shader language and the engine's chosen handedness affect how you write and interpret the values.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

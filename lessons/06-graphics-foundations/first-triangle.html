@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Your First Triangle — Learn C++ &amp; DirectX</title>
+  <title>Your First Triangle — Learn C++ Engine Development</title>
   <meta name="description" content="Define a vertex struct, build a Direct3D 11 vertex buffer, bind it, set the primitive topology, and issue your first Draw call.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -183,6 +183,16 @@ context-&gt;Draw(3, 0);
 
         <h2>How this fits the engine</h2>
         <p>This lowly triangle is the seed of your renderer. In a component-based engine, a <strong>MeshRenderer</strong> component will own a vertex buffer exactly like this one, created from mesh data loaded off disk. The stride/offset/topology dance you just wrote becomes a reusable <code>DrawMesh()</code> routine that the render system calls for every visible object each frame. Master the flow here — <em>describe, create, bind, draw</em> — and you've learned the pattern that every GPU resource in the engine follows.</p>
+
+        <h2>macOS — draw the triangle with Metal</h2>
+        <p>Create a shared buffer for the same vertex array, bind a compiled render pipeline, and encode a three-vertex draw:</p>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::Buffer* vertexBuffer = device-&gt;newBuffer(
+    vertices, sizeof(vertices), MTL::ResourceStorageModeShared);
+
+encoder-&gt;setRenderPipelineState(pipelineState);
+encoder-&gt;setVertexBuffer(vertexBuffer, 0, 0);
+encoder-&gt;drawPrimitives(MTL::PrimitiveTypeTriangle, 0, 3);</code></pre>
+        <p><code>drawPrimitives</code> is Metal's direct equivalent of a non-indexed <code>Draw</code>. Both APIs read vertices from slot 0, run the vertex function three times, rasterize one triangle, and run the fragment/pixel function.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

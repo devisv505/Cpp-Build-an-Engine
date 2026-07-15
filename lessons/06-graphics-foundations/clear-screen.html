@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Render Targets: Clearing the Screen — Learn C++ &amp; DirectX</title>
+  <title>Render Targets: Clearing the Screen — Learn C++ Engine Development</title>
   <meta name="description" content="Bind a render target, set the viewport, then clear the screen to a solid color and present it every frame with Direct3D 11.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -284,6 +284,27 @@ while (msg.message != WM_QUIT)
           </div>
           <figcaption>The per-frame loop: bind the target and viewport, clear, (later) draw, then present.</figcaption>
         </figure>
+
+        <h2>macOS — clear a Metal drawable</h2>
+        <p>Metal describes the clear operation on a render-pass color attachment, then commits the encoded command buffer:</p>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">CA::MetalDrawable* drawable = layer-&gt;nextDrawable();
+if (drawable == nullptr) return;
+
+MTL::RenderPassDescriptor* pass =
+    MTL::RenderPassDescriptor::renderPassDescriptor();
+auto* color = pass-&gt;colorAttachments()-&gt;object(0);
+color-&gt;setTexture(drawable-&gt;texture());
+color-&gt;setLoadAction(MTL::LoadActionClear);
+color-&gt;setStoreAction(MTL::StoreActionStore);
+color-&gt;setClearColor(MTL::ClearColor(0.05, 0.08, 0.12, 1.0));
+
+MTL::CommandBuffer* commands = commandQueue-&gt;commandBuffer();
+MTL::RenderCommandEncoder* encoder =
+    commands-&gt;renderCommandEncoder(pass);
+encoder-&gt;endEncoding();
+commands-&gt;presentDrawable(drawable);
+commands-&gt;commit();</code></pre>
+        <p>A Direct3D render-target view and a Metal color attachment both identify the texture receiving fragment output. Presenting the swap chain and presenting the Metal drawable serve the same final purpose.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>
