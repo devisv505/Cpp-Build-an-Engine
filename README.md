@@ -10,7 +10,7 @@ Course progress and build-task completion are stored in the browser's local stor
 
 ## Learning path
 
-The course contains 76 lessons in 10 modules:
+The course contains 100 lessons in 12 modules:
 
 1. **Getting Started** — CLion, CMake, the compiler/linker pipeline, first program, and debugging.
 2. **C++ Fundamentals** — variables, control flow, functions, scope, and lifetime.
@@ -22,6 +22,8 @@ The course contains 76 lessons in 10 modules:
 8. **Engine Architecture** — subsystems, GameObjects, Actors, ECS, scene graphs, resources, input, and time.
 9. **Build Your Engine** — portable CMake targets, renderer backends, components, scripting, materials, and the complete loop.
 10. **Multiplayer & Networking** — portable sockets, TCP/UDP, serialization, client-server design, and replication.
+11. **Shaders & Post-Processing** — texture filtering and atlases/arrays, render targets, fullscreen passes, HDR and tone mapping, separable Gaussian blur, and a full bloom pipeline.
+12. **Build Minecraft: A Voxel Engine** — chunked worlds, hidden-face and greedy meshing, voxel texturing and ambient occlusion, noise terrain, trees and foliage decoration, flood-fill lighting, chunk streaming, a threaded job system, DDA raycasting, frustum culling, and a playable sandbox capstone.
 
 ## Platform toolchains
 
@@ -39,7 +41,7 @@ Platform-specific implementation stays behind CMake's `WIN32` and `APPLE` branch
 - `js/curriculum.js` — the source of truth for ordering, paths, and navigation.
 - `js/tasks.js` — the course build tasks.
 - `js/main.js` — shared page chrome, navigation, progress, search, and code blocks.
-- `lessons/` — the 76 lesson pages.
+- `lessons/` — the 100 lesson pages.
 - `css/styles.css` — shared presentation.
 
 ## Adding or reordering lessons

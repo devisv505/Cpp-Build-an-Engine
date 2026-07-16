@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Separable Gaussian Blur — Learn C++ Engine Development</title>
+  <meta name="description" content="Blur is the heart of bloom and soft shadows. Learn the Gaussian kernel and the separability trick that turns an O(n squared) blur into two cheap O(n) passes.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Separable Gaussian Blur</h1>
+
+        <p class="lead">Almost every soft, expensive-looking effect in a modern renderer is a blur wearing a costume: bloom, soft shadows, depth-of-field, screen-space glow. A blur replaces each pixel with a weighted average of its neighbors, and the <em>Gaussian</em> weighting — a bell curve — looks the most natural. Done naïvely a wide blur is brutally slow, but the Gaussian hides a trick that turns one costly 2D pass into two cheap 1D passes. That trick is this lesson, and it is the direct engine for the bloom lesson that follows.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why a blur is a weighted average, and what makes the Gaussian bell curve special.</li>
+            <li>The <strong>separability</strong> proof: why a horizontal pass then a vertical pass equals a full 2D blur for a fraction of the cost.</li>
+            <li>How to compute normalized 1D Gaussian weights in C++ and feed them to a shader.</li>
+            <li>The two-pass HLSL (and Metal) fullscreen blur, with the per-pass <code>texelSize</code> that trips everyone up.</li>
+            <li>The linear-sampling optimization that roughly halves your tap count — and why blurring a downsampled target makes wide blurs almost free.</li>
+          </ul>
+        </div>
+
+        <h2>A blur is a weighted average</h2>
+
+        <p>Look at any pixel in a blurred image and it is simply a mix of the pixels that surrounded it in the original. A <strong>box blur</strong> weights every neighbor equally — cheap, but it produces harsh, boxy artifacts and visible edges. A <strong>Gaussian blur</strong> weights nearby pixels heavily and distant ones lightly, following a bell curve, so the falloff is smooth and the result looks physically soft. The set of weights is called the <strong>kernel</strong>, and the number of pixels it reaches on each side is the <strong>radius</strong>.</p>
+
+        <p>The continuous 2D Gaussian is</p>
+
+        <pre><code class="language-cpp" data-file="math">G(x, y) = exp( -(x*x + y*y) / (2 * sigma*sigma) )</code></pre>
+
+        <p>where <code>sigma</code> (the standard deviation) controls how wide the blur spreads. A larger <code>sigma</code> means a flatter bell and a softer, wider blur. In practice you pick a radius of about <code>3 * sigma</code>: beyond three standard deviations the weights are so tiny they contribute essentially nothing, so sampling further is wasted work.</p>
+
+        <p>Here is the problem. If your kernel is <code>k</code> pixels wide (a radius of <code>r = (k-1)/2</code> on each side), the naïve approach samples every texel in a <code>k×k</code> square around each pixel — that is <code>k*k</code> texture fetches <em>per output pixel</em>. Texture sampling is the single most expensive thing a post-process shader does, and this cost grows with the square of the radius. A modest 33-wide blur would cost 1,089 samples per pixel. At 1080p that is over two billion fetches for one blur. We need to do better.</p>
+
+        <h2>Separability: the whole trick</h2>
+
+        <p>Watch what happens when we factor the 2D Gaussian. Because <code>exp(a + b) = exp(a) * exp(b)</code>:</p>
+
+        <pre><code class="language-cpp" data-file="math">G(x, y) = exp( -(x*x + y*y) / (2*sigma*sigma) )
+        = exp( -x*x / (2*sigma*sigma) ) * exp( -y*y / (2*sigma*sigma) )
+        = G(x) * G(y)</code></pre>
+
+        <p>The 2D kernel is the product of two <em>identical</em> 1D kernels — one along x, one along y. A kernel that factors this way is called <strong>separable</strong>, and it changes everything. Write the blurred value at pixel <code>p</code> as the full 2D sum, then pull the x-independent term out of the inner loop:</p>
+
+        <pre><code class="language-cpp" data-file="math">Blurred(p) = sum over x, y of  Image(p + (x, y)) * G(x) * G(y)
+
+           = sum over y of  G(y) * [ sum over x of  Image(p + (x, y)) * G(x) ]
+                                     \_______________ horizontal 1D blur ______/</code></pre>
+
+        <p>The bracketed inner sum is exactly a <strong>horizontal blur</strong> using the 1D kernel <code>G(x)</code>. The outer sum then takes that horizontally-blurred image and applies a <strong>vertical blur</strong> with the same 1D kernel <code>G(y)</code>. So blurring horizontally into a temporary target, then blurring that result vertically, produces the <em>identical</em> pixels as the full 2D kernel — not an approximation, the same numbers. And the cost collapses: each 1D pass does <code>k</code> samples, so the total is <code>k + k = 2k</code> samples per pixel instead of <code>k*k</code>.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 660 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A five by five grid of samples on the left labelled naive 2D, equal to a horizontal strip of five samples plus a vertical strip of five samples on the right labelled two 1D passes">
+          <text x="112" y="30" fill="currentColor" stroke="none" font-size="14" text-anchor="middle" font-weight="600">Naïve 2D kernel</text>
+          <rect x="46" y="46" width="132" height="132" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <g fill="#4aa8ff" stroke="none">
+            <circle cx="62" cy="62" r="5"/><circle cx="90" cy="62" r="5"/><circle cx="118" cy="62" r="5"/><circle cx="146" cy="62" r="5"/><circle cx="162" cy="62" r="5"/>
+            <circle cx="62" cy="90" r="5"/><circle cx="90" cy="90" r="5"/><circle cx="118" cy="90" r="5"/><circle cx="146" cy="90" r="5"/><circle cx="162" cy="90" r="5"/>
+            <circle cx="62" cy="118" r="5"/><circle cx="90" cy="118" r="5"/><circle cx="118" cy="118" r="5"/><circle cx="146" cy="118" r="5"/><circle cx="162" cy="118" r="5"/>
+            <circle cx="62" cy="146" r="5"/><circle cx="90" cy="146" r="5"/><circle cx="118" cy="146" r="5"/><circle cx="146" cy="146" r="5"/><circle cx="162" cy="146" r="5"/>
+            <circle cx="62" cy="162" r="5"/><circle cx="90" cy="162" r="5"/><circle cx="118" cy="162" r="5"/><circle cx="146" cy="162" r="5"/><circle cx="162" cy="162" r="5"/>
+          </g>
+          <text x="112" y="205" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">k × k samples</text>
+          <text x="112" y="223" fill="currentColor" stroke="none" font-size="12" text-anchor="middle" opacity="0.75">25 taps at k = 5</text>
+
+          <text x="300" y="112" fill="currentColor" stroke="none" font-size="26" text-anchor="middle">=</text>
+          <text x="300" y="138" fill="currentColor" stroke="none" font-size="11" text-anchor="middle" opacity="0.75">same result</text>
+
+          <text x="520" y="30" fill="currentColor" stroke="none" font-size="14" text-anchor="middle" font-weight="600">Two 1-D passes</text>
+          <rect x="404" y="56" width="152" height="26" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <g fill="#4aa8ff" stroke="none">
+            <circle cx="420" cy="69" r="5"/><circle cx="452" cy="69" r="5"/><circle cx="484" cy="69" r="5"/><circle cx="516" cy="69" r="5"/><circle cx="540" cy="69" r="5"/>
+          </g>
+          <text x="575" y="73" fill="currentColor" stroke="none" font-size="12">1. horizontal</text>
+          <rect x="467" y="98" width="26" height="132" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <g fill="#4aa8ff" stroke="none">
+            <circle cx="480" cy="114" r="5"/><circle cx="480" cy="142" r="5"/><circle cx="480" cy="170" r="5"/><circle cx="480" cy="198" r="5"/><circle cx="480" cy="214" r="5"/>
+          </g>
+          <text x="505" y="170" fill="currentColor" stroke="none" font-size="12">2. vertical</text>
+          <text x="380" y="245" fill="currentColor" stroke="none" font-size="13">k + k samples · 10 taps at k = 5</text>
+        </svg></div><figcaption>A separable kernel lets one 2D blur become a horizontal 1D pass followed by a vertical 1D pass — identical output, far fewer samples.</figcaption></figure>
+
+        <div class="table-wrap"><table><thead><tr><th>Kernel width k</th><th>Naïve k×k samples</th><th>Separable 2k samples</th><th>Speed-up</th></tr></thead><tbody>
+          <tr><td>9</td><td>81</td><td>18</td><td>4.5×</td></tr>
+          <tr><td>17</td><td>289</td><td>34</td><td>8.5×</td></tr>
+          <tr><td>33</td><td>1089</td><td>66</td><td>16.5×</td></tr>
+        </tbody></table></div>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why the saving grows with radius</div><p>Naïve cost is <code>O(k²)</code> but separable cost is <code>O(k)</code>. The wider the blur, the bigger the win — which is exactly backwards from your intuition about "expensive" effects. This is why real engines can afford enormous, buttery bloom: the underlying blur scales linearly, not quadratically, in radius.</p></div></div>
+
+        <h2>Computing the 1D weights</h2>
+
+        <p>Both passes share one 1D kernel, so we compute it once on the CPU. We only store one side plus the center — index <code>0</code> is the center weight, index <code>i</code> is the weight applied at both <code>+i</code> and <code>-i</code>, since the Gaussian is symmetric. The raw <code>exp()</code> values do not sum to 1, so we normalize; if we skipped that step the image would get brighter or darker instead of just softer.</p>
+
+        <pre><code class="language-cpp" data-file="GaussianBlur.cpp">#include &lt;vector&gt;
+#include &lt;cmath&gt;
+
+// Normalized 1D Gaussian weights for offsets 0..radius.
+// weights[0]  = center weight (applied once)
+// weights[i]  = weight applied at BOTH +i and -i (symmetric)
+std::vector&lt;float&gt; GaussianWeights1D(int radius, float sigma)
+{
+    std::vector&lt;float&gt; weights(radius + 1);
+
+    float sum = 0.0f;
+    for (int i = 0; i &lt;= radius; ++i)
+    {
+        // exp(-i^2 / (2*sigma^2)). The 1/(sqrt(2*pi)*sigma) scale factor
+        // is a constant that cancels in the normalization, so we drop it.
+        weights[i] = std::exp(-(float)(i * i) / (2.0f * sigma * sigma));
+
+        // The center is counted once; every side offset is counted twice
+        // because it is sampled at both +i and -i.
+        sum += (i == 0) ? weights[i] : 2.0f * weights[i];
+    }
+
+    // Divide by the total so the FULL symmetric kernel sums to exactly 1.
+    for (float&amp; w : weights)
+        w /= sum;
+
+    return weights;
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Normalize over the whole kernel, not one side</div><p>Because index <code>i</code> is used twice (at <code>+i</code> and <code>-i</code>), the normalization sum must count side weights <em>twice</em> — that is the <code>2.0f * weights[i]</code> above. A very common bug is dividing by <code>weights[0] + weights[1] + …</code> as if it were one-sided; the kernel then sums to less than 1 and every blurred frame comes out darker than the source.</p></div></div>
+
+        <p>A reasonable pairing is <code>sigma = radius / 3.0f</code>, so the radius reaches out to about three standard deviations. Upload the resulting weights (and the radius) to a constant buffer for the shader to read.</p>
+
+        <h2>The two-pass shader</h2>
+
+        <p>You already have a fullscreen post-process pass from the earlier lesson: a shader that runs once per output pixel with an interpolated <code>uv</code>, sampling an input texture. We run it twice. Pass one reads the scene target and writes a horizontally-blurred image into a temporary target; pass two reads that temporary and writes the final vertically-blurred result. The only per-pass difference is the axis we step along.</p>
+
+        <p>The step size is <code>texelSize = 1.0 / float2(width, height)</code> — the width of one texel in UV space. Moving <code>i</code> texels sideways means adding <code>texelSize.x * i</code> to <code>u</code>; moving <code>i</code> texels down means adding <code>texelSize.y * i</code> to <code>v</code>.</p>
+
+        <pre><code class="language-hlsl" data-file="Blur.hlsl">Texture2D    gSource : register(t0);
+SamplerState gClamp  : register(s0);   // linear filtering, CLAMP addressing
+
+cbuffer BlurCB : register(b0)
+{
+    float2 gTexelSize;   // 1.0 / source (width, height) for THIS pass
+    int    gRadius;      // samples to each side
+    int    _pad;
+    // HLSL pads each array element out to a full float4 (16 bytes),
+    // so we store one weight per slot in .x.
+    float4 gWeight[9];   // gWeight[i].x = weight at offset i
+};
+
+struct PSInput { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+
+// ---- Horizontal pass: step along x ----
+float4 PSHorizontal(PSInput input) : SV_TARGET
+{
+    float3 color = gSource.Sample(gClamp, input.uv).rgb * gWeight[0].x;
+
+    for (int i = 1; i &lt;= gRadius; ++i)
+    {
+        float2 off = float2(gTexelSize.x * i, 0.0);
+        color += gSource.Sample(gClamp, input.uv + off).rgb * gWeight[i].x;
+        color += gSource.Sample(gClamp, input.uv - off).rgb * gWeight[i].x;
+    }
+    return float4(color, 1.0);
+}
+
+// ---- Vertical pass: identical, but step along y ----
+float4 PSVertical(PSInput input) : SV_TARGET
+{
+    float3 color = gSource.Sample(gClamp, input.uv).rgb * gWeight[0].x;
+
+    for (int i = 1; i &lt;= gRadius; ++i)
+    {
+        float2 off = float2(0.0, gTexelSize.y * i);
+        color += gSource.Sample(gClamp, input.uv + off).rgb * gWeight[i].x;
+        color += gSource.Sample(gClamp, input.uv - off).rgb * gWeight[i].x;
+    }
+    return float4(color, 1.0);
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Clamp the sampler, and set texelSize per pass</div><p>Two pitfalls that produce subtle, maddening artifacts. First, use a <strong>clamp</strong> sampler (<code>D3D11_TEXTURE_ADDRESS_CLAMP</code> / <code>MTLSamplerAddressModeClampToEdge</code>): a wrap sampler makes taps that fall off one edge pull in pixels from the opposite edge, smearing bright light across the screen. Second, <code>gTexelSize</code> must match the resolution of <em>the target being sampled in this pass</em>. If pass one wrote into a half-resolution temporary, pass two's <code>texelSize</code> must be <code>1.0 / halfRes</code>, not the full-res value — otherwise your vertical blur is the wrong width.</p></div></div>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Constant-buffer arrays pad to 16 bytes</div><p>An HLSL <code>float</code> array in a constant buffer does <em>not</em> pack tightly — each element is aligned to a full <code>float4</code>. If you declare <code>float gWeight[9]</code> and upload nine tightly-packed floats from C++, the shader reads them from the wrong offsets. Either declare <code>float4 gWeight[9]</code> and index <code>.x</code> (as above), or write your weights into the <code>.x</code> lane of a <code>float4</code> array on the CPU side. Metal's <code>constant float*</code> buffers pack tightly, so this is a D3D/HLSL-specific gotcha.</p></div></div>
+
+        <h2>Halving the taps with linear sampling</h2>
+
+        <p>We can do better than <code>2k</code>. A bilinear (linear-filtered) sampler, given a UV that lands <em>between</em> two texel centers, returns a blend of both texels in a single fetch. If we position one tap at the right fractional offset between two neighboring texels, that one fetch does the work of two — so we can collapse each pair of side taps into a single sample.</p>
+
+        <p>Take two adjacent texels at offsets <code>1</code> and <code>2</code> with Gaussian weights <code>w1</code> and <code>w2</code>. Place a single tap at</p>
+
+        <pre><code class="language-cpp" data-file="math">offset         = (w1 * 1 + w2 * 2) / (w1 + w2)   // weighted midpoint
+combinedWeight =  w1 + w2</code></pre>
+
+        <p>Why this is exact: a bilinear fetch at fractional offset <code>p</code> (with <code>1 ≤ p ≤ 2</code>) returns <code>(2 - p)*texel1 + (p - 1)*texel2</code>. Multiply that by <code>combinedWeight = w1 + w2</code> and you need <code>combinedWeight*(2 - p) = w1</code> and <code>combinedWeight*(p - 1) = w2</code>. Solving gives exactly the <code>offset</code> above — and adding the two equations confirms <code>combinedWeight = w1 + w2</code>. The center texel has no partner, so it keeps its own dedicated tap. Fold the discrete weights into linear taps once, on the CPU:</p>
+
+        <pre><code class="language-cpp" data-file="GaussianBlur.cpp">struct LinearTaps
+{
+    float              center;    // weight of the untouched center texel
+    std::vector&lt;float&gt; offsets;   // fractional texels from center (one side)
+    std::vector&lt;float&gt; weights;   // combined weight for that tap
+};
+
+// Fold a discrete symmetric kernel into bilinear taps.
+// discrete[0..radius] are the NORMALIZED weights from GaussianWeights1D.
+LinearTaps BuildLinearTaps(const std::vector&lt;float&gt;&amp; discrete)
+{
+    const int radius = (int)discrete.size() - 1;
+    LinearTaps taps;
+    taps.center = discrete[0];
+
+    // Pair up side offsets: (1,2), (3,4), (5,6), ...
+    for (int i = 1; i &lt;= radius; i += 2)
+    {
+        float w1 = discrete[i];
+        float w2 = (i + 1 &lt;= radius) ? discrete[i + 1] : 0.0f;
+        float combined = w1 + w2;
+
+        // Weighted midpoint between texel i and texel i+1.
+        // If w2 == 0 (odd radius, lone last tap) this reduces to i.
+        float offset = (w1 * (float)i + w2 * (float)(i + 1)) / combined;
+
+        taps.offsets.push_back(offset);
+        taps.weights.push_back(combined);
+    }
+    return taps;
+}</code></pre>
+
+        <p>The shader loop is now shorter — it walks the precomputed taps and uses their fractional offsets directly:</p>
+
+        <pre><code class="language-hlsl" data-file="BlurLinear.hlsl">// gCenter, gOffset[i], gTapWeight[i], gTapCount uploaded from LinearTaps.
+float4 PSHorizontalLinear(PSInput input) : SV_TARGET
+{
+    float3 color = gSource.Sample(gClamp, input.uv).rgb * gCenter;
+
+    for (int i = 0; i &lt; gTapCount; ++i)
+    {
+        float2 off = float2(gTexelSize.x * gOffset[i].x, 0.0);
+        color += gSource.Sample(gClamp, input.uv + off).rgb * gTapWeight[i].x;
+        color += gSource.Sample(gClamp, input.uv - off).rgb * gTapWeight[i].x;
+    }
+    return float4(color, 1.0);
+}</code></pre>
+
+        <p>A radius-8 kernel needed 8 discrete side taps; folded into pairs it needs just 4. Per pass that is 1 center + 2×4 = 9 fetches instead of 17 — a little under half, with mathematically identical output because the bilinear split reconstructs the original weights exactly. The equivalence holds as long as the sampler is truly linear and the source grid aligns with your sample positions, which it does for a same-resolution fullscreen pass.</p>
+
+        <h2>Blur where it is cheap: downsample first</h2>
+
+        <p>The final lever is resolution. A blur radius measured in <em>texels</em> covers twice as much of the screen if the target is half-resolution. So the standard move is to downsample the source into a half- or quarter-resolution target first, blur <em>that</em>, and only then combine it back. A blur that would be enormous at full resolution becomes cheap: fewer pixels to shade <em>and</em> a smaller radius for the same visual spread. Because the blurred result is soft by definition, the lost sharpness from the downsample is invisible — you were about to smear it anyway.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Big, cheap blurs live at low resolution</div><p>Never run a wide blur at full resolution — it is the single most common post-process performance mistake. Downsample first. At quarter resolution you shade one sixteenth of the pixels, and a modest radius there spreads as far as a huge radius would at full res. The bloom lesson leans on exactly this: it blurs a small, downsampled bright-pass target and gets a wide, soft glow for almost nothing.</p></div></div>
+
+        <h2>macOS — the same passes in Metal</h2>
+
+        <p>The structure is entirely backend-neutral: two render passes into intermediate textures, driven by the same 1D weights. Only the resource plumbing changes. In Metal your fullscreen fragment shader samples a <code>texture2d&lt;float&gt;</code> with a <code>sampler</code> configured for <code>ClampToEdge</code> addressing and linear filtering, and reads <code>texelSize</code> plus the weights from a bound buffer.</p>
+
+        <pre><code class="language-cpp" data-file="blur.metal">fragment float4 blurHorizontal(VOut in [[stage_in]],
+                               texture2d&lt;float&gt; src   [[texture(0)]],
+                               sampler         samp  [[sampler(0)]],
+                               constant BlurCB&amp; cb   [[buffer(0)]])
+{
+    float3 color = src.sample(samp, in.uv).rgb * cb.weight[0];
+    for (int i = 1; i &lt;= cb.radius; ++i)
+    {
+        float2 off = float2(cb.texelSize.x * i, 0.0);
+        color += src.sample(samp, in.uv + off).rgb * cb.weight[i];
+        color += src.sample(samp, in.uv - off).rgb * cb.weight[i];
+    }
+    return float4(color, 1.0);
+}</code></pre>
+
+        <p>Note that Metal's <code>constant</code> buffers pack a plain <code>float</code> array tightly, so the HLSL <code>float4</code>-per-element workaround is not needed here — you can upload the weights as a straight <code>float</code> array. Everything else — the weight computation, the linear-tap folding, the two-pass ordering, the clamp sampler, the downsampled target — is shared engine code that both backends drive identically.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A blur is a weighted average of neighbors; Gaussian weights follow the bell curve <code>G(x,y) = exp(-(x²+y²)/(2σ²))</code> for a smooth, natural falloff. A naïve <code>k×k</code> kernel costs <code>k²</code> samples per pixel.</li>
+            <li>The Gaussian is <strong>separable</strong>: <code>G(x,y) = G(x)·G(y)</code>, so a horizontal 1D pass followed by a vertical 1D pass gives the <em>identical</em> result for only <code>2k</code> samples. The saving grows with radius.</li>
+            <li>Compute one normalized 1D kernel on the CPU; normalize over the whole symmetric kernel (side weights counted twice) or the image will darken.</li>
+            <li>Run the same fullscreen shader twice, stepping along <code>texelSize.x</code> then <code>texelSize.y</code>. Use a <strong>clamp</strong> sampler and set <code>texelSize</code> to match the resolution sampled in each pass.</li>
+            <li>Linear sampling folds each pair of taps into one bilinear fetch — <code>offset = (w1·1 + w2·2)/(w1+w2)</code>, <code>weight = w1+w2</code> — roughly halving the tap count exactly.</li>
+            <li>Blur a downsampled target for wide, cheap blurs; never run a wide blur at full resolution. This is the exact engine the next lesson uses for bloom.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

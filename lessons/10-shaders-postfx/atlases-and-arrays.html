@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Texture Atlases &amp; Texture Arrays — Learn C++ Engine Development</title>
+  <meta name="description" content="Draw many different textures in a single draw call: pack tiles into one atlas and compute UVs, or use a Texture2DArray indexed per-vertex — the technique every voxel engine leans on.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Texture Atlases &amp; Texture Arrays</h1>
+
+        <p class="lead">Our textured cube binds one image and draws once — easy. But a world made of thousands of blocks, each wanting its own face texture, cannot bind a new texture between every draw: each rebind is a state change and a fresh draw call, and that overhead crushes the frame rate long before the GPU is busy. This lesson shows the two ways engines pack many textures into one bindable resource so a whole scene collapses into a handful of draws. Both feed directly into the voxel engine we build in module 11.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why per-texture binding does not scale, and how batching many textures into one resource fixes it.</li>
+            <li>How to pack tiles into a <strong>texture atlas</strong> and compute the UV rectangle for any tile index.</li>
+            <li>Why atlases <strong>bleed</strong> at tile edges with linear filtering and mipmaps — and the three standard fixes.</li>
+            <li>How a <code>Texture2DArray</code> stacks same-size layers you index per-vertex, with clean mips and no bleeding.</li>
+            <li>How to build a texture array in Direct3D 11 and Metal, and sample both atlas and array in HLSL/MSL.</li>
+          </ul>
+        </div>
+
+        <h2>The problem: one bind per texture does not scale</h2>
+
+        <p>In the last lessons a draw looked like this: set the shader resource view, set the sampler, then <code>DrawIndexed</code>. That is fine for one cube. Now imagine a Minecraft-style world where grass, dirt, stone, wood and sand all need different images. If each block type carries its own texture, the renderer must interrupt itself between block types:</p>
+
+        <pre><code class="language-cpp" data-file="NaiveRender.cpp">// One bind + one draw PER texture. Death by a thousand state changes.
+for (const BlockBatch&amp; batch : batches)
+{
+    context-&gt;PSSetShaderResources(0, 1, &amp;batch.srv); // state change
+    context-&gt;DrawIndexed(batch.indexCount, batch.startIndex, 0); // draw
+}</code></pre>
+
+        <p>Each <code>PSSetShaderResources</code> forces the driver to validate and re-bind, and each texture switch splits what could have been one big draw into many small ones. A chunk touching forty block types costs forty draws instead of one. The fix is to stop switching: bind <em>one</em> resource that holds <em>all</em> the tiles, and let every vertex pick the tile it wants from inside it. Two resources can do that — a texture atlas and a texture array.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 640 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="On the left, a single texture divided into a 4 by 4 grid of tiles addressed by UV rectangles. On the right, a stack of separate same-size layers each addressed by an integer slice index.">
+          <text x="120" y="34" fill="currentColor" stroke="none" font-size="14" text-anchor="middle" font-weight="600">Atlas — one image, sub-rects</text>
+          <g stroke="#4aa8ff" fill="none" stroke-width="2">
+            <rect x="40" y="55" width="160" height="160"/>
+            <line x1="80" y1="55" x2="80" y2="215"/>
+            <line x1="120" y1="55" x2="120" y2="215"/>
+            <line x1="160" y1="55" x2="160" y2="215"/>
+            <line x1="40" y1="95" x2="200" y2="95"/>
+            <line x1="40" y1="135" x2="200" y2="135"/>
+            <line x1="40" y1="175" x2="200" y2="175"/>
+          </g>
+          <rect x="80" y="95" width="40" height="40" fill="#4aa8ff" fill-opacity="0.25" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="100" y="120" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">i</text>
+          <text x="30" y="50" fill="currentColor" stroke="none" font-size="11">0,0</text>
+          <text x="180" y="232" fill="currentColor" stroke="none" font-size="11">1,1</text>
+          <text x="120" y="256" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">UV rectangle per tile</text>
+
+          <text x="320" y="140" fill="currentColor" stroke="none" font-size="20" text-anchor="middle">vs</text>
+
+          <text x="500" y="34" fill="currentColor" stroke="none" font-size="14" text-anchor="middle" font-weight="600">Array — stacked layers, one index</text>
+          <g stroke="#4aa8ff" fill="none" stroke-width="2">
+            <rect x="470" y="60" width="110" height="110"/>
+            <rect x="455" y="78" width="110" height="110"/>
+            <rect x="440" y="96" width="110" height="110"/>
+            <rect x="425" y="114" width="110" height="110"/>
+          </g>
+          <text x="588" y="72" fill="currentColor" stroke="none" font-size="11">slice N-1</text>
+          <text x="415" y="238" fill="currentColor" stroke="none" font-size="11">slice 0</text>
+          <text x="500" y="262" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">independent, same-size layers</text>
+        </svg></div><figcaption>Two ways to bind many textures at once: address sub-rectangles of one image (atlas), or select whole same-size layers by index (array).</figcaption></figure>
+
+        <h2>Approach A: a texture atlas</h2>
+
+        <p>An <strong>atlas</strong> is one big texture that packs many small tiles side by side, usually on a square <code>N &times; N</code> grid. Nothing new happens on the GPU — it is still a single <code>Texture2D</code> sampled with ordinary UVs. All the cleverness is in the UVs: instead of spanning the whole <code>0..1</code> range, each face's UVs address only the sub-rectangle where its tile lives.</p>
+
+        <h3>Computing a tile's UV rectangle</h3>
+
+        <p>Number the tiles row-major from the top-left: tile <code>0</code> is top-left, tile <code>N-1</code> ends the first row, and so on. For a tile index <code>i</code> on an <code>N &times; N</code> grid, one tile spans <code>tileSize = 1/N</code> of the texture in each axis. The column is <code>i % N</code>, the row is <code>i / N</code> (integer division), and the tile's top-left corner is at:</p>
+
+        <pre><code class="language-cpp" data-file="Atlas.h">struct UVRect { float u0, v0, u1, v1; };
+
+// N x N tiles packed row-major, top-left origin (v grows downward).
+UVRect TileUV(int index, int N)
+{
+    float tileSize = 1.0f / static_cast&lt;float&gt;(N);
+    int   col = index % N;
+    int   row = index / N;
+
+    float u0 = col * tileSize;
+    float v0 = row * tileSize;
+    // The tile spans [u0, u0 + tileSize] x [v0, v0 + tileSize].
+    return { u0, v0, u0 + tileSize, v0 + tileSize };
+}</code></pre>
+
+        <p>When you build a mesh, each face's four corners take the corners of that rectangle: <code>(u0,v0)</code>, <code>(u1,v0)</code>, <code>(u0,v1)</code>, <code>(u1,v1)</code>. The pixel shader is unchanged from the textured-cube lesson — it still just samples a <code>Texture2D</code> with the interpolated UV:</p>
+
+        <pre><code class="language-hlsl" data-file="Atlas.hlsl">Texture2D    gAtlas   : register(t0);
+SamplerState gSampler : register(s0);
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    // UVs were pre-baked into the atlas sub-rectangle on the CPU.
+    return gAtlas.Sample(gSampler, input.uv);
+}</code></pre>
+
+        <h3>The catch: edge bleeding</h3>
+
+        <p>Atlases look simple until you turn on the two things you learned in the previous lesson: <strong>linear filtering</strong> and <strong>mipmaps</strong>. A linear sampler reads a 2&times;2 block of texels and blends them. Near a tile's border, that block straddles the boundary and pulls in texels from the <em>neighboring tile</em> — so a sliver of dirt appears along the edge of your grass. Mipmaps make it far worse: at mip level <code>k</code> the tile has shrunk by a factor of 2<sup>k</sup>, so a single coarse-mip texel already averages pixels from several tiles at once.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Bleeding gets worse as things shrink</div><p>The seams that are invisible up close appear as flickering colored lines when a textured surface is far away or steeply angled — exactly when higher mip levels kick in. This is the classic reason a naive atlas looks broken on distant terrain, and why plain <code>WRAP</code> addressing can never tile a single atlas tile: wrapping re-enters the atlas at the opposite edge, landing in some other tile entirely.</p></div></div>
+
+        <p>There are three standard mitigations, and real engines usually combine them:</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Fix</th><th>What you do</th><th>Cost / limit</th></tr></thead><tbody>
+          <tr><td>Half-texel inset</td><td>Shrink each tile's UV rect inward by half a texel so the linear 2&times;2 tap never crosses the border.</td><td>Cheap; only protects mip level 0.</td></tr>
+          <tr><td>Gutters / padding</td><td>Leave a border of duplicated edge pixels around each tile, so bleeding samples the copy, not the neighbor.</td><td>Wastes atlas space; needs a wider gutter for each extra mip level.</td></tr>
+          <tr><td>Limit mip levels</td><td>Cap <code>MaxLOD</code> on the sampler so the GPU never uses mips coarse enough to blend across tiles.</td><td>Loses the aliasing benefit of small mips in the distance.</td></tr>
+        </tbody></table></div>
+
+        <p>The half-texel inset is a one-line change to <code>TileUV</code>, given the atlas's pixel size:</p>
+
+        <pre><code class="language-cpp" data-file="Atlas.h">// Inset by half a texel so bilinear taps stay inside the tile.
+UVRect TileUVInset(int index, int N, int atlasPixels)
+{
+    UVRect r = TileUV(index, N);
+    float half = 0.5f / static_cast&lt;float&gt;(atlasPixels); // atlas is square
+    return { r.u0 + half, r.v0 + half, r.u1 - half, r.v1 - half };
+}</code></pre>
+
+        <p>Notice none of these fixes is free, and none fully survives an aggressive mip chain. That accumulating friction is exactly why the second approach exists.</p>
+
+        <h2>Approach B: a texture array</h2>
+
+        <p>A <code>Texture2DArray</code> is a stack of <em>independent</em> same-size layers living in one resource. You still bind one thing, but instead of carving one image into rectangles, you select a whole layer by an integer <strong>slice index</strong>. The sampling coordinate gains a third component:</p>
+
+        <pre><code class="language-hlsl" data-file="Array.hlsl">Texture2DArray gAtlas   : register(t0);
+SamplerState   gSampler : register(s0);
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    // float3(u, v, layer): the third component is the array slice.
+    return gAtlas.Sample(gSampler, float3(input.uv, input.layer));
+}</code></pre>
+
+        <p>The consequences are all upside for tiled surfaces. Because each slice is a separate image, filtering and mipmaps operate <em>within</em> a slice and never reach a neighbor — <strong>no edge bleeding, clean mip chains, no gutters</strong>. And because a slice fills the full <code>0..1</code> UV space, you can tile it: pass UVs of <code>0..w</code> with <code>WRAP</code> addressing and a face repeats its texture <code>w</code> times, which an atlas simply cannot do.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">The layer coordinate is an index, not a UV</div><p>The third component of the sample coordinate is the <em>array slice number</em> (<code>0, 1, 2, …</code>), not a normalized <code>0..1</code> value, and it is <strong>not</strong> interpolated between slices — the GPU rounds to the nearest layer. Because it must be constant across a triangle, carry it as a per-vertex integer and mark it <code>nointerpolation</code> so the rasterizer passes it through untouched.</p></div></div>
+
+        <p>To route a per-vertex slice index through the pipeline, add a <code>uint</code> field to the vertex and a matching input element. In Direct3D 11 that element uses <code>DXGI_FORMAT_R32_UINT</code>; the varying is flagged so it is delivered whole:</p>
+
+        <pre><code class="language-hlsl" data-file="Array.hlsl">struct VSInput
+{
+    float3 position : POSITION;
+    float2 uv       : TEXCOORD0;
+    uint   layer    : TEXCOORD1; // which slice this vertex reads
+};
+
+struct PSInput
+{
+    float4 position : SV_POSITION;
+    float2 uv       : TEXCOORD0;
+    nointerpolation uint layer : TEXCOORD1; // do not interpolate the index
+};</code></pre>
+
+        <h2>Building the texture array</h2>
+
+        <p>The concept is identical on every backend — one resource, N same-size slices — but the resource-creation call is platform-specific. We show Direct3D 11 (Windows) first, then the Metal (macOS) equivalent; the tile decoding that produces the pixel buffers stays shared engine code.</p>
+
+        <h3>Direct3D 11</h3>
+
+        <p>An array texture is an ordinary <code>ID3D11Texture2D</code> whose <code>ArraySize</code> is greater than one; every slice shares the same width, height, format and mip count. You can fill it two ways. The tidiest is to hand <code>CreateTexture2D</code> one <code>D3D11_SUBRESOURCE_DATA</code> per slice up front:</p>
+
+        <pre><code class="language-cpp" data-file="TextureArray.cpp">// tiles: N images, each tileW x tileH RGBA, already decoded in CPU memory.
+ComPtr&lt;ID3D11ShaderResourceView&gt; CreateTileArray(
+    ID3D11Device* device,
+    const std::vector&lt;std::vector&lt;uint32_t&gt;&gt;&amp; tiles,
+    UINT tileW, UINT tileH)
+{
+    const UINT layerCount = static_cast&lt;UINT&gt;(tiles.size());
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width            = tileW;
+    desc.Height           = tileH;
+    desc.MipLevels        = 1;               // 1 = no mips (see note below)
+    desc.ArraySize        = layerCount;      // &lt;-- the stack of slices
+    desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    desc.SampleDesc.Count = 1;
+    desc.Usage            = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+
+    // One initial-data entry per slice. With MipLevels=1 the subresource
+    // index equals the slice index.
+    std::vector&lt;D3D11_SUBRESOURCE_DATA&gt; init(layerCount);
+    for (UINT i = 0; i &lt; layerCount; ++i)
+    {
+        init[i].pSysMem          = tiles[i].data();
+        init[i].SysMemPitch      = tileW * sizeof(uint32_t); // bytes per row
+        init[i].SysMemSlicePitch = 0;                        // 2D: unused
+    }
+
+    ComPtr&lt;ID3D11Texture2D&gt; tex;
+    if (FAILED(device-&gt;CreateTexture2D(&amp;desc, init.data(), &amp;tex)))
+        return nullptr;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format                    = desc.Format;
+    srvDesc.ViewDimension             = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+    srvDesc.Texture2DArray.MipLevels  = desc.MipLevels;
+    srvDesc.Texture2DArray.ArraySize  = layerCount; // view all slices
+    srvDesc.Texture2DArray.FirstArraySlice = 0;
+
+    ComPtr&lt;ID3D11ShaderResourceView&gt; srv;
+    if (FAILED(device-&gt;CreateShaderResourceView(tex.Get(), &amp;srvDesc, &amp;srv)))
+        return nullptr;
+
+    return srv; // bind with PSSetShaderResources exactly as before
+}</code></pre>
+
+        <p>The alternative is to create the texture empty (pass <code>nullptr</code> for the initial data, and drop <code>IMMUTABLE</code> for <code>D3D11_USAGE_DEFAULT</code>) and upload each slice afterward with <code>UpdateSubresource</code>. This is handy when tiles are streamed in or generated at runtime. The key is addressing the right subresource: an array texture numbers its subresources as <code>mip + slice * mipLevels</code>, and <code>D3D11CalcSubresource</code> computes it for you.</p>
+
+        <pre><code class="language-cpp" data-file="TextureArray.cpp">// Upload one slice into an already-created DEFAULT-usage array texture.
+for (UINT i = 0; i &lt; layerCount; ++i)
+{
+    UINT sub = D3D11CalcSubresource(/*mip*/ 0, /*slice*/ i, desc.MipLevels);
+    context-&gt;UpdateSubresource(
+        tex.Get(), sub, nullptr,
+        tiles[i].data(), tileW * sizeof(uint32_t), 0);
+}</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Want mips? Generate them per slice</div><p>Set <code>MipLevels = 0</code> to allocate a full chain, add <code>D3D11_BIND_RENDER_TARGET</code> and <code>MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS</code>, then call <code>context-&gt;GenerateMips(srv.Get())</code> after uploading. Because each slice mips independently, the result stays clean at every level — no gutters, no capped <code>MaxLOD</code>. That freedom from mip babysitting is the array's biggest practical win over an atlas.</p></div></div>
+
+        <h3>The Metal equivalent</h3>
+
+        <p>On macOS the same concept is a <code>MTLTextureType2DArray</code>. Set <code>arrayLength</code> on the descriptor, then upload each slice with <code>replaceRegion</code>, passing the slice index explicitly:</p>
+
+        <pre><code class="language-cpp" data-file="MetalTextureArray.cpp">MTL::TextureDescriptor* desc = MTL::TextureDescriptor::alloc()-&gt;init();
+desc-&gt;setTextureType(MTL::TextureType2DArray);
+desc-&gt;setPixelFormat(MTL::PixelFormatRGBA8Unorm_sRGB);
+desc-&gt;setWidth(tileW);
+desc-&gt;setHeight(tileH);
+desc-&gt;setArrayLength(layerCount);          // &lt;-- the stack of slices
+desc-&gt;setUsage(MTL::TextureUsageShaderRead);
+
+MTL::Texture* tex = device-&gt;newTexture(desc);
+desc-&gt;release();
+
+MTL::Region region = MTL::Region::Make2D(0, 0, tileW, tileH);
+for (NS::UInteger i = 0; i &lt; layerCount; ++i)
+{
+    tex-&gt;replaceRegion(
+        region, /*level*/ 0, /*slice*/ i,      // &lt;-- per-slice upload
+        tiles[i].data(),
+        /*bytesPerRow*/ tileW * 4,
+        /*bytesPerImage*/ 0);                  // 0 is fine for a 2D slice
+}
+// Bind: encoder-&gt;setFragmentTexture(tex, 0);</code></pre>
+
+        <p>In Metal Shading Language the array is a <code>texture2d_array&lt;float&gt;</code>, and its <code>sample</code> takes the slice as a separate argument rather than a packed third coordinate:</p>
+
+        <pre><code class="language-cpp" data-file="Array.metal">fragment float4 fragMain(
+    VSOut in [[stage_in]],
+    texture2d_array&lt;float&gt; atlas [[texture(0)]],
+    sampler samp [[sampler(0)]])
+{
+    return atlas.sample(samp, in.uv, in.layer); // uv, then slice index
+}</code></pre>
+
+        <h2>Atlas vs. array: choosing</h2>
+
+        <p>Both bind once and draw many; they differ in what they cost you at the edges and in the distance. This table is the summary worth remembering:</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Concern</th><th>Atlas (<code>Texture2D</code>)</th><th>Array (<code>Texture2DArray</code>)</th></tr></thead><tbody>
+          <tr><td>Edge bleeding</td><td>Yes — neighbors bleed at tile borders; needs inset/gutters.</td><td>None — slices are fully independent.</td></tr>
+          <tr><td>Mipmap friendliness</td><td>Fragile — coarse mips blend across tiles.</td><td>Clean — each slice mips on its own.</td></tr>
+          <tr><td>UV tiling (repeat &gt; 1)</td><td>Impossible — <code>WRAP</code> re-enters the atlas.</td><td>Trivial — UV <code>0..w</code> wraps inside the slice.</td></tr>
+          <tr><td>Tile size</td><td>Any packing, but mixed sizes waste space.</td><td>Every slice is one fixed size.</td></tr>
+          <tr><td>Hardware limit</td><td>One texture, up to 16384&times;16384 (D3D11 FL 11).</td><td>Up to 2048 slices (D3D11).</td></tr>
+          <tr><td>Memory / setup</td><td>One image, tightest packing, simplest upload.</td><td>One resource, N slices, a little more overhead.</td></tr>
+        </tbody></table></div>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">What the pros ship</div><p>Classic Minecraft used a single atlas — <code>terrain.png</code>, a 16&times;16 grid of 16-pixel tiles — and fought edge bleeding with inset UVs and capped mips for years. Modern voxel engines almost universally switched to a texture array: block textures are the same size anyway, tiling and mips come for free, and per-face slice indices pack neatly into the mesh. We will build MiniEngine's block textures as an <strong>array</strong> in <em>Texturing Voxels with an Atlas</em> in module 11.</p></div></div>
+
+        <p>The rule of thumb: reach for an <strong>atlas</strong> when tiles vary in size and never tile or rely on distant mips (UI sprites, decals, glyph pages). Reach for a <strong>texture array</strong> whenever tiles are uniform in size and you want repeat-tiling and clean mips — which describes almost every voxel and terrain material. Everything you built here binds through the same <code>PSSetShaderResources</code> call you already know; only the resource type and the sampling coordinate change.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Binding a different texture per object costs a state change and a draw call each time; batching many textures into one resource is what makes thousands of blocks affordable.</li>
+            <li>An <strong>atlas</strong> packs tiles into one <code>Texture2D</code>; for tile <code>i</code> on an <code>N&times;N</code> grid, <code>tileSize = 1/N</code>, <code>u0 = (i % N) * tileSize</code>, <code>v0 = (i / N) * tileSize</code>, spanning <code>[u0, u0+tileSize]</code>.</li>
+            <li>Atlases <strong>bleed</strong> at tile edges under linear filtering and mipmaps; mitigate with a half-texel UV inset, gutter padding, or a capped <code>MaxLOD</code> — none fully free.</li>
+            <li>A <code>Texture2DArray</code> stacks same-size layers sampled with <code>tex.Sample(smp, float3(u, v, layer))</code>; the integer <code>layer</code> selects a slice, so there is no bleeding, mips are clean, and UVs can tile <code>0..w</code>.</li>
+            <li>Build an array in D3D11 by setting <code>ArraySize</code> and uploading one <code>D3D11_SUBRESOURCE_DATA</code> or <code>UpdateSubresource</code> per slice; in Metal use <code>MTLTextureType2DArray</code> with <code>replaceRegion:slice:</code>.</li>
+            <li>Prefer an array for uniform, tiling, mip-friendly block textures — the choice we carry into the voxel engine in module 11.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>From Voxels to Triangles: Naïve Meshing — Learn C++ Engine Development</title>
+  <meta name="description" content="The GPU draws triangles, not voxels. Build a first chunk mesh by emitting all six faces of every solid block — then measure exactly why this approach collapses.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>From Voxels to Triangles: Naïve Meshing</h1>
+
+        <p class="lead">
+          Your chunk is a tidy 3D array of block IDs, but the GPU has never heard of a voxel — it draws
+          <strong>triangles</strong>, nothing else. Somewhere between "16×16×16 numbers in memory" and "a
+          rendered cube of dirt" you have to turn blocks into geometry. In this lesson we write the most
+          obvious converter possible: walk every voxel, and for each solid one emit all six faces into a single
+          <code>Mesh</code>. It works, it renders, and then we measure it — and the numbers are so bad they
+          justify the next two lessons all by themselves.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why we build <strong>one mesh per chunk</strong> instead of issuing a draw call per block.</li>
+            <li>The canonical six-face corner tables for a voxel, with correct normals and a consistent winding.</li>
+            <li>How to write the naïve mesher: iterate voxels, emit 4 vertices and 6 indices per face, offset by the running vertex count.</li>
+            <li>How to hand the finished CPU-side vectors to the module-08 <code>Mesh</code> and upload once.</li>
+            <li>The exact triangle and vertex counts for a solid chunk — and why almost every face is invisible.</li>
+          </ul>
+        </div>
+
+        <h2>One mesh per chunk, not one draw per block</h2>
+
+        <p>
+          A single chunk holds <code>16 × 16 × 16 = 4096</code> blocks. A world holds hundreds of chunks. If you
+          drew each block as its own little cube — bind buffers, set constants, <code>DrawIndexed</code>, repeat —
+          you would be asking the driver to record millions of draw calls every frame. Draw calls are the most
+          expensive thing you can spam a graphics API with; even a few thousand per frame will drag a modern GPU
+          to its knees, because the bottleneck is the CPU-side submission, not the pixels.
+        </p>
+
+        <p>
+          The fix is the same one every voxel engine reaches for: <strong>bake a whole chunk into a single
+          mesh</strong>. All of a chunk's visible geometry goes into one vertex buffer and one index buffer,
+          uploaded to the GPU once. From then on the chunk is a single <code>DrawIndexed</code> call. That is
+          exactly what the <code>Mesh</code> class from <em>Meshes &amp; Loading Models</em> already does for us —
+          we just need to fill its two vectors with block geometry instead of a hand-authored cube.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">The mesh is the unit of rendering</div>
+          <p>Think of meshing as a compile step: it runs on the CPU whenever a chunk's blocks change, and it
+          produces GPU-ready geometry. A block only costs anything at mesh time. Once baked, a fully packed
+          chunk and an empty one both cost a single draw call — the difference is purely how many triangles
+          that call submits.</p></div>
+        </div>
+
+        <h2>The vertex, revisited</h2>
+
+        <p>
+          We keep the exact <code>Vertex</code> layout the engine already uses so our chunk meshes flow through
+          the same <code>Mesh::Upload</code>, the same input layout, and the same shaders as everything else.
+          Position, normal, and UV are all we need today. Later lessons will grow this struct — an ambient-occlusion
+          value, a light level, a texture-array layer for the atlas — but the shape stays a plain, tightly packed
+          POD so it copies straight into a GPU buffer.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">#include &lt;DirectXMath.h&gt;
+
+// The same vertex the rest of MiniEngine draws. We'll extend it in later
+// voxel lessons (AO, light, atlas layer), but the layout stays a flat POD.
+struct Vertex {
+    DirectX::XMFLOAT3 position; // world/model-space position of this corner
+    DirectX::XMFLOAT3 normal;   // which way the face points (flat per face)
+    DirectX::XMFLOAT2 uv;       // texture coordinates
+};</code></pre>
+
+        <p>
+          Each face of a block is <em>flat</em>, so all four of its vertices share one normal. That means we
+          cannot reuse the eight cube corners across faces — a corner touched by three faces needs three
+          different normals. Just like our <code>CreateCube</code> factory, every face carries its own four
+          vertices: <code>6 faces × 4 = 24</code> vertices per solid block, before any culling.
+        </p>
+
+        <h2>The six faces of a voxel</h2>
+
+        <p>
+          A voxel at integer coordinates <code>(x, y, z)</code> occupies the unit cube from
+          <code>(x, y, z)</code> to <code>(x+1, y+1, z+1)</code>. So a face is just a quad whose four corners are
+          the block's position plus a fixed set of offsets in <code>[0, 1]</code>. We tabulate those offsets once,
+          for all six directions, together with the face normal.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 620 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A cube unfolded into a net of its six faces, each labelled with its axis direction and normal, with a winding arrow on the front face.">
+              <!-- +Y (top) -->
+              <rect x="200" y="30" width="100" height="100" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <text x="250" y="76" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">+Y</text>
+              <text x="250" y="96" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">up</text>
+              <!-- middle row: -X, +Z, +X, -Z -->
+              <rect x="80"  y="140" width="100" height="100" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <text x="130" y="186" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">-X</text>
+              <rect x="200" y="140" width="100" height="100" stroke="#4aa8ff" stroke-width="2.6" fill="none"/>
+              <text x="250" y="182" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">+Z</text>
+              <text x="250" y="202" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">front</text>
+              <rect x="320" y="140" width="100" height="100" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <text x="370" y="186" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">+X</text>
+              <rect x="440" y="140" width="100" height="100" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <text x="490" y="186" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">-Z</text>
+              <!-- -Y (bottom) -->
+              <rect x="200" y="250" width="100" height="100" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <text x="250" y="296" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">-Y</text>
+              <text x="250" y="316" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">down</text>
+              <!-- winding arrow on +Z face (CCW seen from outside) -->
+              <path d="M225 165 A 28 28 0 1 1 224 166" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <path d="M224 158 L224 168 L233 165 Z" stroke="none" fill="#4aa8ff"/>
+              <!-- corner order labels on +Z -->
+              <text x="212" y="234" fill="currentColor" stroke="none" font-size="10">v0</text>
+              <text x="212" y="152" fill="currentColor" stroke="none" font-size="10">v1</text>
+              <text x="282" y="152" fill="currentColor" stroke="none" font-size="10">v2</text>
+              <text x="282" y="234" fill="currentColor" stroke="none" font-size="10">v3</text>
+            </svg>
+          </div>
+          <figcaption>A cube unfolded into six quads. Each face has one outward normal (its axis) and the same
+          corner order v0→v1→v2→v3 that winds counter-clockwise seen from outside — our "front" convention.</figcaption>
+        </figure>
+
+        <p>
+          Here is the table as C++. These corner offsets are lifted straight from the working
+          <code>CreateCube</code> factory: that cube centered its corners on the origin at <code>±0.5</code>, and
+          shifting every coordinate by <code>+0.5</code> to land in <code>[0, 1]</code> is a pure translation — it
+          changes neither the normals nor the winding. So this table is guaranteed to be wound the same way as the
+          cube you already render correctly.
+        </p>
+
+        <pre><code class="language-cpp" data-file="VoxelFaces.h">#include &lt;DirectXMath.h&gt;
+
+// One face of a unit voxel: its outward normal and four corner offsets
+// in [0,1]. The corners are ordered v0,v1,v2,v3 so that (0,1,2)+(0,2,3)
+// winds counter-clockwise when viewed from outside the block.
+struct BlockFace {
+    DirectX::XMFLOAT3 normal;
+    DirectX::XMFLOAT3 corners[4];
+};
+
+// Shared UVs: same mapping for every face for now. The atlas lesson will
+// remap these per block type.
+static const DirectX::XMFLOAT2 kCornerUV[4] = {
+    {0, 1}, {0, 0}, {1, 0}, {1, 1}
+};
+
+// Order matters only in that each entry pairs a normal with its corners.
+static const BlockFace kFaces[6] = {
+    // +X (east)
+    {{ 1, 0, 0}, {{1,0,0}, {1,1,0}, {1,1,1}, {1,0,1}}},
+    // -X (west)
+    {{-1, 0, 0}, {{0,0,1}, {0,1,1}, {0,1,0}, {0,0,0}}},
+    // +Y (up)
+    {{ 0, 1, 0}, {{0,1,0}, {0,1,1}, {1,1,1}, {1,1,0}}},
+    // -Y (down)
+    {{ 0,-1, 0}, {{0,0,1}, {0,0,0}, {1,0,0}, {1,0,1}}},
+    // +Z (north)
+    {{ 0, 0, 1}, {{1,0,1}, {1,1,1}, {0,1,1}, {0,0,1}}},
+    // -Z (south)
+    {{ 0, 0,-1}, {{0,0,0}, {0,1,0}, {1,1,0}, {1,0,0}}},
+};</code></pre>
+
+        <h2>The naïve mesher</h2>
+
+        <p>
+          Now the algorithm itself, and it is refreshingly short. Triple-loop over every voxel in the chunk. If
+          the block is not solid — air is id 0, and the registry's <code>IsSolid</code> from the previous lesson
+          answers this in one lookup — skip it. Otherwise, for each of the six faces, append four vertices (the block
+          position plus the corner offset) and six indices (two triangles). The one detail that will bite you if
+          you forget it: indices are relative to the whole vertex buffer, so each face's indices must be offset by
+          the number of vertices that already exist — we grab that as <code>base</code> before pushing the new
+          four.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkMesher.cpp">#include "Vertex.h"
+#include "VoxelFaces.h"
+#include "Chunk.h"          // struct Chunk (GetBlock), CHUNK_SIZE = 16, BlockId
+#include "BlockRegistry.h"  // IsSolid(BlockId); BLOCK_AIR == 0
+#include "Mesh.h"
+#include &lt;vector&gt;
+#include &lt;cstdint&gt;
+
+// Turn one chunk's blocks into a single CPU-side mesh. Nothing here touches
+// the GPU or knows which backend we're on — it just fills two vectors.
+Mesh BuildChunkMeshNaive(const Chunk&amp; chunk) {
+    std::vector&lt;Vertex&gt;   vertices;
+    std::vector&lt;uint32_t&gt; indices;
+
+    for (int z = 0; z &lt; CHUNK_SIZE; ++z)
+    for (int y = 0; y &lt; CHUNK_SIZE; ++y)
+    for (int x = 0; x &lt; CHUNK_SIZE; ++x) {
+        BlockId block = chunk.GetBlock(x, y, z);
+        if (!IsSolid(block))
+            continue;                    // air (id 0) and non-solids emit nothing
+
+        // Naïve: emit ALL six faces, checking no neighbours at all.
+        for (int f = 0; f &lt; 6; ++f) {
+            const BlockFace&amp; face = kFaces[f];
+
+            // Indices are buffer-relative: remember where this face starts.
+            const uint32_t base = static_cast&lt;uint32_t&gt;(vertices.size());
+
+            for (int c = 0; c &lt; 4; ++c) {
+                Vertex v;
+                v.position = { x + face.corners[c].x,
+                               y + face.corners[c].y,
+                               z + face.corners[c].z };
+                v.normal   = face.normal;
+                v.uv       = kCornerUV[c];
+                vertices.push_back(v);
+            }
+
+            // Two triangles, same winding as CreateCube: (0,1,2) and (0,2,3).
+            indices.push_back(base + 0);
+            indices.push_back(base + 1);
+            indices.push_back(base + 2);
+            indices.push_back(base + 0);
+            indices.push_back(base + 2);
+            indices.push_back(base + 3);
+        }
+    }
+
+    return Mesh(std::move(vertices), std::move(indices));
+}</code></pre>
+
+        <p>
+          That is the entire naïve mesher. It is correct, it is easy to read, and it is the honest baseline every
+          later optimization is measured against. Notice what it deliberately does <em>not</em> do: it never asks
+          whether the neighbouring voxel is solid. A block buried in the middle of solid rock still cheerfully
+          emits all six of its faces. Fixing that is the whole point of the next lesson — here we want the simplest
+          thing that draws.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Winding and index offsets are the two ways this scrambles</div>
+          <p>Keep <strong>one</strong> winding order everywhere — we use counter-clockwise-from-outside, the same
+          order <code>CreateCube</code> used and the same one the rasterizer state from the depth &amp; culling
+          lesson treats as front-facing. Flip it and back-face culling throws away your outside faces, leaving a
+          chunk that looks hollow or inside-out. And always take <code>base</code> from the current
+          <code>vertices.size()</code> before appending: hard-code the six indices as <code>0..3</code> and every
+          face after the first will stitch triangles onto the wrong vertices, turning the mesh into confetti.</p></div>
+        </div>
+
+        <h2>Uploading the chunk mesh</h2>
+
+        <p>
+          The payoff of reusing <code>Mesh</code> is that uploading is already written. Build the mesh on the CPU,
+          call <code>Upload</code> once with the device, and draw it every frame. Because the mesher is pure
+          data — it produces <code>std::vector&lt;Vertex&gt;</code> and <code>std::vector&lt;uint32_t&gt;</code>
+          and nothing else — it is completely backend-neutral. The same two vectors become an
+          <code>ID3D11Buffer</code> on Windows (Direct3D 11) or an <code>MTLBuffer</code> on macOS (Metal); the
+          mesher never has to know which.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkRenderer.cpp">// --- when a chunk's blocks change (once, not per frame) ---
+Mesh chunkMesh = BuildChunkMeshNaive(chunk);
+if (!chunkMesh.Upload(device)) {
+    // Empty chunk (all air) or a buffer-creation failure — don't draw it.
+}
+
+// --- render loop, every frame ---
+// Bind shaders, input layout, and the chunk's world-transform constants,
+// then submit the whole chunk in a single indexed draw:
+chunkMesh.Draw(context);</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Build into vectors on the CPU, upload once</div>
+          <p>Never touch the GPU inside the meshing loop. Fill plain vectors, then upload the finished buffers in
+          one shot. And since you know roughly how big they'll get, <code>vertices.reserve()</code> and
+          <code>indices.reserve()</code> up front to avoid a storm of reallocations as the vectors grow — a solid
+          chunk pushes nearly 100k vertices, and letting the vector double its way there is pure wasted work.</p></div>
+        </div>
+
+        <p>
+          Our chunk vertices feed the very same shader the rest of the engine uses. In HLSL the vertex input just
+          mirrors the <code>Vertex</code> layout; the Metal Shading Language equivalent is a struct with matching
+          <code>[[attribute(n)]]</code> slots reading the same three fields in the same order.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Voxel.hlsl">// Vertex-shader input: one row per field of our Vertex struct, same order.
+struct VSInput {
+    float3 position : POSITION;   // XMFLOAT3 position
+    float3 normal   : NORMAL;     // XMFLOAT3 normal
+    float2 uv       : TEXCOORD0;  // XMFLOAT2 uv
+};
+
+// (Metal: struct VSInput { float3 position [[attribute(0)]];
+//         float3 normal [[attribute(1)]]; float2 uv [[attribute(2)]]; };)</code></pre>
+
+        <h2>Counting the damage</h2>
+
+        <p>
+          Now the reckoning. Take the worst case for the naïve mesher: a chunk that is completely full of solid
+          blocks — a cube of stone with no air in it. Every one of its 4096 blocks emits all six faces, and the
+          totals explode.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Quantity</th><th>How it's counted</th><th>Total</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Blocks in a solid 16³ chunk</td><td>16 × 16 × 16</td><td>4,096</td></tr>
+              <tr><td>Quad faces emitted</td><td>4,096 × 6</td><td>24,576</td></tr>
+              <tr><td>Triangles</td><td>24,576 × 2</td><td>49,152</td></tr>
+              <tr><td>Vertices</td><td>24,576 × 4</td><td>98,304</td></tr>
+              <tr><td>Indices</td><td>49,152 × 3</td><td>147,456</td></tr>
+              <tr><td>Faces on the chunk's outer shell (most you could ever see)</td><td>6 × 16 × 16</td><td>1,536</td></tr>
+              <tr><td>Interior faces that can never be seen</td><td>24,576 − 1,536</td><td>23,040 (93.75%)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Read that last row again. Of the 24,576 faces we generated, only 1,536 — the six flat sides of the
+          chunk cube — sit on the surface where a camera could ever catch them. The other <strong>23,040 faces,
+          almost 94% of the mesh, are buried between two solid blocks</strong>, sandwiched inside the rock,
+          pointing at another face pressed right up against them. They get uploaded, transformed by the vertex
+          shader, and then thrown away by the depth test and back-face culling, every single frame. And 1,536 is
+          already the generous number: from any one viewpoint you see at most three of the cube's sides, so the
+          truly visible face count is closer to 700.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 560 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A horizontal slice through a chunk showing a solid block of voxels; the outer perimeter edges are visible while every shared edge between two solid blocks is buried and hidden.">
+              <!-- 4x4 grid of solid cells -->
+              <g stroke="#4aa8ff" stroke-width="1" fill="#4aa8ff" fill-opacity="0.10">
+                <rect x="120" y="30"  width="40" height="40"/>
+                <rect x="160" y="30"  width="40" height="40"/>
+                <rect x="200" y="30"  width="40" height="40"/>
+                <rect x="240" y="30"  width="40" height="40"/>
+                <rect x="120" y="70"  width="40" height="40"/>
+                <rect x="160" y="70"  width="40" height="40"/>
+                <rect x="200" y="70"  width="40" height="40"/>
+                <rect x="240" y="70"  width="40" height="40"/>
+                <rect x="120" y="110" width="40" height="40"/>
+                <rect x="160" y="110" width="40" height="40"/>
+                <rect x="200" y="110" width="40" height="40"/>
+                <rect x="240" y="110" width="40" height="40"/>
+                <rect x="120" y="150" width="40" height="40"/>
+                <rect x="160" y="150" width="40" height="40"/>
+                <rect x="200" y="150" width="40" height="40"/>
+                <rect x="240" y="150" width="40" height="40"/>
+              </g>
+              <!-- interior shared edges: hidden (amber dashed) -->
+              <g stroke="#e0a020" stroke-width="2" stroke-dasharray="4 3">
+                <path d="M160 30 L160 190"/>
+                <path d="M200 30 L200 190"/>
+                <path d="M240 30 L240 190"/>
+                <path d="M120 70 L280 70"/>
+                <path d="M120 110 L280 110"/>
+                <path d="M120 150 L280 150"/>
+              </g>
+              <!-- visible perimeter (thick blue) -->
+              <rect x="120" y="30" width="160" height="160" stroke="#4aa8ff" stroke-width="3.5" fill="none"/>
+              <!-- legend -->
+              <path d="M330 70 L370 70" stroke="#4aa8ff" stroke-width="3.5"/>
+              <text x="380" y="74" fill="currentColor" stroke="none" font-size="13">visible outer faces</text>
+              <path d="M330 110 L370 110" stroke="#e0a020" stroke-width="2" stroke-dasharray="4 3"/>
+              <text x="380" y="114" fill="currentColor" stroke="none" font-size="13">buried interior faces</text>
+            </svg>
+          </div>
+          <figcaption>A slice through solid blocks. Only the perimeter can be seen; every face shared between two
+          solid neighbours is sealed inside and wasted. In 3D the buried fraction is far larger still.</figcaption>
+        </figure>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">98,304 vertices forces 32-bit indices</div>
+          <p>A 16-bit index can only address 65,535 vertices, and a solid chunk blows past that on its own. That
+          is exactly why our <code>Mesh</code> stores <code>uint32_t</code> indices and binds
+          <code>DXGI_FORMAT_R32_UINT</code> (Metal's <code>MTL::IndexTypeUInt32</code>). Culling hidden faces will
+          also shrink most chunks back under the 16-bit ceiling — a nice bonus of doing less work.</p></div>
+        </div>
+
+        <h2>Where this breaks — and what's next</h2>
+
+        <p>
+          The naïve mesher is not wrong, it is <em>wasteful</em>. It scales with the number of solid blocks, but a
+          chunk's visible surface scales with its <em>surface area</em> — and volume grows far faster than
+          surface as worlds get bigger. Multiply nearly 50k triangles per solid chunk across a view distance of
+          hundreds of chunks and you are drowning the GPU in geometry the player will never see. The vertex buffers
+          alone would run to hundreds of megabytes.
+        </p>
+
+        <p>
+          Two ideas rescue us, and each gets its own lesson. First, <strong>hidden-face removal</strong>: before
+          emitting a face, peek at the neighbouring voxel — if it is also solid, the face is interior, so skip it.
+          That one check erases the entire 94% we just counted. Then <strong>greedy meshing</strong>: merge
+          adjacent coplanar faces of the same block type into a few large quads instead of thousands of unit
+          squares, collapsing a flat wall of dirt into a single rectangle. Together they take a chunk from ~50,000
+          triangles down to a few hundred — from unusable to shippable. But you had to see the naïve version first
+          to know exactly what you are buying.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The GPU draws triangles, so we bake a whole chunk into one <code>Mesh</code> — a single vertex buffer, index buffer, and draw call — instead of one draw per block.</li>
+            <li>The naïve mesher walks every voxel and, for each solid one, emits all six faces: four vertices and six indices per face, with indices offset by the running <code>vertices.size()</code>.</li>
+            <li>The six-face corner tables reuse <code>CreateCube</code>'s winding (a pure translation into <code>[0,1]</code>), so faces are consistently front-facing and back-face culling keeps the outside.</li>
+            <li>The mesher is backend-neutral: it fills two vectors that <code>Mesh::Upload</code> turns into a D3D11 buffer on Windows or an <code>MTLBuffer</code> on macOS.</li>
+            <li>A solid 16³ chunk yields ~49,152 triangles and 98,304 vertices, yet at most 1,536 faces are ever visible — roughly 94% of the mesh is buried interior geometry.</li>
+            <li>That waste motivates the next lessons: hidden-face removal deletes interior faces, and greedy meshing merges the survivors into large quads.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

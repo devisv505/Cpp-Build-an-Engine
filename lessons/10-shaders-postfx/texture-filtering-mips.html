@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Textures In Depth: Filtering, Mipmaps &amp; sRGB — Learn C++ Engine Development</title>
+  <meta name="description" content="How GPUs actually sample textures: nearest vs bilinear vs trilinear vs anisotropic filtering, mipmaps that stop the shimmer, wrap modes, and the sRGB-vs-linear color trap.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Textures In Depth: Filtering, Mipmaps &amp; sRGB</h1>
+
+        <p class="lead">Back in module 06 we got a single texture onto a cube and called it done. But the moment that cube drifts into the distance, or you tile a floor into the horizon, the naïve sampler we wrote starts to sparkle and crawl. This lesson is about <em>sampling quality</em>: how the GPU actually reads texels, why distant surfaces shimmer, and the three settings — filtering, mipmaps and color space — that separate a hobby renderer from one that looks calm and correct. Get these right once in MiniEngine's material system and every texture you ever load benefits.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why distant textures shimmer (minification) and nearby ones blur (magnification).</li>
+            <li>Point, bilinear, trilinear and anisotropic filtering — what each fixes and what it costs.</li>
+            <li>How mipmaps work, how the GPU picks a level, and how to generate the chain on D3D11 and Metal.</li>
+            <li>Wrap, clamp, mirror and border address modes for UVs outside <code>0..1</code>.</li>
+            <li>The sRGB trap: why forgetting it washes your whole scene out, and the linear workflow that fixes it.</li>
+          </ul>
+        </div>
+
+        <h2>The two ways sampling goes wrong</h2>
+
+        <p>A texture is a grid of <strong>texels</strong>. A UV coordinate is a point in that grid — <code>(0,0)</code> top-left, <code>(1,1)</code> bottom-right. The problem is that the mapping from texels to screen pixels is almost never one-to-one. Two things happen:</p>
+
+        <ul>
+          <li><strong>Magnification</strong> — one texel covers many screen pixels. You are up close to a low-resolution texture. Without help the result is a blocky staircase; with blending it turns soft and blurry.</li>
+          <li><strong>Minification</strong> — many texels fall inside a single screen pixel. The surface is far away or at a steep angle. A point sample can only return <em>one</em> of those texels, and which one it hits changes as the camera moves a fraction of a pixel. That flicker is the <strong>shimmer</strong> (or aliasing / moiré) you see crawling across distant floors and fences.</li>
+        </ul>
+
+        <p>Minification is the harder, more important problem, and it is exactly what mipmaps solve. But first, filtering — how the GPU turns the texels it reads into a single color.</p>
+
+        <h2>Filtering: turning texels into a color</h2>
+
+        <p>The <em>filter</em> setting on a sampler answers "given a UV, which texels do I read and how do I combine them?" There are four levels of sophistication.</p>
+
+        <h3>Point (nearest)</h3>
+        <p>Snap to the single closest texel and return it. Cheapest possible read. Up close it looks blocky — every texel is a hard square — and in the distance it shimmers badly. That blocky look is not always a bug, though: it is <em>exactly</em> the crisp, pixel-art aesthetic a voxel game like Minecraft wants. We will lean into that in module 11.</p>
+
+        <h3>Bilinear</h3>
+        <p>Read the four texels surrounding the UV and blend them by distance (a 2×2 weighted average). This is the everyday smooth look. It fixes magnification blockiness, but on its own it does <em>nothing</em> for minification shimmer — a 2×2 average still ignores the hundreds of other texels squeezed into that pixel.</p>
+
+        <h3>Trilinear</h3>
+        <p>Bilinear needs mipmaps to shine. Trilinear does a bilinear read on <em>two</em> mip levels — the one just larger and the one just smaller than the pixel needs — and blends between them by the fractional level. This removes the visible seam ("mip banding") where one mip level abruptly hands off to the next as a surface recedes.</p>
+
+        <h3>Anisotropic</h3>
+        <p>Bilinear and trilinear assume the pixel's footprint in texture space is a square. On a floor viewed at a grazing angle it is a long, thin ellipse — much wider in one direction than the other. A square filter has to pick a mip coarse enough to cover the long axis, which over-blurs the short axis, and your floor turns to mush toward the horizon. Anisotropic filtering takes several samples <em>along</em> that stretched axis, keeping grazing-angle surfaces sharp. <code>MaxAnisotropy</code> caps how many samples (typically 4, 8 or 16); it is the single biggest visual upgrade for terrain and floors.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Filter</th><th>Reads</th><th>Fixes</th><th>Cost</th><th>Use for</th></tr></thead><tbody>
+          <tr><td>Point / nearest</td><td>1 texel</td><td>Nothing (that's the point)</td><td>Lowest</td><td>Pixel art, voxels, crisp UI</td></tr>
+          <tr><td>Bilinear</td><td>4 texels, 1 mip</td><td>Magnification blockiness</td><td>Low</td><td>Sharp 2D, no mips</td></tr>
+          <tr><td>Trilinear</td><td>4 texels × 2 mips</td><td>Mip-level banding</td><td>Medium</td><td>General 3D surfaces</td></tr>
+          <tr><td>Anisotropic</td><td>Many taps along the footprint</td><td>Grazing-angle blur</td><td>Highest</td><td>Floors, terrain, roads</td></tr>
+        </tbody></table></div>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">A crisp voxel look without the shimmer</div><p>Point filtering and mipmaps are not enemies. For a Minecraft-style look you want texels to stay hard-edged up close but <em>stop crawling</em> in the distance. Keep <strong>point magnification</strong> so blocks stay sharp, but still generate mipmaps and let the minification blend between levels — in D3D11 that is <code>D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR</code>. Add anisotropy for long floors. We wire exactly this into the voxel renderer in module 11.</p></div></div>
+
+        <h2>Mipmaps: pre-shrinking the image</h2>
+
+        <p>A <strong>mipmap chain</strong> is a precomputed sequence of half-size copies of a texture: 512×512, then 256×256, 128×128, all the way down to 1×1. Each level is a box-filtered (averaged) downsample of the one above, so a distant surface can sample a level whose texels are already close to pixel-sized. Instead of one screen pixel trying to average a thousand full-res texels every frame, the GPU reads a handful from a level that was averaged <em>once</em>, offline.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 560 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A mipmap pyramid of squares halving in size from level 0 to level 4">
+          <rect x="40" y="40" width="160" height="160" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <rect x="220" y="120" width="80" height="80" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <rect x="320" y="160" width="40" height="40" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <rect x="380" y="180" width="20" height="20" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <rect x="420" y="190" width="10" height="10" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="40" y="222" fill="currentColor" font-size="12">L0 · 512²</text>
+          <text x="222" y="222" fill="currentColor" font-size="12">L1 · 256²</text>
+          <text x="316" y="222" fill="currentColor" font-size="12">L2</text>
+          <text x="376" y="222" fill="currentColor" font-size="12">L3</text>
+          <text x="412" y="222" fill="currentColor" font-size="12">L4…1²</text>
+          <text x="40" y="28" fill="currentColor" font-size="12">near / big footprint</text>
+          <text x="360" y="28" fill="currentColor" font-size="12">far / tiny footprint →</text>
+        </svg></div><figcaption>Each level is half the width and height of the last — a quarter of the pixels. The whole chain adds only about a third to the base texture's memory.</figcaption></figure>
+
+        <p>The extra memory is modest: each level has a quarter of the pixels of the one above, so the geometric series <code>1/4 + 1/16 + 1/64 + …</code> converges to <strong>≈ 33%</strong> over the base image. That one-third overhead buys you both a huge reduction in shimmer and better texture-cache behavior, because distant draws touch small, cache-friendly levels.</p>
+
+        <h3>How the GPU chooses a level</h3>
+        <p>You never pick the mip level yourself. When a pixel shader calls <code>Sample</code>, the hardware runs the shader on 2×2 pixel <em>quads</em> and measures how fast the UV changes between neighboring pixels — the screen-space derivatives <code>ddx(uv)</code> and <code>ddy(uv)</code>. A large derivative means many texels per pixel (heavy minification), so it selects a coarser (higher-numbered) level; a small derivative keeps it on a fine level. Trilinear then blends across the fractional part.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why <code>Sample</code> must live in uniform flow</div><p>Because level selection relies on comparing neighboring pixels, <code>tex.Sample(smp, uv)</code> is only valid where all pixels in the quad take the same path — not inside a divergent <code>if</code> or a loop with a data-dependent length. If you must sample in a branch, compute the UV before the branch, or call <code>SampleLevel</code>/<code>SampleGrad</code> and supply the level or gradients yourself. Sampling in a dynamic loop with plain <code>Sample</code> gives undefined derivatives and garbage mips.</p></div></div>
+
+        <h3>Generating the chain in Direct3D 11</h3>
+        <p>You rarely author mips by hand. On Windows, create the texture with a full mip chain, the render-target bind flag, and the <em>generate-mips</em> misc flag; upload the full-resolution image into level 0; then let the GPU box-filter the rest with a single <code>GenerateMips</code> call through the SRV.</p>
+
+        <pre><code class="language-cpp" data-file="Texture.cpp">// device:  ID3D11Device*      context: ID3D11DeviceContext*
+// pixels:  decoded RGBA bytes of the full-resolution image
+ComPtr&lt;ID3D11ShaderResourceView&gt; CreateMippedTexture(
+    ID3D11Device* device, ID3D11DeviceContext* context,
+    const void* pixels, UINT width, UINT height)
+{
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width            = width;
+    desc.Height           = height;
+    desc.MipLevels        = 0;   // 0 = allocate the FULL chain down to 1x1
+    desc.ArraySize        = 1;
+    desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; // see sRGB below
+    desc.SampleDesc.Count = 1;
+    desc.Usage            = D3D11_USAGE_DEFAULT;             // GPU can write mips
+    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE |
+                            D3D11_BIND_RENDER_TARGET;        // required by GenerateMips
+    desc.MiscFlags        = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+
+    // No initial data here: we upload level 0 after creation, then generate.
+    ComPtr&lt;ID3D11Texture2D&gt; tex;
+    if (FAILED(device-&gt;CreateTexture2D(&amp;desc, nullptr, &amp;tex)))
+        return nullptr;
+
+    // Copy the full-res image into mip 0. Row pitch = width * 4 bytes (RGBA8).
+    context-&gt;UpdateSubresource(tex.Get(), 0, nullptr, pixels, width * 4, 0);
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format                    = desc.Format;
+    srvDesc.ViewDimension             = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels       = (UINT)-1; // -1 = view all levels
+
+    ComPtr&lt;ID3D11ShaderResourceView&gt; srv;
+    if (FAILED(device-&gt;CreateShaderResourceView(tex.Get(), &amp;srvDesc, &amp;srv)))
+        return nullptr;
+
+    context-&gt;GenerateMips(srv.Get()); // box-filter the whole chain from level 0
+    return srv;
+}</code></pre>
+
+        <p>Two details make or break this: <code>MipLevels = 0</code> tells Direct3D to allocate every level (setting it to <code>1</code> gives you a single level and <code>GenerateMips</code> becomes a no-op), and the SRV's <code>MipLevels = -1</code> exposes the full chain to shaders. Production DDS pipelines instead ship <em>pre-generated</em> mips baked with a high-quality filter, which looks better than the GPU box filter and skips the runtime cost — but <code>GenerateMips</code> is perfect for textures you build or decode at load time.</p>
+
+        <h3>Generating the chain in Metal</h3>
+        <p>On macOS, ask for a mipmapped texture in the descriptor (the <code>mipmapped: true</code> argument sizes the chain for you), upload level 0, then let a blit encoder fill the rest with <code>generateMipmaps</code>:</p>
+
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::TextureDescriptor* td =
+    MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA8Unorm_sRGB, width, height, /*mipmapped*/ true);
+td-&gt;setUsage(MTL::TextureUsageShaderRead);
+
+MTL::Texture* texture = device-&gt;newTexture(td);
+
+// Upload the full-resolution image into mip level 0.
+MTL::Region region = MTL::Region::Make2D(0, 0, width, height);
+texture-&gt;replaceRegion(region, /*mip*/ 0, pixels, /*bytesPerRow*/ width * 4);
+
+// Fill levels 1..N on the GPU with a blit encoder.
+MTL::CommandBuffer*      cmd  = queue-&gt;commandBuffer();
+MTL::BlitCommandEncoder* blit = cmd-&gt;blitCommandEncoder();
+blit-&gt;generateMipmaps(texture);
+blit-&gt;endEncoding();
+cmd-&gt;commit();</code></pre>
+
+        <p>For higher-quality downsampling Metal also exposes Metal Performance Shaders (<code>MPSImageGaussianPyramid</code> and friends), but <code>generateMipmaps</code> is the standard, one-line path. The asset-decoding code that produces <code>pixels</code> stays shared C++; only these creation calls are backend-specific.</p>
+
+        <h2>Building the sampler</h2>
+
+        <p>Filtering, anisotropy and addressing all live on a small immutable state object — <code>ID3D11SamplerState</code> on Windows, <code>MTLSamplerState</code> on macOS. You create a handful at startup and share them across every draw. Here is the workhorse: anisotropic filtering, 8× taps, wrapping UVs.</p>
+
+        <pre><code class="language-cpp" data-file="Sampler.cpp">ComPtr&lt;ID3D11SamplerState&gt; CreateAnisoSampler(ID3D11Device* device)
+{
+    D3D11_SAMPLER_DESC desc = {};
+    desc.Filter         = D3D11_FILTER_ANISOTROPIC; // implies trilinear taps
+    desc.MaxAnisotropy  = 8;                         // 1..16
+    desc.AddressU       = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressV       = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressW       = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.MipLODBias     = 0.0f;
+    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    desc.MinLOD         = 0.0f;
+    desc.MaxLOD         = D3D11_FLOAT32_MAX;         // let it reach every mip
+
+    ComPtr&lt;ID3D11SamplerState&gt; sampler;
+    HRESULT hr = device-&gt;CreateSamplerState(&amp;desc, &amp;sampler);
+    return SUCCEEDED(hr) ? sampler : nullptr;
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">The <code>MaxLOD</code> trap</div><p>Leave <code>MaxLOD</code> at its zero-initialized default and the sampler is clamped to mip level 0 — you generated a whole chain and the GPU never touches it, so your scene shimmers exactly as before. Always set <code>MaxLOD = D3D11_FLOAT32_MAX</code> (or a real cap) when you want mipmapping. It is one of those bugs that looks like "mipmaps don't work" when the mips are fine and the sampler is the problem.</p></div></div>
+
+        <p>The Metal equivalent decouples the three filters, so you set them independently — which, incidentally, makes the crisp-voxel combination trivial: point <code>magFilter</code>, mipmapped <code>minFilter</code>.</p>
+
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::SamplerDescriptor* sd = MTL::SamplerDescriptor::alloc()-&gt;init();
+sd-&gt;setMinFilter(MTL::SamplerMinMagFilterLinear);
+sd-&gt;setMagFilter(MTL::SamplerMinMagFilterLinear);
+sd-&gt;setMipFilter(MTL::SamplerMipFilterLinear);   // linear mip blend = trilinear
+sd-&gt;setMaxAnisotropy(8);
+sd-&gt;setSAddressMode(MTL::SamplerAddressModeRepeat); // U
+sd-&gt;setTAddressMode(MTL::SamplerAddressModeRepeat); // V
+MTL::SamplerState* sampler = device-&gt;newSamplerState(sd);
+sd-&gt;release();</code></pre>
+
+        <p>On the shader side nothing changes from module 06 — the sampler carries all of this state. The pixel shader just declares the texture and sampler and calls <code>Sample</code>; the hardware applies the filter, mip selection and addressing you configured.</p>
+
+        <pre><code class="language-hlsl" data-file="Textured.hlsl">Texture2D    tex : register(t0);
+SamplerState smp : register(s0);
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    // One call. The sampler picks the mip and blends texels for us.
+    float3 albedo = tex.Sample(smp, input.uv).rgb;
+    // ... lighting happens here, in LINEAR space (see below) ...
+    return float4(albedo, 1.0f);
+}</code></pre>
+
+        <h2>Address modes: UVs outside 0..1</h2>
+
+        <p>The <em>address</em> mode decides what a UV of, say, <code>1.7</code> means. This is how you tile a brick texture across a wall or stop a decal from smearing at its edge.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Mode</th><th>D3D11 constant</th><th>Behavior at UV = 1.3</th><th>Good for</th></tr></thead><tbody>
+          <tr><td>Wrap / Repeat</td><td><code>TEXTURE_ADDRESS_WRAP</code></td><td>Tiles: reads 0.3</td><td>Repeating brick, terrain, floors</td></tr>
+          <tr><td>Clamp</td><td><code>TEXTURE_ADDRESS_CLAMP</code></td><td>Sticks to the edge: reads 1.0</td><td>Decals, sprites, gradients</td></tr>
+          <tr><td>Mirror</td><td><code>TEXTURE_ADDRESS_MIRROR</code></td><td>Flips each tile: reads 0.7</td><td>Seamless tiling from a non-tiling image</td></tr>
+          <tr><td>Border</td><td><code>TEXTURE_ADDRESS_BORDER</code></td><td>Returns a fixed <code>BorderColor</code></td><td>Shadow maps, masks with a defined outside</td></tr>
+        </tbody></table></div>
+
+        <p>Metal names the same four <code>SamplerAddressModeRepeat</code>, <code>ClampToEdge</code>, <code>MirrorRepeat</code> and <code>ClampToBorderColor</code>. To repeat a texture more than once across a mesh, you do not change the address mode — you scale the UVs (multiply by, say, 4.0 in the vertex shader or bake it into the mesh) and let <code>WRAP</code> tile the result.</p>
+
+        <h2>The sRGB trap</h2>
+
+        <p>This is the one that makes people ask "why does my whole scene look washed out and muddy?" — and the fix is two format changes, not a shader rewrite.</p>
+
+        <p>Image files that represent <em>color</em> — an albedo/diffuse PNG, a photo — are authored in <strong>sRGB space</strong>. Their bytes are perceptually encoded with a gamma-like curve so that the limited 0–255 range spends more precision on the darks your eye is sensitive to. A stored value of <code>0.5</code> is <em>not</em> half the light energy of <code>1.0</code>; decoded, it is only about <code>0.22</code> of it (roughly 0.5 raised to the 2.2 power). Lighting math — multiplying by a light color, adding two contributions — only gives physically correct results in <strong>linear space</strong>, where the numbers <em>are</em> proportional to light energy. Multiply sRGB-encoded texels directly and every product comes out too dark and every blend comes out wrong.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 620 150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Linear color workflow from sRGB texture through linear lighting back to sRGB output">
+          <rect x="10" y="55" width="120" height="44" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="70" y="74" fill="currentColor" font-size="11" text-anchor="middle">sRGB PNG</text>
+          <text x="70" y="90" fill="currentColor" font-size="11" text-anchor="middle">on disk</text>
+          <rect x="180" y="55" width="130" height="44" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="245" y="74" fill="currentColor" font-size="11" text-anchor="middle">_SRGB format</text>
+          <text x="245" y="90" fill="currentColor" font-size="11" text-anchor="middle">auto-decode → linear</text>
+          <rect x="360" y="55" width="120" height="44" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="420" y="74" fill="currentColor" font-size="11" text-anchor="middle">lighting</text>
+          <text x="420" y="90" fill="currentColor" font-size="11" text-anchor="middle">(linear math)</text>
+          <rect x="530" y="55" width="80" height="44" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="570" y="74" fill="currentColor" font-size="11" text-anchor="middle">sRGB</text>
+          <text x="570" y="90" fill="currentColor" font-size="11" text-anchor="middle">out → display</text>
+          <path d="M132 77 L178 77" stroke="#4aa8ff" stroke-width="2"/><path d="M170 72 L178 77 L170 82" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+          <path d="M312 77 L358 77" stroke="#4aa8ff" stroke-width="2"/><path d="M350 72 L358 77 L350 82" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+          <path d="M482 77 L528 77" stroke="#4aa8ff" stroke-width="2"/><path d="M520 72 L528 77 L520 82" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+          <text x="245" y="30" fill="currentColor" font-size="11" text-anchor="middle">decode once, on read</text>
+          <text x="570" y="30" fill="currentColor" font-size="11" text-anchor="middle">encode once, on write</text>
+        </svg></div><figcaption>The linear workflow: the GPU decodes sRGB → linear when it samples, you light in linear, and it re-encodes linear → sRGB when it writes to the display.</figcaption></figure>
+
+        <p>You do <em>not</em> want to decode by hand in the shader, because filtering and mip generation must happen in linear space too. The clean fix is to let the hardware do it: create color textures with an <code>_SRGB</code> pixel format. Then every <code>Sample</code> returns already-linearized values <em>before</em> filtering, for free.</p>
+
+        <pre><code class="language-cpp" data-file="Formats.cpp">// COLOR textures (albedo, diffuse) — let the GPU linearize on read:
+DXGI_FORMAT_R8G8B8A8_UNORM_SRGB     // D3D11
+MTL::PixelFormatRGBA8Unorm_sRGB     // Metal
+
+// The same bytes as UNORM, but sampling returns LINEAR values.
+// Then, so the final image looks right, present through an sRGB
+// render target / swap-chain view, which re-encodes on write:
+DXGI_FORMAT_R8G8B8A8_UNORM_SRGB     // backbuffer / RTV format</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Forgetting sRGB is the #1 "washed-out scene" bug</div><p>If your lit scene looks pale, flat and low-contrast, this is almost always the cause: a color texture loaded as plain <code>UNORM</code> and lit as if it were linear. Switch the format to <code>_SRGB</code> and present through an sRGB target. Because the byte layout is identical, it costs nothing at runtime and needs no shader changes — but it corrects every diffuse texture and every blend in the frame at once.</p></div></div>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Only <em>color</em> is sRGB — data maps are linear</div><p>Normal, roughness, metallic, height and ambient-occlusion maps store <em>numbers</em>, not colors your eye judges — a normal's <code>0.5</code> really means the midpoint. Loading them as <code>_SRGB</code> would silently corrupt those values through the decode curve. Keep data maps as plain <code>UNORM</code> and reserve <code>_SRGB</code> for albedo and other authored-color textures. MiniEngine's material system will tag each texture slot as "color" or "data" so it can pick the right format automatically.</p></div></div>
+
+        <h2>Wiring it into MiniEngine</h2>
+
+        <p>Everything here lives in two places in our engine, and both are things we already have. Texture creation — the mip chain and the sRGB-vs-UNORM choice — belongs in the resource/asset loader, driven by a per-slot "is this color?" flag. Sampler creation belongs at renderer startup: build a small set (linear-wrap-aniso, point-clamp, point-wrap-mipped for voxels) once, and let each <code>Material</code> reference the shared sampler it wants. No per-draw sampler churn, no per-material texture format guessing. With that in place, loading a new asset is just "decode the file, pick color or data, generate mips" and the quality is correct by construction — which is exactly the setup the next lessons on atlases and render targets will build on.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Minification (many texels per pixel) causes shimmer; magnification (one texel over many pixels) causes blockiness or blur. Filtering and mipmaps address them.</li>
+            <li>Point is crisp but aliased; bilinear smooths magnification; trilinear blends mip levels; anisotropic keeps grazing-angle floors sharp. Point + mipmaps is the crisp voxel combo.</li>
+            <li>Mipmaps are a ~33%-larger chain of half-size downsamples; the GPU picks a level from the screen-space derivative of the UVs. Generate them with <code>GenerateMips</code> (D3D11) or a blit encoder's <code>generateMipmaps</code> (Metal), and remember <code>MaxLOD</code>.</li>
+            <li>Address modes — wrap, clamp, mirror, border — decide what UVs outside <code>0..1</code> read; tile by scaling UVs, not by changing the mode.</li>
+            <li>Color textures are authored in sRGB: create them as <code>_SRGB</code> so the GPU linearizes on read, light in linear space, and present through an sRGB target. Keep normal/roughness/data maps as linear <code>UNORM</code>.</li>
+            <li>In MiniEngine, mip + format choice lives in the asset loader; a few shared samplers live at renderer startup and are referenced by materials.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Frustum Culling &amp; Draw-Call Batching — Learn C++ Engine Development</title>
+  <meta name="description" content="Stop drawing what the camera cannot see: extract the six frustum planes from the view-projection matrix and reject any chunk whose bounding box lies entirely outside them.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Frustum Culling &amp; Draw-Call Batching</h1>
+
+        <p class="lead">
+          Even after greedy meshing squeezes a chunk down to a few hundred triangles, an open world still holds
+          hundreds of loaded chunks — and on any given frame the camera can see only a handful of them. Handing
+          the GPU every chunk, most of them behind you or off to the side, burns vertex-shader and driver time on
+          geometry that never touches a pixel. This lesson adds the cheapest, highest-leverage optimization in the
+          whole renderer: build the camera's view volume as six planes, and before each chunk's draw call ask one
+          quick question — could any part of this box be on screen? If the answer is no, skip it entirely.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why frustum culling still pays off after greedy meshing, and what the camera's six clip planes are.</li>
+            <li>How to represent a plane as a unit normal plus an offset, and exactly when normalization matters.</li>
+            <li>The Gribb-Hartmann method: pull all six planes straight from the view-projection matrix, minding row-major vs column-major and the D3D/Metal <code>[0,1]</code> vs OpenGL <code>[-1,1]</code> depth range.</li>
+            <li>The positive-vertex test that rejects a chunk's world-space AABB against a plane by touching one corner, not eight.</li>
+            <li>How to wire the test into the render loop and keep driver overhead tiny with one shared shader and one block texture array.</li>
+          </ul>
+        </div>
+
+        <h2>The camera only sees a box-shaped slice of the world</h2>
+
+        <p>
+          A perspective camera does not see everything — it sees a truncated pyramid called the <strong>view
+          frustum</strong>. Six flat planes bound it: <em>left</em> and <em>right</em> pinch it in from the sides,
+          <em>bottom</em> and <em>top</em> from above and below, and the <em>near</em> and <em>far</em> planes cap
+          it front and back. Anything outside all six is invisible this frame. A chunk that sits behind you, or off
+          past the right edge, or beyond your view distance, will be transformed by the vertex shader and then
+          thrown away wholesale by the clipper — pure wasted submission. Frustum culling does that rejection up
+          front, on the CPU, with a test far cheaper than a draw call.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 640 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Top-down view of a camera frustum. Two lines diverge from the camera as the left and right planes; horizontal near and far planes cap it. Several chunk squares are marked as inside the frustum, clipped by a plane, or fully outside.">
+              <!-- frustum side planes -->
+              <path d="M320 372 L49 50" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <path d="M320 372 L591 50" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <!-- far plane cap -->
+              <path d="M66 70 L574 70" stroke="#4aa8ff" stroke-width="2.6" fill="none"/>
+              <!-- near plane cap -->
+              <path d="M261 300 L379 300" stroke="#4aa8ff" stroke-width="2.6" fill="none"/>
+              <!-- camera -->
+              <circle cx="320" cy="372" r="5" fill="#4aa8ff" stroke="none"/>
+              <text x="333" y="377" fill="currentColor" stroke="none" font-size="13">camera</text>
+              <!-- plane labels -->
+              <text x="88" y="120" fill="currentColor" stroke="none" font-size="12">left plane</text>
+              <text x="470" y="120" fill="currentColor" stroke="none" font-size="12">right plane</text>
+              <text x="300" y="62" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">far plane</text>
+              <text x="388" y="304" fill="currentColor" stroke="none" font-size="12">near plane</text>
+              <!-- inside chunks -->
+              <rect x="277" y="150" width="46" height="46" fill="#4aa8ff" fill-opacity="0.18" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="300" y="178" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">in</text>
+              <rect x="245" y="92" width="46" height="46" fill="#4aa8ff" fill-opacity="0.18" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="268" y="120" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">in</text>
+              <!-- clipped chunk (straddles right plane) -->
+              <rect x="442" y="150" width="46" height="46" fill="none" stroke="#4aa8ff" stroke-width="2" stroke-dasharray="5 3"/>
+              <text x="465" y="178" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">clip</text>
+              <!-- outside chunks -->
+              <rect x="52" y="150" width="46" height="46" fill="none" stroke="currentColor" stroke-opacity="0.4" stroke-width="1.5"/>
+              <text x="75" y="178" fill="currentColor" fill-opacity="0.5" stroke="none" font-size="11" text-anchor="middle">out</text>
+              <rect x="150" y="22" width="46" height="46" fill="none" stroke="currentColor" stroke-opacity="0.4" stroke-width="1.5"/>
+              <text x="173" y="50" fill="currentColor" fill-opacity="0.5" stroke="none" font-size="11" text-anchor="middle">out</text>
+              <rect x="300" y="320" width="46" height="46" fill="none" stroke="currentColor" stroke-opacity="0.4" stroke-width="1.5"/>
+              <text x="323" y="348" fill="currentColor" fill-opacity="0.5" stroke="none" font-size="11" text-anchor="middle">out</text>
+              <!-- legend -->
+              <rect x="60" y="400" width="15" height="15" fill="#4aa8ff" fill-opacity="0.18" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="82" y="412" fill="currentColor" stroke="none" font-size="12">inside — drawn</text>
+              <rect x="230" y="400" width="15" height="15" fill="none" stroke="#4aa8ff" stroke-width="2" stroke-dasharray="5 3"/>
+              <text x="252" y="412" fill="currentColor" stroke="none" font-size="12">clipped — drawn</text>
+              <rect x="420" y="400" width="15" height="15" fill="none" stroke="currentColor" stroke-opacity="0.4" stroke-width="1.5"/>
+              <text x="442" y="412" fill="currentColor" stroke="none" font-size="12">outside — skipped</text>
+            </svg>
+          </div>
+          <figcaption>Top-down slice of the frustum. Chunks fully inside and chunks straddling a plane are drawn;
+          chunks entirely outside any plane are skipped. The top and bottom planes bound the frustum vertically —
+          out of this page — and are tested exactly the same way.</figcaption>
+        </figure>
+
+        <h2>A plane is a normal and an offset</h2>
+
+        <p>
+          Each of the six sides is an infinite flat plane, and we store it the standard way: a normal
+          <code>n = (a, b, c)</code> and a scalar <code>d</code>, so the plane is the set of points where
+          <code>a·x + b·y + c·z + d = 0</code>. We choose the sign of <code>n</code> so it points <em>into</em> the
+          frustum. Then a world point <code>p</code> is on the inside of that plane exactly when
+          <code>Dot(n, p) + d &gt;= 0</code>. If <code>n</code> is a <strong>unit</strong> vector, that same
+          expression is the signed distance from <code>p</code> to the plane, measured in world units — positive
+          inside, negative outside.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Frustum.h">#include "Vector3.h"   // engine::Vector3, Dot, Length
+
+namespace engine {
+
+// Plane a*x + b*y + c*z + d = 0. After Normalize(), n is a UNIT normal that
+// points INTO the frustum, so a world point p is inside when
+// Dot(n, p) + d &gt;= 0 — and that value is p's signed distance to the plane.
+struct Plane {
+    Vector3 n;            // (a, b, c)
+    float   d = 0.0f;
+
+    Plane() = default;
+    Plane(float a, float b, float c, float dd) : n(a, b, c), d(dd) {}
+
+    void Normalize() {
+        float inv = 1.0f / n.Length();   // length of (a, b, c)
+        n = n * inv;
+        d *= inv;                        // scale d too, or distances are wrong
+    }
+};
+
+// Axis-aligned bounding box in WORLD space: two opposite corners.
+struct AABB {
+    Vector3 min;
+    Vector3 max;
+};
+
+} // namespace engine</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Normalize for distance, not for the yes/no test</div>
+          <p>The raw planes come out un-normalized, and for a pure inside/outside decision that is actually fine —
+          scaling a plane by a positive number never flips the sign of <code>Dot(n, p) + d</code>, and the
+          positive-vertex test below only looks at the <em>sign</em> of each normal component. But the moment you
+          want a <em>metric</em> distance — cull spheres by radius, fade LODs by range, add a little slop near the
+          camera — an un-normalized plane hands you a meaningless number. Normalize once, up front, and never think
+          about it again.</p></div>
+        </div>
+
+        <h2>Extracting the six planes (Gribb-Hartmann)</h2>
+
+        <p>
+          The elegant part: you do not build the planes from the camera's position and angles. They fall straight
+          out of the combined <strong>view-projection matrix</strong> — the very matrix from the
+          <em>Camera Component</em> lesson that maps a world point to clip space. This is the Gribb-Hartmann
+          method, and it works because clip-space itself is defined by inequalities on the six sides.
+        </p>
+
+        <p>
+          A world point <code>p</code> becomes a clip-space point <code>clip = p · VP</code>. After the perspective
+          divide, a point is inside the frustum when its normalized coordinates satisfy
+          <code>-clip.w &lt;= clip.x &lt;= clip.w</code>, <code>-clip.w &lt;= clip.y &lt;= clip.w</code>, and
+          (for Direct3D and Metal) <code>0 &lt;= clip.z &lt;= clip.w</code>. Rearrange each of those six
+          inequalities into the form <code>a·x + b·y + c·z + d &gt;= 0</code> and you have read a plane directly off
+          the matrix. For example the left plane, <code>clip.x + clip.w &gt;= 0</code>, is column&nbsp;0 plus
+          column&nbsp;3 of <code>VP</code>.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Rows or columns? It depends on your matrix convention</div>
+          <p>MiniEngine follows DirectXMath's <strong>row-vector</strong> convention: a point is a row and
+          <code>clip = point · VP</code>, so <code>clip.x</code> is the point dotted with <em>column&nbsp;0</em> of
+          <code>VP</code>. That is why our planes are <strong>column</strong> combinations. A library that puts the
+          vector on the right (<code>clip = VP · point</code>, the OpenGL/GLM style) transforms points with the
+          transpose, so the identical planes come from the matrix <strong>rows</strong> instead — that is the form
+          the original Gribb-Hartmann paper prints. Same six planes, read along whichever axis your convention
+          transforms points.</p></div>
+        </div>
+
+        <p>
+          Here is the extraction for our engine. We take the raw combined matrix from
+          <code>Camera::GetViewProjection()</code>, store it row-major so we can index individual elements, and
+          write out the six column combinations. Note the near plane: DirectXMath's
+          <code>XMMatrixPerspectiveFovLH</code> maps the near plane to <code>clip.z = 0</code> (the Direct3D and
+          Metal depth range is <code>[0, 1]</code>), so the near plane is simply <code>clip.z &gt;= 0</code> —
+          column&nbsp;2 alone. Under OpenGL's <code>[-1, 1]</code> range it would instead be
+          <code>clip.z + clip.w &gt;= 0</code>, column&nbsp;2 plus column&nbsp;3.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Frustum.cpp">#include &lt;DirectXMath.h&gt;
+#include "Frustum.h"   // engine::Plane
+
+using namespace DirectX;
+
+// Extract the six frustum planes from a combined view-projection matrix.
+// Pass the RAW row-vector matrix (Camera::GetViewProjection()) — the one
+// BEFORE you transpose it for the constant buffer.
+void ExtractFrustumPlanes(FXMMATRIX viewProj, engine::Plane out[6]) {
+    XMFLOAT4X4 m;
+    XMStoreFloat4x4(&amp;m, viewProj);   // row-major; m._&lt;row&gt;&lt;col&gt;, 1-indexed
+
+    // Row-vector convention: clip.x/.y/.z/.w are the four COLUMNS of VP dotted
+    // with the point. Column K = (m._1K, m._2K, m._3K, m._4K). Gribb-Hartmann
+    // combines those columns into the six planes.
+
+    // left:   clip.x + clip.w &gt;= 0   -&gt;  col0 + col3
+    out[0] = engine::Plane(m._11 + m._14, m._21 + m._24, m._31 + m._34, m._41 + m._44);
+    // right:  clip.w - clip.x &gt;= 0   -&gt;  col3 - col0
+    out[1] = engine::Plane(m._14 - m._11, m._24 - m._21, m._34 - m._31, m._44 - m._41);
+    // bottom: clip.y + clip.w &gt;= 0   -&gt;  col1 + col3
+    out[2] = engine::Plane(m._12 + m._14, m._22 + m._24, m._32 + m._34, m._42 + m._44);
+    // top:    clip.w - clip.y &gt;= 0   -&gt;  col3 - col1
+    out[3] = engine::Plane(m._14 - m._12, m._24 - m._22, m._34 - m._32, m._44 - m._42);
+    // near (D3D/Metal [0,1] depth): clip.z &gt;= 0   -&gt;  col2 alone
+    out[4] = engine::Plane(m._13, m._23, m._33, m._43);
+    // far:    clip.w - clip.z &gt;= 0   -&gt;  col3 - col2
+    out[5] = engine::Plane(m._14 - m._13, m._24 - m._23, m._34 - m._33, m._44 - m._43);
+
+    // Metric distances need unit normals — normalize every plane.
+    for (int i = 0; i &lt; 6; ++i)
+        out[i].Normalize();
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't drop the near and far planes, and don't feed the transposed matrix</div>
+          <p>It is tempting to extract only the four side planes — but then a chunk directly <em>behind</em> the
+          camera passes all four and gets drawn every frame, and nothing bounds your view distance. Extract all
+          six. Equally important: feed <code>ExtractFrustumPlanes</code> the <strong>raw</strong>
+          <code>GetViewProjection()</code>, not the transposed copy you upload to the constant buffer (see the
+          <em>Camera Component</em> lesson). Transposing turns the column combinations above into the wrong rows,
+          and either everything culls or nothing does.</p></div>
+        </div>
+
+        <h2>Testing a chunk with the positive-vertex trick</h2>
+
+        <p>
+          A chunk occupies an axis-aligned box in world space. The naive test would check all eight corners of that
+          box against all six planes — 48 dot products per chunk. We can do far better. A box is entirely outside a
+          plane only if <em>every</em> corner is on the plane's negative side, and the corner most likely to still
+          be on the positive side is the one <strong>farthest along the plane's normal</strong>. That corner is the
+          <strong>positive vertex</strong> (or <em>p-vertex</em>): for each axis, pick the box's <code>max</code>
+          where the normal component is positive and its <code>min</code> where it is negative. If even the
+          p-vertex is behind the plane, all eight corners are, and the whole box is out. One corner per plane, not
+          eight.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 440 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="An axis-aligned box with a plane below and to its left. An arrow shows the plane normal pointing up and to the right; the box corner farthest along that normal is highlighted as the positive vertex.">
+              <!-- the plane (a line, seen edge-on) -->
+              <path d="M40 120 L300 236" stroke="#4aa8ff" stroke-width="2.4" fill="none"/>
+              <text x="250" y="232" fill="currentColor" stroke="none" font-size="12">plane</text>
+              <!-- normal arrow pointing into the frustum (up-right) -->
+              <path d="M150 173 L196 140" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <path d="M196 140 L185 142 L191 151 Z" fill="#4aa8ff" stroke="none"/>
+              <text x="200" y="140" fill="currentColor" stroke="none" font-size="13">n</text>
+              <!-- the AABB -->
+              <rect x="150" y="60" width="150" height="110" fill="#4aa8ff" fill-opacity="0.10" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="225" y="120" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">chunk AABB</text>
+              <!-- min / max corners -->
+              <circle cx="150" cy="170" r="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <text x="122" y="188" fill="currentColor" stroke="none" font-size="11">min</text>
+              <!-- positive vertex highlighted -->
+              <circle cx="300" cy="60" r="5.5" fill="#4aa8ff" stroke="none"/>
+              <text x="312" y="56" fill="currentColor" stroke="none" font-size="11">p-vertex</text>
+              <text x="312" y="72" fill="currentColor" fill-opacity="0.7" stroke="none" font-size="10">(max along n)</text>
+            </svg>
+          </div>
+          <figcaption>The positive vertex is the box corner farthest in the direction of the plane normal. If that
+          single corner is on the negative side, no corner can be positive, so the box is fully outside.</figcaption>
+        </figure>
+
+        <pre><code class="language-cpp" data-file="Frustum.cpp">#include "Frustum.h"
+
+// Returns false only if the box lies entirely outside the frustum. A box that
+// is fully inside — or straddling a plane — returns true, so we keep it.
+bool AABBInFrustum(const engine::AABB&amp; box, const engine::Plane planes[6]) {
+    using engine::Vector3;
+    for (int i = 0; i &lt; 6; ++i) {
+        const engine::Plane&amp; p = planes[i];
+
+        // Positive vertex: the ONE corner farthest along this plane's normal.
+        // max on each axis where the normal is positive, min where negative.
+        Vector3 pv(
+            p.n.x &gt;= 0.0f ? box.max.x : box.min.x,
+            p.n.y &gt;= 0.0f ? box.max.y : box.min.y,
+            p.n.z &gt;= 0.0f ? box.max.z : box.min.z);
+
+        // If even that farthest corner is behind the plane, all eight are —
+        // the box is fully outside this plane and cannot be in the frustum.
+        if (Dot(p.n, pv) + p.d &lt; 0.0f)
+            return false;
+    }
+    return true;   // inside, or intersecting at least one plane — draw it
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">A chunk that straddles a plane must stay in</div>
+          <p>This is a <em>conservative</em> test on purpose. We only reject a box when it is <strong>completely</strong>
+          outside a single plane; a chunk that pokes through the frustum wall is kept and drawn, because part of it
+          is visible. Never require the box to be fully inside all six planes — that would clip away everything at
+          the screen edges. False positives (drawing a chunk that turns out fully off-screen) are cheap; false
+          negatives (dropping a visible chunk) are holes in your world.</p></div>
+        </div>
+
+        <h2>Wiring it into the render loop</h2>
+
+        <p>
+          The plumbing is small. Once per frame, extract the six planes from the current camera. Then, as you walk
+          the loaded chunks, build each chunk's world-space AABB and call <code>AABBInFrustum</code> before its
+          draw. A chunk's box is trivial: its origin is <code>coord × CHUNK_SIZE</code> (from
+          <em>Voxels, Chunks &amp; World Coordinates</em>) and it spans one <code>CHUNK_SIZE</code> cube from there.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkRenderer.cpp">using namespace engine;
+
+// A chunk's world-space bounding box: origin = coord * CHUNK_SIZE, size 16.
+AABB ChunkWorldAABB(ChunkCoord c) {
+    Vector3 mn(float(c.x * CHUNK_SIZE),
+               float(c.y * CHUNK_SIZE),
+               float(c.z * CHUNK_SIZE));
+    Vector3 mx(mn.x + CHUNK_SIZE, mn.y + CHUNK_SIZE, mn.z + CHUNK_SIZE);
+    return { mn, mx };
+}
+
+void RenderChunks(RenderContext&amp; ctx, World&amp; world, Camera* camera) {
+    // Build the frustum once per frame from the RAW view-projection matrix.
+    Plane frustum[6];
+    ExtractFrustumPlanes(camera-&gt;GetViewProjection(), frustum);
+
+    BindVoxelShader(ctx);        // ONE shader/material for every chunk
+    BindBlockTextureArray(ctx);  // ONE Texture2DArray, bound once (module 10)
+
+    int drawn = 0;
+    for (auto&amp; [coord, chunk] : world.LoadedChunks()) {
+        if (!chunk.mesh.HasGeometry())
+            continue;                                  // empty / all-air chunk
+
+        if (!AABBInFrustum(ChunkWorldAABB(coord), frustum))
+            continue;                                  // off-screen: skip it
+
+        SetPerChunkOrigin(ctx, coord);                 // tiny constant update
+        chunk.mesh.Draw(ctx);                          // one indexed draw call
+        ++drawn;
+    }
+}</code></pre>
+
+        <p>
+          With a 16-chunk view distance you might have well over a thousand chunks loaded, yet a 70&deg; camera
+          sees only a wedge of them. Culling routinely drops the drawn count by 60–80%, and every skipped chunk is
+          a draw call, a pile of vertices, and a chunk of index bandwidth you never spend. Because the test runs on
+          a single AABB — three comparisons and one dot product per plane — it costs a rounding error next to the
+          draw it prevents.
+        </p>
+
+        <h2>Draw-call batching: one shader, one texture array</h2>
+
+        <p>
+          Culling decides <em>which</em> chunks to draw; batching makes <em>each</em> draw as cheap as possible.
+          The enemy is state change. Every time you swap a shader, a texture, a sampler, or a constant buffer, the
+          driver has to validate and re-bind, and that CPU cost dwarfs the actual triangle work for a chunk. The
+          voxel engine sidesteps almost all of it by construction: <strong>every chunk uses the same shader and the
+          same material</strong>, and thanks to the <code>Texture2DArray</code> from
+          <em>Texture Atlases &amp; Texture Arrays</em>, every block texture lives in one resource bound a single
+          time at the top of the frame.
+        </p>
+
+        <p>
+          That leaves exactly one thing that differs per chunk: its geometry. So a chunk draw is just "bind this
+          vertex buffer, set one small per-chunk constant, <code>DrawIndexed</code>." The per-chunk constant is the
+          chunk's world origin. We keep each chunk's vertices in <em>chunk-local</em> space (<code>0..16</code>) and
+          let the vertex shader add the origin to reach world space — no per-chunk world matrix, no re-upload of
+          geometry, just twelve bytes that change between draws.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Voxel.hlsl">cbuffer PerFrame : register(b0) { float4x4 gViewProj; };          // set once/frame
+cbuffer PerChunk : register(b1) { float3 gChunkOrigin; float _pad; }; // per chunk
+
+Texture2DArray gBlocks  : register(t0);   // bound ONCE for every chunk
+SamplerState   gSampler : register(s0);
+
+VSOutput VSMain(VSInput vin) {
+    VSOutput o;
+    // Vertices are stored in chunk-local space (0..16). Add the per-chunk
+    // origin to reach world space, then project. No per-chunk world matrix.
+    float3 worldPos = vin.position + gChunkOrigin;
+    o.clip  = mul(float4(worldPos, 1.0), gViewProj);  // gViewProj uploaded
+    o.uv    = vin.uv;                                  // transposed, as in the
+    o.layer = vin.layer;                               // Camera Component lesson
+    return o;
+}</code></pre>
+
+        <p>
+          The Metal path is the same shape: <code>gViewProj</code> and <code>gChunkOrigin</code> arrive as
+          <code>constant</code> buffer arguments, the block textures are one <code>texture2d_array</code> bound
+          once, and the vertex function adds the origin before projecting. In both backends the driver spends its
+          time drawing, not re-validating state.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Cull first, then batch — they compound</div>
+          <p>Run the cheap AABB test before every draw so off-screen chunks never reach the driver at all, and give
+          every chunk one shared shader plus the single block texture array so the draws that survive are almost
+          free to submit. Frustum culling shrinks the <em>number</em> of draws; batching shrinks the <em>cost</em>
+          of each. Together they take a "hundreds of chunks, hundreds of state changes" frame down to a tight loop
+          of cheap indexed draws.</p></div>
+        </div>
+
+        <h2>Beyond the frustum: occlusion culling</h2>
+
+        <p>
+          Frustum culling removes what is off-screen, but not what is on-screen and <em>hidden</em>. Stand in a cave
+          or at the bottom of a ravine and dozens of chunks in front of you are fully behind solid rock — inside the
+          frustum, invisible, still drawn. Removing those is <strong>occlusion culling</strong>, and it is the
+          natural next step.
+        </p>
+
+        <p>
+          Two approaches are worth knowing. Hardware <strong>occlusion queries</strong> ask the GPU to render a
+          chunk's bounding box (depth-only, cheap) and report how many pixels passed the depth test; if none did,
+          the chunk is hidden and you skip its real draw next frame. The results lag a frame and need care to avoid
+          stalls, so many voxel engines prefer a cheaper CPU heuristic: a chunk whose six neighbors are all
+          completely solid opaque blocks cannot possibly be seen, so flag it "sealed" at mesh time and skip it
+          outright. That single test alone erases the interiors of mountains. Either way, layer occlusion culling
+          <em>after</em> frustum culling — reject the off-screen chunks first with the near-free AABB test, then
+          spend more effort deciding which of the remaining, on-screen chunks are actually blocked.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The camera sees a six-plane frustum; any chunk fully outside a plane is invisible, so testing it before drawing saves a whole draw call and its geometry.</li>
+            <li>We store each plane as a normal <code>n</code> and offset <code>d</code> with the inside test <code>Dot(n, p) + d &gt;= 0</code>; normalizing makes that value a metric distance (needed for distance work, optional for a pure yes/no).</li>
+            <li>Gribb-Hartmann reads all six planes from the view-projection matrix — column combinations in our row-vector DirectXMath convention (rows under OpenGL/GLM), with the near plane as <code>clip.z &gt;= 0</code> for D3D/Metal's <code>[0,1]</code> depth.</li>
+            <li>The positive-vertex test rejects a chunk's world-space AABB with one dot product per plane instead of eight, and it is conservative: straddling chunks are kept.</li>
+            <li>Feed the raw (un-transposed) <code>GetViewProjection()</code>, test in world space, and never omit the near/far planes — the three classic ways this silently breaks.</li>
+            <li>Batching makes the survivors cheap: one shared shader, one <code>Texture2DArray</code> bound once, and a per-chunk origin constant so chunks differ only by their vertex buffer — with occlusion culling as the next step beyond frustum.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

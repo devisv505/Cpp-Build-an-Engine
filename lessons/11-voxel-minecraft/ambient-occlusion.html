@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voxel Ambient Occlusion — Learn C++ Engine Development</title>
+  <meta name="description" content="The subtle corner shadows that make a blocky world look solid. Compute per-vertex ambient occlusion from neighboring voxels and fix the diagonal-seam artifact.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Voxel Ambient Occlusion</h1>
+
+        <p class="lead">
+          Right now our voxel world is correct but oddly flat — every face is lit the same, so a deep pit and
+          an open field read identically. <strong>Ambient occlusion</strong> (AO) is the trick that fixes this
+          for almost no cost: darken the vertices tucked into crevices where nearby blocks would smother the
+          ambient light. It is the single cheapest change that makes a blocky world suddenly look <em>solid</em>,
+          and Minecraft's famous soft corner shadows are exactly this. We'll compute it per vertex from the
+          neighboring voxels, then chase down the one nasty artifact — a diagonal seam — that trips up every
+          first implementation.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why AO works as cheap, baked, fake global illumination for a voxel world.</li>
+            <li>The exact three-neighbor rule that turns a vertex's surroundings into an AO level 0–3.</li>
+            <li>The concrete neighbor offsets to sample for all four vertices of every one of the six faces.</li>
+            <li>How to store AO in a vertex — as a float, or packed with light and texture layer into a <code>uint32_t</code>.</li>
+            <li>The diagonal-seam artifact, and the flip-the-triangulation fix that makes interpolation symmetric.</li>
+          </ul>
+        </div>
+
+        <h2>Fake global illumination, one vertex at a time</h2>
+
+        <p>
+          Real ambient occlusion asks, for each point on a surface, "how much of the sky can this point actually
+          see?" A point at the bottom of a narrow slot sees very little sky, so it receives little ambient light
+          and looks dark. Computing that properly means casting rays over the hemisphere — far too expensive for
+          a world of millions of blocks. But voxels give us a shortcut: the geometry around any face corner is
+          just a handful of neighboring blocks, either solid or empty. We can approximate "how enclosed is this
+          corner?" by simply <strong>counting the solid neighbors that hug it</strong>.
+        </p>
+
+        <p>
+          Because a voxel mesh already has four vertices per face, we bake one AO value into each vertex at mesh
+          time and let the rasterizer interpolate it across the face for free. No extra draw calls, no textures,
+          no runtime cost beyond a multiply in the pixel shader. It is entirely a meshing-time computation — which
+          is why it lives here, right alongside greedy meshing.
+        </p>
+
+        <h2>The three neighbors and the AO rule</h2>
+
+        <p>
+          Focus on a single face and a single one of its four corners. That corner vertex sits where three
+          neighboring voxels meet <em>on the outer side of the face</em> — the side the face looks out toward.
+          Two of them share an edge with the empty cell the face occupies (call them <code>side1</code> and
+          <code>side2</code>); the third sits diagonally across the corner (<code>corner</code>). These are the
+          only three blocks that can cast shadow onto that vertex.
+        </p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 660 300" fill="none" stroke="currentColor" stroke-width="1.5" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Left: the three voxels sampled around one face corner labeled side1, side2 and corner. Right: two quad triangulations, the wrong one showing a diagonal seam and the correct one splitting along the dark diagonal.">
+          <!-- Left: the three sampled neighbors around a vertex -->
+          <rect x="60"  y="60"  width="90" height="90" stroke="#4aa8ff"/>
+          <rect x="150" y="60"  width="90" height="90" stroke="#4aa8ff"/>
+          <rect x="150" y="150" width="90" height="90" stroke="#4aa8ff"/>
+          <rect x="60"  y="150" width="90" height="90" stroke="#4aa8ff" stroke-dasharray="4 4"/>
+          <text x="105" y="112" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">side1</text>
+          <text x="195" y="112" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">corner</text>
+          <text x="195" y="202" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">side2</text>
+          <text x="105" y="198" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">face</text>
+          <circle cx="150" cy="150" r="5" fill="#4aa8ff" stroke="none"/>
+          <text x="150" y="272" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">one corner, three neighbors</text>
+
+          <!-- Right: two triangulations -->
+          <!-- wrong: seam -->
+          <rect x="360" y="70" width="110" height="110" stroke="#4aa8ff"/>
+          <line x1="360" y1="70" x2="470" y2="180" stroke="#4aa8ff" stroke-dasharray="5 4"/>
+          <circle cx="470" cy="70"  r="6" fill="currentColor" stroke="none"/>
+          <circle cx="360" cy="180" r="6" fill="currentColor" stroke="none"/>
+          <circle cx="360" cy="70"  r="6" fill="none" stroke="#4aa8ff"/>
+          <circle cx="470" cy="180" r="6" fill="none" stroke="#4aa8ff"/>
+          <text x="415" y="205" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">wrong: seam</text>
+
+          <!-- correct: symmetric -->
+          <rect x="520" y="70" width="110" height="110" stroke="#4aa8ff"/>
+          <line x1="630" y1="70" x2="520" y2="180" stroke="#4aa8ff"/>
+          <circle cx="630" cy="70"  r="6" fill="currentColor" stroke="none"/>
+          <circle cx="520" cy="180" r="6" fill="currentColor" stroke="none"/>
+          <circle cx="520" cy="70"  r="6" fill="none" stroke="#4aa8ff"/>
+          <circle cx="630" cy="180" r="6" fill="none" stroke="#4aa8ff"/>
+          <text x="575" y="205" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">correct: symmetric</text>
+
+          <text x="495" y="245" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">● dark corner    ○ bright corner    split along the dark diagonal</text>
+        </svg></div><figcaption>Left: for each vertex we sample the two edge neighbors and the diagonal on the face's outer side. Right: when the two dark corners lie on opposite triangles, the default split leaves a visible seam; splitting along the dark diagonal keeps the shading symmetric.</figcaption></figure>
+
+        <p>
+          The mapping from those three booleans to an AO level is delightfully small. This is the exact rule from
+          Mikola Lysenko's classic write-up "Ambient occlusion for Minecraft-like worlds," and every voxel engine
+          uses some form of it:
+        </p>
+
+        <pre><code class="language-cpp" data-file="AmbientOcclusion.cpp">// side1, side2 = the two edge-adjacent neighbors on the face's outer side.
+// corner       = the diagonal neighbor across the same corner.
+// Returns an occlusion level: 0 = darkest (buried), 3 = fully open.
+int vertexAO(bool side1, bool side2, bool corner) {
+    if (side1 &amp;&amp; side2)
+        return 0;                          // both edges blocked -&gt; fully occluded
+    return 3 - (side1 + side2 + corner);   // otherwise count the blockers
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Why the early return matters</div>
+          <p>If both edge neighbors (<code>side1</code> and <code>side2</code>) are solid, the diagonal can't be
+          seen at all — the corner is sealed into an inside edge. The rule short-circuits to <code>0</code> so a
+          fully tucked corner is the darkest possible, regardless of what the diagonal holds. Without that
+          special case a sealed corner would read as level 1 and look subtly wrong.</p></div>
+        </div>
+
+        <p>
+          The four levels are then mapped to brightness. A simple, good-looking ramp is
+          <code>{0.4, 0.6, 0.8, 1.0}</code>: level 0 keeps 40% of the light, level 3 keeps all of it. You can use
+          a smoother curve if you prefer softer valleys, but the linear ramp is what most voxel games ship.
+        </p>
+
+        <pre><code class="language-cpp" data-file="AmbientOcclusion.cpp">// Level 0..3 -&gt; brightness multiplier.
+constexpr float kAOBrightness[4] = { 0.4f, 0.6f, 0.8f, 1.0f };</code></pre>
+
+        <h2>Which neighbors, for which vertex?</h2>
+
+        <p>
+          The whole scheme is only correct if we sample the <em>right</em> three cells for each vertex. The clean
+          way to keep this straight for all six faces at once is to describe each face with three integer axis
+          vectors: the outward normal <code>N</code>, and two in-plane axes <code>u</code> and <code>v</code>.
+          Every neighbor we sample lives in the layer one step out along the normal — that is, offset from the
+          block position by <code>N</code> — and then displaced along <code>u</code> and/or <code>v</code>.
+        </p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Face</th><th>Normal N</th><th>u axis</th><th>v axis</th></tr></thead>
+          <tbody>
+            <tr><td>+X</td><td>( 1, 0, 0)</td><td>(0, 1, 0)</td><td>(0, 0, 1)</td></tr>
+            <tr><td>&minus;X</td><td>(&minus;1, 0, 0)</td><td>(0, 1, 0)</td><td>(0, 0, 1)</td></tr>
+            <tr><td>+Y</td><td>(0, 1, 0)</td><td>(1, 0, 0)</td><td>(0, 0, 1)</td></tr>
+            <tr><td>&minus;Y</td><td>(0, &minus;1, 0)</td><td>(1, 0, 0)</td><td>(0, 0, 1)</td></tr>
+            <tr><td>+Z</td><td>(0, 0, 1)</td><td>(1, 0, 0)</td><td>(0, 1, 0)</td></tr>
+            <tr><td>&minus;Z</td><td>(0, 0, &minus;1)</td><td>(1, 0, 0)</td><td>(0, 1, 0)</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>
+          Each of the four vertices corresponds to a sign pair <code>(su, sv)</code>, each sign being
+          <code>&minus;1</code> or <code>+1</code>, walking the corners in order
+          <code>(&minus;,&minus;) (+,&minus;) (+,+) (&minus;,+)</code>. For a vertex with signs
+          <code>(su, sv)</code>:
+        </p>
+
+        <ul>
+          <li><code>side1</code> is the block at <code>b + N + su&middot;u</code></li>
+          <li><code>side2</code> is the block at <code>b + N + sv&middot;v</code></li>
+          <li><code>corner</code> is the block at <code>b + N + su&middot;u + sv&middot;v</code></li>
+        </ul>
+
+        <p>
+          Let's pin this down with one face fully worked. Take the top (<strong>+Y</strong>) face of the block at
+          <code>(x, y, z)</code>. Its normal steps us up to the layer <code>y + 1</code>, and <code>u = +X</code>,
+          <code>v = +Z</code>. The four vertices sample these exact cells:
+        </p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Vertex</th><th>(su, sv)</th><th>side1</th><th>side2</th><th>corner</th></tr></thead>
+          <tbody>
+            <tr><td>0</td><td>(&minus;1, &minus;1)</td><td>(x&minus;1, y+1, z)</td><td>(x, y+1, z&minus;1)</td><td>(x&minus;1, y+1, z&minus;1)</td></tr>
+            <tr><td>1</td><td>(+1, &minus;1)</td><td>(x+1, y+1, z)</td><td>(x, y+1, z&minus;1)</td><td>(x+1, y+1, z&minus;1)</td></tr>
+            <tr><td>2</td><td>(+1, +1)</td><td>(x+1, y+1, z)</td><td>(x, y+1, z+1)</td><td>(x+1, y+1, z+1)</td></tr>
+            <tr><td>3</td><td>(&minus;1, +1)</td><td>(x&minus;1, y+1, z)</td><td>(x, y+1, z+1)</td><td>(x&minus;1, y+1, z+1)</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>
+          The other five faces are the same picture rotated: swap in that face's <code>N</code>, <code>u</code>,
+          and <code>v</code> and the same <code>(su, sv)</code> loop produces the right cells. Here is the whole
+          thing as one function:
+        </p>
+
+        <pre><code class="language-cpp" data-file="AmbientOcclusion.cpp">struct FaceAO { int level[4]; };
+
+// b = block being meshed; N, u, v = this face's axis vectors (from the table).
+// isSolid() must return true for opaque blocks and read across chunk borders.
+FaceAO computeFaceAO(const World&amp; world, glm::ivec3 b,
+                     glm::ivec3 N, glm::ivec3 u, glm::ivec3 v) {
+    auto solid = [&amp;](glm::ivec3 p) { return world.isSolid(p); };
+
+    // Corner order: (-,-), (+,-), (+,+), (-,+) -- must match the mesher's quad.
+    static const int su[4] = { -1, +1, +1, -1 };
+    static const int sv[4] = { -1, -1, +1, +1 };
+
+    FaceAO ao;
+    for (int i = 0; i &lt; 4; ++i) {
+        bool side1  = solid(b + N + su[i] * u);
+        bool side2  = solid(b + N + sv[i] * v);
+        bool corner = solid(b + N + su[i] * u + sv[i] * v);
+        ao.level[i] = vertexAO(side1, side2, corner);
+    }
+    return ao;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Sample across chunk borders</div>
+          <p>A block on a chunk's edge has neighbors that live in the <em>next</em> chunk. If
+          <code>isSolid()</code> only reads the local chunk and treats out-of-bounds as empty, you'll get bright
+          AO seams running along every chunk boundary. Give the mesher access to a small neighborhood (the chunk
+          plus its six neighbors, or a padded copy) so corner sampling never falls off the edge.</p></div>
+        </div>
+
+        <h2>Storing AO in the vertex</h2>
+
+        <p>
+          The simplest option is a plain float on the vertex — resolve the level to a brightness at mesh time and
+          write it straight in:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">struct Vertex {
+    glm::vec3 position;
+    glm::vec2 uv;
+    float     ao;   // 0.4 .. 1.0, baked at mesh time
+};</code></pre>
+
+        <p>
+          A voxel engine, though, wants tiny vertices — you're pushing millions of them. AO is only two bits
+          (level 0–3), so it packs naturally alongside the texture-atlas layer and the block/sky light from the
+          lighting lesson. Keep the raw <strong>level</strong> in the pack and expand it to brightness in the
+          shader:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">// Layout: [ texLayer:16 | light:8 | ao:2 | spare:6 ]  in one 32-bit word.
+uint32_t packVertexData(uint16_t texLayer, uint8_t light, uint8_t aoLevel) {
+    return (uint32_t(texLayer) &lt;&lt; 16)
+         | (uint32_t(light)    &lt;&lt;  8)
+         | (uint32_t(aoLevel &amp; 0x3u) &lt;&lt; 6);
+}</code></pre>
+
+        <h2>The diagonal-seam artifact</h2>
+
+        <p>
+          Here is the subtle bug that catches everyone. A face is a quad, but the GPU only draws triangles, so the
+          quad is split into two. The rasterizer interpolates each vertex value — including AO — <em>linearly
+          across each triangle independently</em>. When all four AO values agree, or when the two diagonal
+          corners happen to match, this is fine. But when the two corners on one diagonal are dark and the two on
+          the other are bright, the two triangulations of the quad give genuinely different shading, and the
+          default split picks the ugly one: a hard diagonal crease cuts across the face where the two triangles
+          meet.
+        </p>
+
+        <p>
+          The fix is to choose the diagonal so that the interpolation stays symmetric. Label the four corner
+          levels <code>a[0]</code>, <code>a[1]</code>, <code>a[2]</code>, <code>a[3]</code> going around the quad.
+          Diagonal 0–2 connects <code>a[0]</code> and <code>a[2]</code>; diagonal 1–3 connects <code>a[1]</code>
+          and <code>a[3]</code>. Split along the diagonal whose two corners are darker. Concretely: <strong>if
+          <code>a[0] + a[2] &gt; a[1] + a[3]</code>, flip to the 1–3 diagonal</strong>; otherwise keep the default
+          0–2 split.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Mesher.cpp">// Append one face: 4 vertices, then 6 indices with the anisotropy-aware split.
+void emitFace(Mesh&amp; mesh, const std::array&lt;Vertex, 4&gt;&amp; corners, const FaceAO&amp; ao) {
+    uint32_t base = static_cast&lt;uint32_t&gt;(mesh.vertices.size());
+
+    for (int i = 0; i &lt; 4; ++i) {
+        Vertex v = corners[i];
+        v.ao = kAOBrightness[ao.level[i]];   // bake brightness onto the vertex
+        mesh.vertices.push_back(v);
+    }
+
+    auto&amp; idx = mesh.indices;
+    if (ao.level[0] + ao.level[2] &gt; ao.level[1] + ao.level[3]) {
+        // Flip: split along the 1-3 diagonal so the dark corners share an edge.
+        idx.insert(idx.end(), { base + 0, base + 1, base + 3,
+                                base + 1, base + 2, base + 3 });
+    } else {
+        // Default: split along the 0-2 diagonal.
+        idx.insert(idx.end(), { base + 0, base + 1, base + 2,
+                                base + 0, base + 2, base + 3 });
+    }
+}</code></pre>
+
+        <p>
+          Both branches wind the same direction, so back-face culling still behaves. The only thing that changes
+          is which two triangles tile the quad — and that is precisely enough to make the AO gradient run
+          straight through the dark corners instead of skewing across the face.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Skip the flip and you'll see it everywhere</div>
+          <p>Without this branch, every face that meets a corner of geometry — the base of a tree, the inside of
+          a doorway, the top of a step — gets a visible diagonal line where the shading kinks. It's the classic
+          "why do my blocks have a scar across them?" bug. The flip is three lines and it removes the artifact
+          entirely.</p></div>
+        </div>
+
+        <h2>Multiplying AO into the light</h2>
+
+        <p>
+          On the GPU, AO is just one more multiplier on the surface brightness. In the pixel shader, sample the
+          atlas, then fold AO into the lighting. This is HLSL (Direct3D 11, our Windows backend); the Metal
+          shading language version is line-for-line the same idea in a fragment function.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Voxel.hlsl">struct VSOutput {
+    float4 pos   : SV_Position;
+    float2 uv    : TEXCOORD0;
+    float  ao    : TEXCOORD1;   // 0.4 .. 1.0
+    float  light : TEXCOORD2;   // 0 .. 1 from flood-fill lighting
+};
+
+float4 PSMain(VSOutput i) : SV_Target {
+    float3 albedo = gAtlas.Sample(gSampler, i.uv).rgb;
+    float  shade  = i.ao * i.light;      // AO scales the incoming light
+    return float4(albedo * shade, 1.0);
+}</code></pre>
+
+        <p>
+          If you packed AO as a level in a <code>uint</code>, unpack and expand it in the vertex shader before it
+          reaches the interpolators, so the pixel shader still sees a ready-to-use brightness:
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Voxel.hlsl">uint  aoLevel = (packed &gt;&gt; 6) &amp; 0x3u;         // 0..3
+float ao      = 0.4 + (float(aoLevel) / 3.0) * 0.6;  // -&gt; 0.4, 0.6, 0.8, 1.0</code></pre>
+
+        <p>In Metal, the fragment function does the same multiply — <code>half shade = in.ao * in.light;</code> — reading the interpolated stage-in values the vertex function wrote.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Combine AO and scene light by multiply — or min</div>
+          <p>Multiplying AO into the block/sky light (<code>ao * light</code>) reads as soft contact shadow and is
+          the usual choice. Some engines instead take <code>min(ao, light)</code>, which keeps already-dark
+          corners from double-darkening in dim areas. Both look good; multiply is warmer, <code>min</code> is
+          flatter. Pick one and keep it consistent so lighting stays predictable across the world.</p></div>
+        </div>
+
+        <h2>AO and greedy meshing</h2>
+
+        <p>
+          Back in the greedy meshing lesson we merged runs of identical faces into big quads using a per-face
+          <em>mask</em>. AO breaks a naive merge: two side-by-side faces can share a block type, a normal, a
+          texture layer, and a light level, yet still have different corner shadows because one sits next to a
+          ledge and the other doesn't. Merge them and the AO of the whole strip snaps to one face's values —
+          smeared, wrong shading across the merged quad.
+        </p>
+
+        <p>
+          The fix is to make AO part of the mask key. Two faces may only merge when their four AO levels match as
+          well. On a big flat wall away from other geometry every face is <code>{3, 3, 3, 3}</code>, so those all
+          still merge into one large quad — exactly what we want. Near a corner the AO varies from cell to cell,
+          so the run naturally breaks into smaller quads that each carry correct shading.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GreedyMesh.cpp">// A cell in the greedy mask. AO now belongs in the key, so faces only
+// merge when their corner shadows also agree.
+struct MaskCell {
+    uint16_t block   = 0;              // block / texture layer
+    bool     visible = false;
+    uint8_t  ao[4]   = { 3, 3, 3, 3 }; // per-corner AO levels
+
+    bool operator==(const MaskCell&amp; o) const {
+        return block == o.block &amp;&amp; visible == o.visible
+            &amp;&amp; ao[0] == o.ao[0] &amp;&amp; ao[1] == o.ao[1]
+            &amp;&amp; ao[2] == o.ao[2] &amp;&amp; ao[3] == o.ao[3];
+    }
+};</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Forget AO in the key and greed wins over correctness</div>
+          <p>If the mask key ignores AO, the greedy pass happily fuses faces with mismatched shadows and you get
+          blocky bands of wrong brightness marching across otherwise-uniform surfaces. Requiring identical AO to
+          merge is conservative — it makes a few more quads near edges — but it is correct, and flat regions
+          (the vast majority of any world) still collapse to single quads.</p></div>
+        </div>
+
+        <p>
+          That's the entire feature: one tiny rule turns three booleans into a level, a brightness ramp turns the
+          level into a multiplier, a diagonal flip keeps the interpolation honest, and one extra field in the
+          greedy key keeps the merger honest too. Cheap, baked, and the difference between a world that looks like
+          flat cardboard and one that looks carved.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Voxel AO fakes global illumination by counting the solid neighbors that hug each face corner — a meshing-time computation with near-zero runtime cost.</li>
+            <li>For each vertex, sample three neighbors on the face's outer side (two edges, one diagonal) and apply <code>vertexAO</code>: both edges solid returns 0, else <code>3 - (side1 + side2 + corner)</code>.</li>
+            <li>Describe each face by axis vectors <code>N, u, v</code>; the four vertices use sign pairs <code>(su, sv)</code> to pick <code>side1</code>, <code>side2</code>, and <code>corner</code> — and neighbor sampling must read across chunk borders.</li>
+            <li>Store the level as a brightness float, or pack the 2-bit level with light and texture layer into a <code>uint32_t</code> and expand it in the shader.</li>
+            <li>Fix the diagonal seam by flipping the triangulation when <code>a[0] + a[2] &gt; a[1] + a[3]</code>, so the split runs through the dark corners and interpolation stays symmetric.</li>
+            <li>AO must be part of the greedy-meshing mask key: faces only merge when their four AO levels match, or you smear shadows across merged quads.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

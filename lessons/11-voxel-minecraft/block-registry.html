@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Blocks, IDs &amp; a Data-Oriented Registry — Learn C++ Engine Development</title>
+  <meta name="description" content="Store block ids, not fat objects. Build a compact block-type registry mapping a small id to properties like solidity, transparency, light emission and per-face textures.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Blocks, IDs &amp; a Data-Oriented Registry</h1>
+
+        <p class="lead">
+          The chunk from the last lesson is a flat array of voxels, and there can be tens of millions of them
+          on screen at once. The single most important decision in a voxel engine is what one voxel actually
+          <em>is</em>. Get it wrong — a fat, polymorphic object per cell — and you drown in memory and cache
+          misses before you draw a single triangle. Get it right — a tiny integer id that indexes a shared table
+          of block types — and millions of voxels cost almost nothing. This lesson builds that table: a
+          data-oriented <strong>block registry</strong> that the mesher, the lighting system, and the culler
+          will all hammer.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why a polymorphic <code>Block</code> object per voxel is a performance disaster, and how the <strong>flyweight</strong> pattern fixes it.</li>
+            <li>How to store each voxel as a small integer id (<code>uint8_t</code> / <code>uint16_t</code>) that indexes a shared table.</li>
+            <li>How to design a <code>BlockType</code> descriptor: solidity, transparency, light emission, and per-face texture layers.</li>
+            <li>How to build a contiguous <code>BlockRegistry</code> with <code>Register()</code> and a hot <code>Get(id)</code>, keyed by an enum with <code>AIR = 0</code>.</li>
+            <li>How to write inline <code>IsSolid</code> / <code>IsTransparent</code> helpers and pack an id plus a few bits of state into a 16-bit voxel.</li>
+          </ul>
+        </div>
+
+        <h2>The trap: one object per voxel</h2>
+
+        <p>
+          The instinct from earlier modules is to reach for a class hierarchy: a base <code>Block</code> with
+          <code>virtual bool IsSolid()</code>, then <code>Stone</code>, <code>Dirt</code>, <code>Grass</code>
+          overriding it. It reads beautifully. It is also catastrophic here, and it is worth understanding
+          exactly why.
+        </p>
+
+        <p>
+          Do the arithmetic. A single 32&times;32&times;32 chunk holds 32,768 voxels. A modest view distance is
+          a few hundred chunks loaded at once — call it <strong>tens of millions of voxels</strong>. Now suppose
+          each voxel is a <code>Block*</code> pointing at a heap-allocated polymorphic object:
+        </p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Representation</th><th>Bytes per voxel</th><th>Per 32³ chunk</th><th>Cost to query</th></tr></thead>
+          <tbody>
+            <tr><td><code>Block*</code> to a heap object (vptr + fields + alloc overhead)</td><td>~56</td><td>~1.8 MB</td><td>pointer chase + vtable indirection</td></tr>
+            <tr><td>Inline value struct with virtuals (32 B)</td><td>32</td><td>1 MB</td><td>vtable indirection</td></tr>
+            <tr><td><code>uint16_t</code> id into a registry</td><td>2</td><td>64 KB</td><td>one indexed load</td></tr>
+            <tr><td><code>uint8_t</code> id into a registry</td><td>1</td><td>32 KB</td><td>one indexed load</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>
+          The pointer version is roughly <strong>28&times; the memory</strong> of a 2-byte id, and every single
+          query — and the mesher asks &ldquo;is my neighbor solid?&rdquo; six times per voxel — pays for a
+          pointer dereference into scattered heap memory followed by a virtual call. That is death by cache miss.
+          The CPU spends its life waiting on RAM instead of building geometry.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Never use per-voxel polymorphism or per-voxel heap objects</div>
+          <p>No <code>new Block</code> per cell, no <code>virtual</code> methods called per voxel, no
+          <code>std::shared_ptr&lt;Block&gt;</code> arrays. There are only a few dozen <em>kinds</em> of block but
+          tens of millions of <em>instances</em>. The moment you allocate or dispatch per instance, meshing and
+          lighting fall off a performance cliff you cannot climb back up.</p></div>
+        </div>
+
+        <h2>The flyweight: an id that indexes a shared table</h2>
+
+        <p>
+          The fix is the <strong>flyweight</strong> pattern. Notice that every stone block is identical to every
+          other stone block — same solidity, same texture, same everything. So we store that shared data
+          <em>once</em>, in a <code>BlockType</code> descriptor, and give each type a small integer <strong>id</strong>.
+          A voxel is then just that id. Thousands of stone voxels all carry the number <code>1</code> and all
+          index the same single descriptor.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 640 300" fill="none" stroke="currentColor" stroke-width="1.5" font-family="inherit" font-size="13" role="img" aria-label="Each voxel stores a small integer id that indexes a shared BlockType registry">
+              <defs>
+                <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L7,3 L0,6 Z" fill="#4aa8ff" stroke="none"/>
+                </marker>
+              </defs>
+              <text x="30" y="30" stroke="none" fill="currentColor" font-weight="600">Chunk: a flat array of ids</text>
+              <text x="380" y="30" stroke="none" fill="currentColor" font-weight="600">BlockRegistry: one BlockType each</text>
+
+              <!-- voxel grid -->
+              <g stroke="#4aa8ff">
+                <rect x="30"  y="55" width="40" height="40" rx="5"/><rect x="74"  y="55" width="40" height="40" rx="5"/><rect x="118" y="55" width="40" height="40" rx="5"/><rect x="162" y="55" width="40" height="40" rx="5.5" stroke-width="2.6"/>
+                <rect x="30"  y="99" width="40" height="40" rx="5"/><rect x="74"  y="99" width="40" height="40" rx="5"/><rect x="118" y="99" width="40" height="40" rx="5"/><rect x="162" y="99" width="40" height="40" rx="5"/>
+                <rect x="30"  y="143" width="40" height="40" rx="5"/><rect x="74"  y="143" width="40" height="40" rx="5"/><rect x="118" y="143" width="40" height="40" rx="5"/><rect x="162" y="143" width="40" height="40" rx="5"/>
+              </g>
+              <g stroke="none" fill="currentColor" text-anchor="middle" font-size="15">
+                <text x="50" y="80">1</text><text x="94" y="80">1</text><text x="138" y="80">0</text><text x="182" y="80" font-weight="700">3</text>
+                <text x="50" y="124">2</text><text x="94" y="124">1</text><text x="138" y="124">0</text><text x="182" y="124">0</text>
+                <text x="50" y="168">2</text><text x="94" y="168">2</text><text x="138" y="168">1</text><text x="182" y="168">7</text>
+              </g>
+
+              <!-- registry rows -->
+              <g stroke="#4aa8ff">
+                <rect x="380" y="50" width="230" height="34" rx="6"/>
+                <rect x="380" y="88" width="230" height="34" rx="6"/>
+                <rect x="380" y="126" width="230" height="34" rx="6"/>
+                <rect x="380" y="164" width="230" height="34" rx="6.5" stroke-width="2.6"/>
+                <rect x="380" y="202" width="230" height="34" rx="6"/>
+              </g>
+              <g stroke="none" fill="currentColor" font-size="13">
+                <text x="396" y="71">0</text><text x="428" y="71">air &mdash; not solid, transparent</text>
+                <text x="396" y="109">1</text><text x="428" y="109">stone &mdash; solid, opaque</text>
+                <text x="396" y="147">2</text><text x="428" y="147">dirt &mdash; solid, opaque</text>
+                <text x="396" y="185" font-weight="700">3</text><text x="428" y="185" font-weight="700">grass &mdash; top/side/bottom</text>
+                <text x="396" y="223">4</text><text x="428" y="223">sand &mdash; solid, opaque</text>
+              </g>
+
+              <!-- shared indirection -->
+              <path d="M204,75 C 300,75 300,181 376,181" stroke="#4aa8ff" stroke-width="2" marker-end="url(#ah)"/>
+              <text x="300" y="262" text-anchor="middle" stroke="none" fill="currentColor">Thousands of voxels, one shared descriptor.</text>
+            </svg>
+          </div>
+          <figcaption>Every voxel is just an id. Identical blocks — thousands of them — all index the same shared <code>BlockType</code>. That indirection is the flyweight pattern, and it is why a voxel costs one or two bytes.</figcaption>
+        </figure>
+
+        <h2>The BlockType descriptor</h2>
+
+        <p>
+          A <code>BlockType</code> is a plain aggregate of the facts every consumer needs: a debug name, a few
+          boolean flags, a light level, and one texture per face. There is exactly one of these per <em>kind</em>
+          of block — never one per voxel. We index textures per face so grass can wear a grassy top, a dirt
+          bottom, and a grass-side band around the middle. Those indices are layers into the block texture array
+          we built back in module 10 (a <code>Texture2DArray</code> on Direct3D 11, an array <code>MTLTexture</code>
+          on Metal).
+        </p>
+
+        <pre><code class="language-cpp" data-file="BlockType.h">#include &lt;array&gt;
+#include &lt;string&gt;
+#include &lt;cstdint&gt;
+#include &lt;utility&gt;
+
+// The six faces of a cube, indexed by which axis-direction they point.
+enum Face : uint8_t {
+    FACE_NEG_X = 0, // west
+    FACE_POS_X,     // east
+    FACE_NEG_Y,     // bottom
+    FACE_POS_Y,     // top
+    FACE_NEG_Z,     // north
+    FACE_POS_Z,     // south
+    FACE_COUNT      // == 6
+};
+
+// A *shared* description of one kind of block. Exactly one exists per
+// block type in the whole world; a voxel just stores this type's id.
+struct BlockType {
+    std::string name;                 // "grass" — for tools and debugging
+    bool    solid       = true;       // has collision / blocks movement
+    bool    transparent = false;      // lets light &amp; sight pass (glass, leaves, water)
+    bool    emissive    = false;      // gives off light of its own
+    uint8_t lightLevel  = 0;          // 0..15, brightness if emissive (glowstone = 15)
+
+    // One texture-array layer index per face (see module 10's texture array).
+    std::array&lt;uint16_t, FACE_COUNT&gt; faceTex{};
+
+    // Paint every face with the same tile.
+    static BlockType Uniform(std::string n, uint16_t tile) {
+        BlockType b;
+        b.name = std::move(n);
+        b.faceTex.fill(tile);
+        return b;
+    }
+
+    // A "log-style" block: distinct top, sides, and bottom.
+    static BlockType Column(std::string n, uint16_t top, uint16_t side, uint16_t bottom) {
+        BlockType b;
+        b.name = std::move(n);
+        b.faceTex[FACE_POS_Y] = top;
+        b.faceTex[FACE_NEG_Y] = bottom;
+        b.faceTex[FACE_NEG_X] = b.faceTex[FACE_POS_X] =
+        b.faceTex[FACE_NEG_Z] = b.faceTex[FACE_POS_Z] = side;
+        return b;
+    }
+};</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title"><code>solid</code> and <code>transparent</code> are independent</div>
+          <p>They answer different questions. <code>solid</code> is for physics — can you walk through it?
+          <code>transparent</code> is for rendering and lighting — does it hide the neighbor's face and block
+          light? Leaves are <em>solid but transparent</em> (you stand on them, yet see through). Water is
+          <em>not solid but transparent</em> (you swim through, and see through). Glass is <em>solid and
+          transparent</em>. Keeping them as two flags lets every combination fall out naturally.</p></div>
+        </div>
+
+        <h2>A contiguous BlockRegistry</h2>
+
+        <p>
+          The registry is the flyweight pool: a single <code>std::vector&lt;BlockType&gt;</code> where the index
+          <em>is</em> the id. <code>Register()</code> appends a type and returns the id it landed at.
+          <code>Get()</code> is the hot path — it is called millions of times per meshing pass — so it does a
+          bare <code>operator[]</code> with no bounds check. The ids it receives come from our own chunk data, so
+          there is nothing to validate at runtime.
+        </p>
+
+        <pre><code class="language-cpp" data-file="BlockRegistry.h">#include &lt;vector&gt;
+#include &lt;cassert&gt;
+
+using BlockId = uint16_t; // a voxel is, at its simplest, just one of these
+
+// Well-known ids. AIR = 0 is deliberate and load-bearing: a zeroed chunk
+// (default-constructed, or memset to 0) is entirely air, for free.
+enum : BlockId {
+    BLOCK_AIR = 0,
+    BLOCK_STONE,
+    BLOCK_DIRT,
+    BLOCK_GRASS,
+    BLOCK_SAND,
+    BLOCK_WOOD,
+    BLOCK_LEAVES,
+    BLOCK_WATER,
+    BLOCK_GLASS,
+    BLOCK_GLOWSTONE,
+};
+
+class BlockRegistry {
+public:
+    // Append a type and hand back the id it now occupies.
+    BlockId Register(BlockType type) {
+        BlockId id = static_cast&lt;BlockId&gt;(m_types.size());
+        m_types.push_back(std::move(type));
+        return id;
+    }
+
+    // The hot lookup: one indexed load into a contiguous array.
+    // No bounds check — ids come from our own data and this is called
+    // millions of times per meshing/lighting pass.
+    const BlockType&amp; Get(BlockId id) const {
+        assert(id &lt; m_types.size()); // debug-only guard, compiled out in release
+        return m_types[id];
+    }
+
+    size_t Count() const { return m_types.size(); }
+
+private:
+    std::vector&lt;BlockType&gt; m_types; // contiguous, cache-friendly
+};
+
+// One registry for the whole engine.
+inline BlockRegistry&amp; Blocks() {
+    static BlockRegistry registry;
+    return registry;
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Keep the registry a plain contiguous array</div>
+          <p>Resist the urge to key it by <code>std::unordered_map&lt;std::string, BlockType&gt;</code>. The mesher
+          and light propagation index it by integer, in tight loops, and a <code>std::vector</code> gives them a
+          predictable, cache-friendly load — the descriptor is often already in cache from the last voxel. Look
+          types up by <em>name</em> only once at load time; look them up by <em>id</em> forever after.</p></div>
+        </div>
+
+        <h3>Registering the default blocks</h3>
+
+        <p>
+          Registration order must line up with the enum, because the id is nothing more than the position in the
+          vector. We register air first so it lands at <code>0</code>, then the rest in enum order. The texture
+          constants are layer indices into module 10's block atlas array.
+        </p>
+
+        <pre><code class="language-cpp" data-file="BlockRegistry.cpp">// Layer indices into the block texture array from module 10.
+enum : uint16_t {
+    TEX_STONE = 0, TEX_DIRT, TEX_GRASS_TOP, TEX_GRASS_SIDE, TEX_SAND,
+    TEX_WOOD_TOP, TEX_WOOD_SIDE, TEX_LEAVES, TEX_WATER, TEX_GLASS, TEX_GLOWSTONE
+};
+
+void RegisterDefaultBlocks() {
+    BlockRegistry&amp; r = Blocks();
+
+    // The ORDER here MUST match the enum: each Register() returns the next id.
+    BlockType air = BlockType::Uniform("air", 0);
+    air.solid = false;
+    air.transparent = true;               // air never hides a neighbor's face
+    r.Register(std::move(air));                              // -&gt; BLOCK_AIR (0)
+
+    r.Register(BlockType::Uniform("stone", TEX_STONE));      // -&gt; BLOCK_STONE (1)
+    r.Register(BlockType::Uniform("dirt",  TEX_DIRT));       // -&gt; BLOCK_DIRT  (2)
+    r.Register(BlockType::Column ("grass", TEX_GRASS_TOP,
+                                   TEX_GRASS_SIDE, TEX_DIRT));// -&gt; BLOCK_GRASS (3)
+    r.Register(BlockType::Uniform("sand",  TEX_SAND));       // -&gt; BLOCK_SAND  (4)
+    r.Register(BlockType::Column ("wood", TEX_WOOD_TOP,
+                                   TEX_WOOD_SIDE, TEX_WOOD_TOP));// -&gt; BLOCK_WOOD (5)
+
+    BlockType leaves = BlockType::Uniform("leaves", TEX_LEAVES);
+    leaves.transparent = true;            // solid for collision, but see-through
+    r.Register(std::move(leaves));                           // -&gt; BLOCK_LEAVES (6)
+
+    BlockType water = BlockType::Uniform("water", TEX_WATER);
+    water.solid = false;                  // you swim through it
+    water.transparent = true;
+    r.Register(std::move(water));                            // -&gt; BLOCK_WATER (7)
+
+    BlockType glass = BlockType::Uniform("glass", TEX_GLASS);
+    glass.transparent = true;             // solid, but light and sight pass
+    r.Register(std::move(glass));                            // -&gt; BLOCK_GLASS (8)
+
+    BlockType glow = BlockType::Uniform("glowstone", TEX_GLOWSTONE);
+    glow.emissive = true;
+    glow.lightLevel = 15;                 // maximum brightness
+    r.Register(std::move(glow));                             // -&gt; BLOCK_GLOWSTONE (9)
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Registration order is a contract</div>
+          <p>Because the id is the vector index, inserting a new block in the middle of this function silently
+          renumbers everything after it — and every chunk you ever saved to disk now decodes into the wrong
+          blocks. Add new blocks only at the <em>end</em>, and keep the enum and this function in the same order.
+          When you reach world serialization, you will map ids through a stable name table for exactly this
+          reason.</p></div>
+        </div>
+
+        <p>Here is the full default set laid out, so the flags and per-face textures are easy to eyeball:</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Block</th><th>id</th><th>solid</th><th>transparent</th><th>emissive (light)</th><th>textures (top / side / bottom)</th></tr></thead>
+          <tbody>
+            <tr><td>Air</td><td>0</td><td>no</td><td>yes</td><td>no</td><td>&mdash;</td></tr>
+            <tr><td>Stone</td><td>1</td><td>yes</td><td>no</td><td>no</td><td>stone (all faces)</td></tr>
+            <tr><td>Dirt</td><td>2</td><td>yes</td><td>no</td><td>no</td><td>dirt (all faces)</td></tr>
+            <tr><td>Grass</td><td>3</td><td>yes</td><td>no</td><td>no</td><td>grass_top / grass_side / dirt</td></tr>
+            <tr><td>Sand</td><td>4</td><td>yes</td><td>no</td><td>no</td><td>sand (all faces)</td></tr>
+            <tr><td>Wood (log)</td><td>5</td><td>yes</td><td>no</td><td>no</td><td>wood_top / wood_side / wood_top</td></tr>
+            <tr><td>Leaves</td><td>6</td><td>yes</td><td>yes</td><td>no</td><td>leaves (all faces)</td></tr>
+            <tr><td>Water</td><td>7</td><td>no</td><td>yes</td><td>no</td><td>water (all faces)</td></tr>
+            <tr><td>Glass</td><td>8</td><td>yes</td><td>yes</td><td>no</td><td>glass (all faces)</td></tr>
+            <tr><td>Glowstone</td><td>9</td><td>yes</td><td>no</td><td>yes (15)</td><td>glowstone (all faces)</td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Hot-path helpers</h2>
+
+        <p>
+          The mesher and the light propagation code should never spell out <code>Blocks().Get(id).solid</code>
+          by hand — it is noisy and easy to get subtly wrong. Wrap the common questions in <code>inline</code>
+          free functions. They are a single indexed load plus a field read, so with inlining the compiler folds
+          them straight into the caller's inner loop; there is no function-call overhead at all.
+        </p>
+
+        <pre><code class="language-cpp" data-file="BlockQueries.h">// Tiny, inlined into the mesher's and lighting's innermost loops.
+inline bool IsSolid(BlockId id)       { return Blocks().Get(id).solid; }
+inline bool IsTransparent(BlockId id) { return Blocks().Get(id).transparent; }
+
+inline uint8_t LightEmission(BlockId id) {
+    const BlockType&amp; b = Blocks().Get(id);
+    return b.emissive ? b.lightLevel : 0;
+}
+
+// The texture layer to use for one face of a block — fed to the mesher's UVs.
+inline uint16_t FaceTexture(BlockId id, Face face) {
+    return Blocks().Get(id).faceTex[face];
+}
+
+// The mesher's core question: draw my face toward 'neighbor'?
+// Draw it only when the neighbor doesn't hide it. The 'neighbor != self'
+// term merges the interior faces between two of the same transparent block
+// (two water cells, two glass cells) so we don't emit hidden geometry.
+inline bool FaceVisible(BlockId self, BlockId neighbor) {
+    return IsTransparent(neighbor) &amp;&amp; neighbor != self;
+}</code></pre>
+
+        <p>
+          That is the whole interface the next lessons lean on. The naïve mesher asks <code>FaceVisible</code>
+          six times per voxel and reads <code>FaceTexture</code> for the faces it keeps; flood-fill lighting
+          uses <code>IsTransparent</code> to decide where light spreads and <code>LightEmission</code> to seed
+          the bright cells; physics and picking use <code>IsSolid</code>. One small table, consumed everywhere.
+        </p>
+
+        <h2>Packing an id and a little state into 16 bits</h2>
+
+        <p>
+          A raw id is enough to say &ldquo;this is stone.&rdquo; But some blocks need a scrap of per-voxel
+          <strong>state</strong>: a log's orientation, a water cell's fill level, a rotated stair. Rather than
+          grow the voxel, we can carve a 16-bit word into a 12-bit id and 4 bits of state. Twelve bits gives
+          4096 distinct block types — plenty — and four bits gives sixteen states per block.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Voxel.h">// A stored voxel: a block id plus a little state, in one 16-bit word.
+//   bits 0..11  -&gt; block id   (up to 4096 types)
+//   bits 12..15 -&gt; state      (16 values: rotation, fill level, ...)
+using PackedVoxel = uint16_t;
+
+constexpr uint16_t VOXEL_ID_BITS  = 12;
+constexpr uint16_t VOXEL_ID_MASK  = (1u &lt;&lt; VOXEL_ID_BITS) - 1; // 0x0FFF
+
+inline PackedVoxel PackVoxel(BlockId id, uint8_t state) {
+    return static_cast&lt;PackedVoxel&gt;(
+        (id &amp; VOXEL_ID_MASK) |
+        (static_cast&lt;uint16_t&gt;(state &amp; 0xF) &lt;&lt; VOXEL_ID_BITS));
+}
+
+inline BlockId VoxelId(PackedVoxel v)    { return static_cast&lt;BlockId&gt;(v &amp; VOXEL_ID_MASK); }
+inline uint8_t VoxelState(PackedVoxel v) { return static_cast&lt;uint8_t&gt;(v &gt;&gt; VOXEL_ID_BITS); }</code></pre>
+
+        <p>
+          Crucially, air is still zero: <code>PackVoxel(BLOCK_AIR, 0) == 0</code>, so a zeroed chunk stays all
+          air even with packing. All the hot helpers keep working — the mesher calls <code>VoxelId(v)</code>
+          first and hands the plain id to <code>IsSolid</code> and friends. Whether a chunk stores raw
+          <code>BlockId</code>s or <code>PackedVoxel</code>s is a decision the chunk makes; the registry never
+          sees the state bits.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Two bytes per voxel still adds up — palette compression is coming</div>
+          <p>Even at 2 bytes, a loaded world of a few hundred chunks is well over 100&nbsp;MB of raw voxels, most
+          of it air or stone repeated endlessly. A later lesson introduces <strong>palette compression</strong>:
+          a chunk stores a tiny per-chunk list of the block types it actually contains, then indexes it with just
+          the bits it needs — often 4 bits or fewer per voxel. The global registry you built here is what those
+          per-chunk palettes point back into.</p></div>
+        </div>
+
+        <h2>Wiring it up</h2>
+
+        <p>
+          The registry is entirely platform-neutral — it holds no GPU handles, so there is no Direct3D 11 or
+          Metal split here. You populate it once at startup, before any world loads, and from then on it is a
+          read-only lookup that every subsystem shares.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Engine.cpp">// --- startup, once, before loading any chunks ---
+RegisterDefaultBlocks();
+
+// --- anywhere in the hot paths, forever after ---
+PackedVoxel v = chunk.At(x, y, z);
+BlockId id    = VoxelId(v);
+
+if (IsSolid(id)) {
+    // collision, picking, ...
+}
+if (FaceVisible(id, neighborId)) {
+    uint16_t layer = FaceTexture(id, FACE_POS_Y);
+    // ... emit a top face using texture 'layer'
+}</code></pre>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Storing a polymorphic object per voxel wastes tens of times the memory and pays a cache miss and vtable call on every query — never do it.</li>
+            <li>The <strong>flyweight</strong> pattern makes each voxel a tiny integer id (<code>uint8_t</code>/<code>uint16_t</code>) that indexes a shared table of <code>BlockType</code> descriptors.</li>
+            <li>A <code>BlockType</code> carries a name, independent <code>solid</code> and <code>transparent</code> flags, <code>emissive</code>/<code>lightLevel</code>, and a texture layer per face.</li>
+            <li>The <code>BlockRegistry</code> is a contiguous <code>std::vector&lt;BlockType&gt;</code>; the id is the index, <code>AIR = 0</code> so a zeroed chunk is free air, and registration order is a contract.</li>
+            <li>Inline <code>IsSolid</code> / <code>IsTransparent</code> / <code>LightEmission</code> / <code>FaceTexture</code> helpers fold into the mesher and lighting loops with zero overhead.</li>
+            <li>Packing 12 bits of id and 4 bits of state into a 16-bit voxel adds per-block metadata for free, and foreshadows the palette compression a later lesson uses to shrink storage further.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

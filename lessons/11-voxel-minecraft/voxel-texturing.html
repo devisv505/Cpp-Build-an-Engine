@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Texturing Voxels with an Atlas — Learn C++ Engine Development</title>
+  <meta name="description" content="Give every block face the correct texture using the atlas or texture array from Module 10 — including per-face variation like grass's green top and dirt sides.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Texturing Voxels with an Atlas</h1>
+
+        <p class="lead">Your greedy mesher now emits big, merged quads, but every one of them is still blank geometry. In this lesson we give each face the <em>right</em> tile — dirt on the sides, grass on top, stone all the way around — by looking the tile up from the block registry and feeding it to the texturing machinery you built in Module 10. Along the way we hit a real fork in the road: a texture atlas and a texture array both work for a single cube, but only one of them survives greedy meshing. We will build the array path and wire it straight into the mesher and the shader.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to store per-face tiles in the block registry and look one up with <code>faceTexture(block, face)</code>.</li>
+            <li>Why a texture <em>atlas</em> fights greedy meshing, and why a texture <em>array</em> is the right tool for voxels.</li>
+            <li>How to pack a tile layer, ambient occlusion and light into a single <code>uint32_t</code> per vertex.</li>
+            <li>How the mesher chooses a layer per face and writes tiling UVs that run <code>0..w</code> across a merged quad.</li>
+            <li>The HLSL (and Metal) that samples a <code>Texture2DArray</code> and multiplies by the baked per-vertex shade.</li>
+          </ul>
+        </div>
+
+        <h2>Where the tile comes from: the block registry</h2>
+
+        <p>In the registry lesson we described each block with a data-oriented <code>BlockType</code>. Texturing adds one field: which tile each of the six faces should use. A stone block uses the same tile everywhere, but grass is the classic case — a green top, grassy-dirt sides, and a plain dirt bottom. So the natural shape is a <strong>six-entry array of tile indices</strong>, one per face direction.</p>
+
+        <pre><code class="language-cpp" data-file="BlockRegistry.h">enum class Face : uint8_t { PosX, NegX, PosY, NegY, PosZ, NegZ };
+// PosY is the top face, NegY the bottom.
+
+struct BlockType
+{
+    const char* name;
+    bool        solid;        // from the registry lesson
+    uint16_t    faceTex[6];   // texture-array layer per face
+};
+
+// Every face the same tile (stone, dirt, sand, ...).
+inline void setAllFaces(BlockType&amp; b, uint16_t layer)
+{
+    for (uint16_t&amp; f : b.faceTex) f = layer;
+}
+
+// A "column" block: distinct top / side / bottom (grass, logs, ...).
+inline void setColumn(BlockType&amp; b, uint16_t top, uint16_t side, uint16_t bottom)
+{
+    b.faceTex[(int)Face::PosY] = top;
+    b.faceTex[(int)Face::NegY] = bottom;
+    b.faceTex[(int)Face::PosX] = b.faceTex[(int)Face::NegX] =
+    b.faceTex[(int)Face::PosZ] = b.faceTex[(int)Face::NegZ] = side;
+}
+
+// The one call the mesher makes.
+inline uint16_t faceTexture(const BlockRegistry&amp; reg, BlockId id, Face face)
+{
+    return reg.get(id).faceTex[(int)face];
+}</code></pre>
+
+        <p>The tile indices are the <em>layers</em> of the texture array you assembled in Module 10's "Texture Atlases &amp; Texture Arrays". Give each tile a name so registration reads like English:</p>
+
+        <pre><code class="language-cpp" data-file="BlockRegistry.cpp">// Layer indices into the block texture array (built at load time).
+enum : uint16_t {
+    TEX_STONE = 0, TEX_DIRT, TEX_GRASS_TOP, TEX_GRASS_SIDE, TEX_SAND
+};
+
+void RegisterBlocks(BlockRegistry&amp; reg)
+{
+    BlockType stone { "stone", /*solid*/true };
+    setAllFaces(stone, TEX_STONE);
+    reg.define(BLOCK_STONE, stone);
+
+    BlockType grass { "grass", /*solid*/true };
+    setColumn(grass, TEX_GRASS_TOP, TEX_GRASS_SIDE, TEX_DIRT);
+    reg.define(BLOCK_GRASS, grass);
+    // ... dirt, sand, and the rest ...
+}</code></pre>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 480 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A grass block unfolded into a net: the top face uses grass_top, the four side faces use grass_side, and the bottom face uses dirt">
+          <rect x="160" y="30" width="80" height="80" fill="#3fae5a" fill-opacity="0.18" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="200" y="66" text-anchor="middle" fill="currentColor" stroke="none" font-size="12">grass_top</text>
+          <text x="200" y="84" text-anchor="middle" fill="currentColor" stroke="none" font-size="10" opacity="0.6">+Y</text>
+          <rect x="80"  y="110" width="80" height="80" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <rect x="160" y="110" width="80" height="80" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <rect x="240" y="110" width="80" height="80" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <rect x="320" y="110" width="80" height="80" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="120" y="152" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">grass_side</text>
+          <text x="120" y="168" text-anchor="middle" fill="currentColor" stroke="none" font-size="10" opacity="0.6">-X</text>
+          <text x="200" y="152" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">grass_side</text>
+          <text x="200" y="168" text-anchor="middle" fill="currentColor" stroke="none" font-size="10" opacity="0.6">+Z</text>
+          <text x="280" y="152" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">grass_side</text>
+          <text x="280" y="168" text-anchor="middle" fill="currentColor" stroke="none" font-size="10" opacity="0.6">+X</text>
+          <text x="360" y="152" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">grass_side</text>
+          <text x="360" y="168" text-anchor="middle" fill="currentColor" stroke="none" font-size="10" opacity="0.6">-Z</text>
+          <rect x="160" y="190" width="80" height="80" fill="#8a5a2b" fill-opacity="0.20" stroke="#4aa8ff" stroke-width="2"/>
+          <text x="200" y="230" text-anchor="middle" fill="currentColor" stroke="none" font-size="12">dirt</text>
+          <text x="200" y="248" text-anchor="middle" fill="currentColor" stroke="none" font-size="10" opacity="0.6">-Y</text>
+        </svg></div><figcaption>A grass block unfolded into a net. <code>setColumn</code> maps the top to <code>grass_top</code>, all four sides to <code>grass_side</code>, and the bottom to <code>dirt</code>.</figcaption></figure>
+
+        <h2>Two ways to put a tile on a face</h2>
+
+        <p>Module 10 gave you two ways to fit many small tiles into one GPU resource. Both can texture a single, unmerged cube. Only one plays nicely with the merged quads greedy meshing produces.</p>
+
+        <h3>Approach A — the atlas</h3>
+
+        <p>An <strong>atlas</strong> packs every tile into one large <code>Texture2D</code>. Each tile lives in a sub-rectangle, and you texture a face by pointing its UVs at that sub-rect — say <code>(0.0, 0.0)</code>–<code>(0.0625, 0.0625)</code> for the first tile in a 16&times;16 grid. That is fine for a 1&times;1 face. But a greedy quad might cover a run of, say, three tiles, and now you want the tile to <em>repeat</em> three times across it. The sampler cannot do that: <code>WRAP</code> wraps the whole atlas back to <code>(0,0)</code>, not the sub-rect, so instead of three grass tiles you get one grass tile, then whatever tile sits to its right in the atlas. Your only escapes are to <em>stop merging</em> across repeats — throwing away most of greedy meshing's win on textured surfaces — or to fake the repeat in the shader with <code>frac()</code>, which breaks mipmap selection at every tile seam.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Atlas mip bleeding</div><p>Even for single cubes, atlases bleed. When the GPU drops to a lower mip level, each mip texel is an average of a 2&times;2 block from the level above — and near a tile edge that block straddles into the <em>neighbouring</em> tile. The result is a faint fringe of the wrong colour around every tile as the camera pulls back. You fight it with gutters and clamped UVs, but it never fully goes away. This edge bleeding is the main reason we prefer arrays for voxels.</p></div></div>
+
+        <h3>Approach B — the texture array (recommended)</h3>
+
+        <p>A <strong>texture array</strong> stores each tile as its own independent slice of a <code>Texture2DArray</code>: same width, same height, its own full mip chain. You select a tile with an integer <em>layer</em> index and sample with <code>arr.Sample(smp, float3(u, v, layer))</code>. Because each slice is a whole texture in its own right, <code>0..1</code> UVs cover exactly one tile, a <code>WRAP</code> sampler tiles that slice cleanly for as many repeats as you like, and mips are averaged within the slice — so there is no neighbour to bleed from. UVs of <code>0..w</code> across a merged quad just work.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Concern</th><th>Atlas (<code>Texture2D</code>)</th><th>Array (<code>Texture2DArray</code>)</th></tr></thead><tbody>
+          <tr><td>Select a tile</td><td>Sub-rect UVs</td><td>Integer layer index</td></tr>
+          <tr><td>Greedy tiling (<code>0..w</code>)</td><td>Breaks — wrap escapes the sub-rect</td><td>Works — wrap tiles the slice</td></tr>
+          <tr><td>Mipmaps at tile edges</td><td>Bleed across neighbours</td><td>Isolated per slice</td></tr>
+          <tr><td>Tile count</td><td>Limited by atlas resolution</td><td>Up to 2048 slices (D3D11 limit)</td></tr>
+          <tr><td>Verdict for voxels</td><td>Workable but fiddly</td><td>Recommended</td></tr>
+        </tbody></table></div>
+
+        <p>We build the array path. It keeps the mesher simple, keeps greedy meshing intact, and gives us the crisp, seam-free look voxel worlds are known for.</p>
+
+        <h2>One layer per vertex, packed tight</h2>
+
+        <p>To sample the array in the shader, each vertex needs to carry its tile's layer. It will soon also need ambient occlusion (the next lesson) and light (a later one). Rather than grow the vertex with three separate fields, we pack all three into a single <code>uint32_t</code> — voxel meshes have millions of vertices, and every byte you shave off is bandwidth saved and cache hits gained.</p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">struct Vertex
+{
+    float    px, py, pz;   // position within the chunk
+    float    u, v;         // tile-space UV: 0..w and 0..h
+    uint32_t data;         // packed: layer | ao&lt;&lt;16 | light&lt;&lt;18
+};
+
+// layer: 16 bits (0..65535)   ao: 2 bits (0..3)   light: 4 bits (0..15)
+inline uint32_t packVertex(uint16_t layer, uint8_t ao, uint8_t light)
+{
+    return  uint32_t(layer)
+         | (uint32_t(ao    &amp; 0x3)  &lt;&lt; 16)
+         | (uint32_t(light &amp; 0xF)  &lt;&lt; 18);
+}</code></pre>
+
+        <p>The input layout describes those three fields to the Input Assembler. The packed integer goes across as a single <code>R32_UINT</code> so the shader can unpack it — never as a float, which would let the rasterizer interpolate the bits into nonsense.</p>
+
+        <pre><code class="language-cpp" data-file="ChunkMesh.cpp">D3D11_INPUT_ELEMENT_DESC layout[] =
+{
+    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0,
+      D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12,   // after 3 floats
+      D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    { "TEXCOORD", 1, DXGI_FORMAT_R32_UINT,        0, 20,   // after 5 floats
+      D3D11_INPUT_PER_VERTEX_DATA, 0 },
+};
+// 12 (pos) + 8 (uv) + 4 (data) = 24 bytes per vertex.</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Room to grow</div><p>16 bits of layer is 65,536 possible tiles — far more than D3D11's 2048-slice array limit, so you can shrink it to 11 bits later and hand the spare bits to a second light channel. For now the generous split keeps the code readable; the AO and light fields sit at bits 16 and 18 waiting for the next two lessons to fill them.</p></div></div>
+
+        <h2>Choosing the layer in the mesher</h2>
+
+        <p>Greedy meshing scans one face direction at a time and builds a 2D <em>mask</em> of which cells have a visible face. That mask is exactly where the tile is decided: when a face is visible, we record the layer <code>faceTexture</code> returns for that block and direction. We also stub in full ambient occlusion and full light so the vertices look correct today and the later lessons only have to change two numbers.</p>
+
+        <pre><code class="language-cpp" data-file="GreedyMesher.cpp">struct MaskCell
+{
+    bool     solid = false;   // is there a visible face here?
+    uint16_t layer = 0;       // texture-array layer for this face
+    uint8_t  ao    = 3;       // full — the AO lesson fills this in
+    uint8_t  light = 15;      // full — the lighting lesson fills this in
+};
+
+// Build one mask cell while scanning a slice (from the greedy lesson).
+MaskCell faceCell(const BlockRegistry&amp; reg,
+                  BlockId here, BlockId neighbour, Face face)
+{
+    // Visible only if 'here' is solid and its neighbour is not.
+    if (!reg.get(here).solid || reg.get(neighbour).solid)
+        return {};                       // empty: no face here
+    MaskCell c;
+    c.solid = true;
+    c.layer = faceTexture(reg, here, face);
+    return c;
+}</code></pre>
+
+        <p>Two cells may only be merged into one quad when they would produce the <em>same</em> pixels — same tile, and (once the later lessons land) the same AO and light. That test belongs in the mask comparison the greedy sweep already runs.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Put the layer in the mask key</div><p>Add the tile layer to the equality test your greedy sweep uses to decide whether two cells can merge. Then a run of dirt never fuses with a run of stone, and a merge can never straddle two different textures. This is the same guardrail that will later stop AO and light gradients from being flattened across a merge.</p></div></div>
+
+        <pre><code class="language-cpp" data-file="GreedyMesher.cpp">bool canMerge(const MaskCell&amp; a, const MaskCell&amp; b)
+{
+    return a.solid &amp;&amp; b.solid
+        &amp;&amp; a.layer == b.layer     // never merge across textures
+        &amp;&amp; a.ao    == b.ao
+        &amp;&amp; a.light == b.light;
+}
+
+// Emit one merged quad, w x h tiles, for a given face.
+// p0..p3 are its corners in CCW order (from the greedy lesson).
+void emitQuad(std::vector&lt;Vertex&gt;&amp; verts, std::vector&lt;uint32_t&gt;&amp; indices,
+              const Float3&amp; p0, const Float3&amp; p1,
+              const Float3&amp; p2, const Float3&amp; p3,
+              int w, int h, const MaskCell&amp; cell)
+{
+    uint32_t packed = packVertex(cell.layer, cell.ao, cell.light);
+    uint32_t base   = (uint32_t)verts.size();
+
+    // UVs run 0..w and 0..h so a WRAP sampler tiles the slice.
+    verts.push_back({ p0.x, p0.y, p0.z, 0.0f,      0.0f,     packed });
+    verts.push_back({ p1.x, p1.y, p1.z, (float)w,  0.0f,     packed });
+    verts.push_back({ p2.x, p2.y, p2.z, (float)w,  (float)h, packed });
+    verts.push_back({ p3.x, p3.y, p3.z, 0.0f,      (float)h, packed });
+
+    indices.insert(indices.end(),
+        { base+0, base+1, base+2,  base+0, base+2, base+3 });
+}</code></pre>
+
+        <p>The layer is written identically on all four vertices — a quad only ever shows one tile — while the UVs stretch to <code>w</code> and <code>h</code> so the slice repeats once per tile the quad covers. That single detail is what makes the array path merge-friendly where the atlas could not.</p>
+
+        <h2>Sampling the array in the shader</h2>
+
+        <p>The vertex shader unpacks the integer and forwards three things: the tile-space UV, the layer (flat — it must not be interpolated), and a combined <em>shade</em> term. Because all four corners share a layer, we mark it <code>nointerpolation</code> so the hardware takes it verbatim instead of blending it.</p>
+
+        <pre><code class="language-hlsl" data-file="Voxel.hlsl">cbuffer PerObject : register(b0) { float4x4 gMVP; }
+
+struct VSInput
+{
+    float3 position : POSITION;
+    float2 uv       : TEXCOORD0;
+    uint   data     : TEXCOORD1;   // packed layer | ao | light
+};
+
+struct PSInput
+{
+    float4 position : SV_POSITION;
+    float2 uv       : TEXCOORD0;
+    nointerpolation float layer : TEXCOORD1;
+    float shade     : TEXCOORD2;   // AO * light, interpolated across the quad
+};
+
+PSInput VSMain(VSInput input)
+{
+    PSInput o;
+    o.position = mul(gMVP, float4(input.position, 1.0));
+    o.uv       = input.uv;
+    o.layer    = (float)( input.data &amp; 0xFFFF);
+    float ao    = (float)((input.data &gt;&gt; 16) &amp; 0x3 ) / 3.0;   // 0..1
+    float light = (float)((input.data &gt;&gt; 18) &amp; 0xF ) / 15.0;  // 0..1
+    o.shade    = ao * light;       // full = 1.0 for now
+    return o;
+}
+
+Texture2DArray gBlocks  : register(t0);
+SamplerState   gSampler : register(s0);
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    // Third coord is the array slice; the hardware rounds it to an int.
+    float4 texel = gBlocks.Sample(gSampler, float3(input.uv, input.layer));
+    texel.rgb *= input.shade;      // bake in AO * light
+    return texel;
+}</code></pre>
+
+        <p>The shade term is deliberately a hook. Today ambient occlusion and light are both maxed out, so <code>shade</code> is <code>1.0</code> and the texture shows at full brightness. The next lesson writes real AO into bits 16&ndash;17 and the corners of your quads start to darken; the lighting lesson does the same for bits 18&ndash;21. Neither has to touch this shader — they just change the numbers the mesher packs.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Point filtering plus mipmaps for the pixel look</div><p>For the crisp, blocky aesthetic, sample with point <em>magnification</em> so up-close texels stay sharp, but keep the mip chain so distant blocks do not shimmer — <code>D3D11_FILTER_MIN_MAG_POINT_MIP_LINEAR</code> with <code>ADDRESS_WRAP</code> is the sweet spot we settled on in Module 10's "Textures In Depth: Filtering, Mipmaps &amp; sRGB". Point sampling also sidesteps the edge-blend a linear filter would introduce at every tile seam inside a tiled quad.</p></div></div>
+
+        <h3>The same shader in Metal</h3>
+
+        <p>On macOS the layer is a separate <code>uint</code> argument to <code>sample</code>, not part of the coordinate. The unpacking is identical; only the sampling call differs.</p>
+
+        <pre><code class="language-cpp" data-file="Voxel.metal">fragment float4 fragmentMain(
+    VOut in [[stage_in]],
+    texture2d_array&lt;float&gt; blocks [[texture(0)]],
+    sampler smp [[sampler(0)]])
+{
+    // Metal takes the array slice as its own uint argument.
+    float4 texel = blocks.sample(smp, in.uv, uint(in.layer));
+    return float4(texel.rgb * in.shade, texel.a);
+}</code></pre>
+
+        <p>The vertex-side unpack (<code>data &amp; 0xFFFF</code>, the shifts, the <code>ao * light</code> product) is plain integer math and stays byte-for-byte the same between HLSL and MSL. Building the array resource and generating its per-slice mips is backend work — <code>ID3D11Device::CreateTexture2D</code> with <code>ArraySize = tileCount</code> on Windows, an <code>MTL::TextureDescriptor</code> of type <code>texture2DArray</code> on macOS — both of which you set up in Module 10.</p>
+
+        <h2>A worked example: the grass block</h2>
+
+        <p>Walk a single grass block through the whole path. When the greedy sweep reaches its <strong>top</strong> face (<code>Face::PosY</code>), <code>faceTexture</code> returns <code>TEX_GRASS_TOP</code>; the mask cell carries layer 2, and the emitted quad's four vertices all pack layer 2. The pixel shader samples slice 2 — green grass. The <strong>four sides</strong> resolve to <code>TEX_GRASS_SIDE</code> (layer 3), so they show the grass-over-dirt strip regardless of which of the four horizontal directions you are looking at. The <strong>bottom</strong> (<code>Face::NegY</code>) resolves to <code>TEX_DIRT</code> (layer 1) — plain dirt, exactly as in real Minecraft. Six faces, three different slices, one <code>Texture2DArray</code>, zero atlas bookkeeping. And because sides all share layer 3, a whole hillside of grass merges into a handful of quads that still texture correctly.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Transparent tiles come later</div><p>Water, glass and leaves also live as slices in this array, and the mesher looks up their layers the same way. What is different is <em>blending</em> — the alpha channel of those tiles, the sorting, and the separate draw pass they need. We leave that to the transparency lesson; here every tile is treated as opaque, which is correct for the solid blocks that make up the vast majority of a world.</p></div></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Store a six-entry <code>faceTex</code> array in <code>BlockType</code> and read it with <code>faceTexture(block, face)</code>; <code>setColumn</code> gives grass its distinct top, sides and bottom.</li>
+            <li>An atlas cannot tile a sub-rect across a merged quad and bleeds at tile edges under mipmapping; a texture array selects a whole slice by integer layer and tiles cleanly, so it is the right choice for voxels.</li>
+            <li>Pack the tile layer, AO and light into one <code>uint32_t</code> per vertex and hand it to the Input Assembler as an <code>R32_UINT</code>, never a float.</li>
+            <li>Decide the layer in the greedy mask, add it to the merge key so quads never span two textures, write it on all four vertices, and let UVs run <code>0..w</code> so a <code>WRAP</code> sampler tiles the slice.</li>
+            <li>Sample <code>gBlocks.Sample(smp, float3(u, v, layer))</code> in HLSL (a separate <code>uint</code> slice argument in Metal) and multiply by the baked shade so the AO and lighting lessons plug straight in.</li>
+            <li>Keep point magnification with mipmaps and wrap addressing for the crisp, seam-free pixel look.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

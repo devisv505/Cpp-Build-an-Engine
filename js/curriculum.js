@@ -169,6 +169,48 @@ window.CURRICULUM = [
       { slug: "game-networking-model", title: "The Client-Server Game Model" },
       { slug: "engine-networking",     title: "Networking MiniEngine" }
     ]
+  },
+  {
+    num: "10",
+    title: "Shaders & Post-Processing",
+    tag: "Textures, HDR & bloom",
+    blurb: "Push past flat color: master texture sampling, render into off-screen targets, and build a real HDR bloom pipeline you can drop into any scene.",
+    dir: "lessons/10-shaders-postfx",
+    lessons: [
+      { slug: "texture-filtering-mips", title: "Textures In Depth: Filtering, Mipmaps & sRGB" },
+      { slug: "atlases-and-arrays",     title: "Texture Atlases & Texture Arrays" },
+      { slug: "render-targets",         title: "Render Targets: Drawing Into a Texture" },
+      { slug: "fullscreen-pass",        title: "The Fullscreen Post-Process Pass" },
+      { slug: "hdr-tonemapping",        title: "HDR Color & Tone Mapping" },
+      { slug: "gaussian-blur",          title: "Separable Gaussian Blur" },
+      { slug: "bloom",                  title: "Bloom: Making Bright Things Glow" },
+      { slug: "post-pipeline",          title: "A Composable Post Stack & Engine Integration" }
+    ]
+  },
+  {
+    num: "11",
+    title: "Build Minecraft: A Voxel Engine",
+    tag: "Voxels, chunks & fast algorithms",
+    blurb: "Turn your engine into a Minecraft-style sandbox: chunked worlds, greedy meshing, procedural terrain with trees and foliage, flood-fill light, fast voxel raycasting, and a threaded job system.",
+    dir: "lessons/11-voxel-minecraft",
+    lessons: [
+      { slug: "voxels-and-chunks",    title: "Voxels, Chunks & World Coordinates" },
+      { slug: "block-registry",       title: "Blocks, IDs & a Data-Oriented Registry" },
+      { slug: "naive-meshing",        title: "From Voxels to Triangles: Naïve Meshing" },
+      { slug: "hidden-face-removal",  title: "Hidden Face Removal" },
+      { slug: "greedy-meshing",       title: "Greedy Meshing" },
+      { slug: "voxel-texturing",      title: "Texturing Voxels with an Atlas" },
+      { slug: "ambient-occlusion",    title: "Voxel Ambient Occlusion" },
+      { slug: "terrain-generation",   title: "Procedural Terrain with Noise" },
+      { slug: "trees-and-decoration", title: "Trees, Grass & World Decoration" },
+      { slug: "flood-fill-lighting",  title: "Flood-Fill Lighting" },
+      { slug: "chunk-streaming",      title: "Infinite Worlds: Chunk Streaming & LOD" },
+      { slug: "job-system",           title: "A Job System: Meshing Off the Main Thread" },
+      { slug: "voxel-raycasting",     title: "Block Picking with Voxel Raycasting (DDA)" },
+      { slug: "frustum-culling",      title: "Frustum Culling & Draw-Call Batching" },
+      { slug: "water-transparency",   title: "Water, Transparency & Glow" },
+      { slug: "capstone-voxel",       title: "Capstone: Your Voxel Sandbox" }
+    ]
   }
 ];
 

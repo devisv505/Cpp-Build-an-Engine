@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hidden Face Removal — Learn C++ Engine Development</title>
+  <meta name="description" content="The first big optimization: emit a block face only when the neighbor in that direction is see-through. It deletes the invisible interior faces — often 90%+ of them — for almost nothing.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Hidden Face Removal</h1>
+
+        <p class="lead">
+          The naive mesher from last lesson works — but it is spectacularly wasteful. A single solid
+          16&sup3; chunk turns into <strong>49,152 triangles</strong>, and almost none of them are ever
+          seen: they are buried inside the rock, pressed flat against a neighbor. In this lesson we make
+          one small change to the mesher that deletes those hidden faces. It is the single optimization
+          that takes voxel rendering in our engine from "unplayable" to "runs at hundreds of frames per
+          second," and it sets up the greedy meshing we build next.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why a face between two solid blocks is never visible, and how skipping it deletes 90%+ of your triangles.</li>
+            <li>A correct <code>FaceVisible</code> predicate that also handles transparency: solid|water, water|water, and water|air.</li>
+            <li>Why chunk edges break a naive neighbor lookup, and the seams and double walls it causes.</li>
+            <li>The padded 18&times;18&times;18 volume trick that folds the six neighbor chunks into one border, so the inner loop never special-cases an edge.</li>
+            <li>The rewritten mesher loop, and the dramatic triangle-count drop it buys.</li>
+          </ul>
+        </div>
+
+        <h2>A face between two solids is never seen</h2>
+
+        <p>
+          Our naive mesher walked every solid voxel and emitted all six of its faces. That is correct, but
+          think about two stone blocks sitting side by side. The face on the right of the left block and the
+          face on the left of the right block occupy the <em>same plane</em>, sandwiched between two opaque
+          cubes. No camera can ever reach that plane — it is walled off on both sides. Drawing it is pure
+          waste: the GPU transforms those vertices, rasterizes the triangles, and then the depth buffer throws
+          every pixel away behind the block in front.
+        </p>
+
+        <p>
+          So the rule is simple. <strong>Emit a face only when it sits on a boundary between a block and
+          see-through space.</strong> If the neighbor across that face is air (or water, or glass — anything
+          you can see through), the face is on the surface and we keep it. If the neighbor is another opaque
+          block, the face is interior and we drop it. For a chunk, this means we only ever generate its
+          <em>shell</em>: the thin crust where solid meets sky, cave, or water.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 560 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A 2D cross-section of a chunk. A blob of solid voxels sits in empty air. Only the edges where a solid voxel meets air are drawn as thick accent lines — these are the faces the mesher emits. A face shared between two solid voxels, deep inside the blob, is drawn dashed and labeled as never emitted.">
+              <g stroke="currentColor" stroke-width="1" opacity="0.18">
+                <line x1="90" y1="64" x2="90" y2="316"/>
+                <line x1="132" y1="64" x2="132" y2="316"/>
+                <line x1="174" y1="64" x2="174" y2="316"/>
+                <line x1="216" y1="64" x2="216" y2="316"/>
+                <line x1="258" y1="64" x2="258" y2="316"/>
+                <line x1="300" y1="64" x2="300" y2="316"/>
+                <line x1="342" y1="64" x2="342" y2="316"/>
+                <line x1="384" y1="64" x2="384" y2="316"/>
+                <line x1="426" y1="64" x2="426" y2="316"/>
+                <line x1="90" y1="64" x2="426" y2="64"/>
+                <line x1="90" y1="106" x2="426" y2="106"/>
+                <line x1="90" y1="148" x2="426" y2="148"/>
+                <line x1="90" y1="190" x2="426" y2="190"/>
+                <line x1="90" y1="232" x2="426" y2="232"/>
+                <line x1="90" y1="274" x2="426" y2="274"/>
+                <line x1="90" y1="316" x2="426" y2="316"/>
+              </g>
+              <polygon points="174,106 342,106 342,148 384,148 384,232 342,232 342,274 174,274 174,232 132,232 132,148 174,148" fill="#4aa8ff" fill-opacity="0.13" stroke="none"/>
+              <line x1="258" y1="148" x2="258" y2="190" stroke="currentColor" stroke-width="2" stroke-dasharray="4 3" opacity="0.55"/>
+              <polygon points="174,106 342,106 342,148 384,148 384,232 342,232 342,274 174,274 174,232 132,232 132,148 174,148" fill="none" stroke="#4aa8ff" stroke-width="3" stroke-linejoin="round"/>
+              <text x="111" y="90" fill="currentColor" stroke="none" font-size="13" text-anchor="middle" opacity="0.7">air</text>
+              <text x="237" y="215" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">solid</text>
+              <line x1="384" y1="188" x2="468" y2="150" stroke="currentColor" stroke-width="1" opacity="0.55"/>
+              <text x="472" y="147" fill="currentColor" stroke="none" font-size="13">emitted face</text>
+              <text x="472" y="163" fill="currentColor" stroke="none" font-size="11" opacity="0.7">solid | air</text>
+              <line x1="258" y1="169" x2="468" y2="252" stroke="currentColor" stroke-width="1" opacity="0.55"/>
+              <text x="472" y="249" fill="currentColor" stroke="none" font-size="13">no face</text>
+              <text x="472" y="265" fill="currentColor" stroke="none" font-size="11" opacity="0.7">solid | solid</text>
+            </svg>
+          </div>
+          <figcaption>A cross-section of a solid blob in air. The mesher emits a face only on the solid/air
+          boundary (thick outline). Every face buried between two solid cells — like the dashed interior edge —
+          is culled.</figcaption>
+        </figure>
+
+        <h2>Deciding whether a face is visible</h2>
+
+        <p>
+          Everything hinges on one predicate: given the block we are meshing (<code>self</code>) and the
+          block across a face (<code>neighbor</code>), do we draw that face? To answer it we lean on the
+          block registry from earlier in this module. It already hands us two properties per block, looked up
+          straight by id from a flat table — no virtual calls, no branch on block type.
+        </p>
+
+        <pre><code class="language-cpp" data-file="BlockRegistry.h">// From the block-registry lesson: one flat table, looked up straight by id.
+// BLOCK_AIR (id 0) was registered with { solid = false, transparent = true }.
+inline bool IsSolid(BlockId id)       { return Blocks().Get(id).solid; }
+inline bool IsTransparent(BlockId id) { return Blocks().Get(id).transparent; }</code></pre>
+
+        <p>
+          The subtlety is transparency. If you only ever had opaque stone and empty air, the rule would be
+          "draw the face when the neighbor is air." But a voxel world has water, glass, and leaves — blocks you
+          render <em>and</em> see through. That forces us to be precise about four kinds of boundary:
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Current</th><th>Neighbour</th><th>Draw current's face?</th><th>Why</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>stone</td><td>air</td><td>Yes</td><td>A surface exposed to empty space.</td></tr>
+              <tr><td>stone</td><td>stone</td><td>No</td><td>Buried between two opaque blocks.</td></tr>
+              <tr><td>stone</td><td>water</td><td>Yes</td><td>The rock is still visible through the water.</td></tr>
+              <tr><td>water</td><td>air</td><td>Yes</td><td>The water's surface meets the sky.</td></tr>
+              <tr><td>water</td><td>water</td><td>No</td><td>An internal face inside a body of water — never seen.</td></tr>
+              <tr><td>water</td><td>stone</td><td>No</td><td>The opaque rock hides the water face behind it.</td></tr>
+              <tr><td>water</td><td>glass</td><td>Yes</td><td>Two different see-through blocks: both surfaces show.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Every one of those rows falls out of one tiny function — the very <code>FaceVisible</code> helper the
+          block-registry lesson dropped in and promised to explain here. The face is worth drawing exactly when
+          the neighbor is see-through, with a single guard so a run of the same transparent block (a lake, a
+          pane of glass) does not fill up with invisible internal faces.
+        </p>
+
+        <pre><code class="language-cpp" data-file="BlockRegistry.h">// A face is worth drawing only when the block across it is see-through —
+// and never between two of the SAME see-through block.
+inline bool FaceVisible(BlockId self, BlockId neighbor) {
+    return IsTransparent(neighbor)   // air, water, glass: you can see past it
+        &amp;&amp; neighbor != self;         // ...but cull water|water and glass|glass
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Air needs no special case</div>
+          <p>Notice <code>FaceVisible</code> never mentions air, and never checks that <code>self</code> is
+          solid. It does not have to: the mesher loop skips air voxels with <code>IsSolid</code> before it ever
+          asks about a face, so <code>self</code> is always a real block. And <code>BLOCK_AIR</code> registers
+          as <code>{ solid = false, transparent = true }</code>, so air as a <em>neighbour</em> reads as
+          see-through — exactly what we want. That is what lets the whole predicate be one line. It is also the
+          trap: if <code>IsTransparent(BLOCK_AIR)</code> ever returns <code>false</code>, every chunk renders as
+          a solid cube with no visible surface at all.</p></div>
+        </div>
+
+        <h2>The chunk-border problem</h2>
+
+        <p>
+          <code>FaceVisible</code> needs the neighbor voxel in each of the six directions. For a voxel deep
+          inside the chunk that is trivial — the neighbor is one cell over in the same array. But look at a
+          voxel sitting on the chunk's edge, say at local <code>x = 0</code>. Its neighbor in the &minus;X
+          direction lives at <code>x = -1</code>, which is not in this chunk at all: it belongs to the chunk
+          <em>next door</em>.
+        </p>
+
+        <p>
+          If the mesher only knows about its own chunk, it has to guess. The tempting shortcut — "clamp to the
+          edge, or treat anything out of range as air" — is wrong. If the neighbor chunk is solid rock, guessing
+          "air" draws a full 16&times;16 wall of faces that are actually buried against that rock. You get a
+          double wall between every pair of chunks: thousands of hidden triangles back, and a visible
+          <em>seam</em> where lighting and depth fighting flicker along the border. The only correct answer is
+          to actually read the adjacent chunk's blocks.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Forgetting cross-chunk neighbors causes seams — and stale meshes</div>
+          <p>Two bugs come from ignoring neighbor chunks. First, holes and seams: a chunk meshed as if the
+          world ended at its edge either grows an interior wall or, worse, is missing surface faces where the
+          neighbor is air. Second, staleness: a chunk you meshed while its neighbor was still loading was meshed
+          against wrong (or missing) data. When a neighbor finishes loading or a block on the shared border
+          changes, you <strong>must mark the touching chunks dirty and re-mesh them</strong>, or the border
+          silently drifts out of sync.</p></div>
+        </div>
+
+        <h2>A padded 18&times;18&times;18 volume</h2>
+
+        <p>
+          You could sprinkle the inner loop with "if this voxel is on an edge, reach into the correct neighbor
+          chunk" checks — six directions, each with its own edge case, is a nest of bugs. There is a much
+          cleaner trick that every serious voxel mesher uses: build the chunk into a <strong>padded
+          volume</strong> first.
+        </p>
+
+        <p>
+          Take the 16&sup3; chunk and copy it into the center of an 18&sup3; array. Then fill the one-voxel
+          border all the way around by copying the touching slab from each of the six neighbor chunks. Now the
+          inner loop reads from this padded buffer with a single accessor that is always in bounds — even for a
+          voxel on the edge, the neighbor cell it needs is already sitting in the border. Every edge case
+          disappears into the setup step.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 520 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A schematic of the padded volume. An inner square is the 16-cubed chunk. A one-voxel border ring around it forms an 18-cubed padded volume. Arrows on all four sides show the border cells being copied from the neighbouring chunks in the plus and minus X and Y directions.">
+              <rect x="130" y="70" width="260" height="260" fill="none" stroke="#4aa8ff" stroke-width="2" stroke-dasharray="6 4"/>
+              <rect x="160" y="100" width="200" height="200" fill="#4aa8ff" fill-opacity="0.12" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="260" y="196" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">this chunk</text>
+              <text x="260" y="216" fill="currentColor" stroke="none" font-size="13" text-anchor="middle" opacity="0.75">16 &times; 16 &times; 16</text>
+              <text x="260" y="88" fill="#4aa8ff" stroke="none" font-size="11.5" text-anchor="middle">1-voxel border &rarr; 18 &times; 18 &times; 18</text>
+              <line x1="260" y1="34" x2="260" y2="64" stroke="currentColor" stroke-width="1.5"/>
+              <polygon points="260,68 256,60 264,60" fill="currentColor" stroke="none"/>
+              <text x="260" y="26" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">+Y neighbour</text>
+              <line x1="260" y1="346" x2="260" y2="336" stroke="currentColor" stroke-width="1.5"/>
+              <polygon points="260,332 256,340 264,340" fill="currentColor" stroke="none"/>
+              <text x="260" y="366" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">&minus;Y neighbour</text>
+              <line x1="54" y1="200" x2="124" y2="200" stroke="currentColor" stroke-width="1.5"/>
+              <polygon points="128,200 120,196 120,204" fill="currentColor" stroke="none"/>
+              <text x="50" y="204" fill="currentColor" stroke="none" font-size="12" text-anchor="end">&minus;X neighbour</text>
+              <line x1="466" y1="200" x2="396" y2="200" stroke="currentColor" stroke-width="1.5"/>
+              <polygon points="392,200 400,196 400,204" fill="currentColor" stroke="none"/>
+              <text x="470" y="204" fill="currentColor" stroke="none" font-size="12">+X neighbour</text>
+            </svg>
+          </div>
+          <figcaption>The chunk sits in the center of an 18&sup3; buffer; the one-voxel border is copied from
+          the six face-adjacent neighbors (the &plusmn;Z borders fill the front and back, into the page). After
+          this, the mesher never touches another chunk.</figcaption>
+        </figure>
+
+        <p>
+          Here is the setup. We index the padded volume so a chunk-local coordinate can range over
+          <code>[-1, CHUNK_SIZE]</code> — the border included — and a missing neighbor (one that has not
+          streamed in yet) simply reads as air.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkMesher.cpp">static constexpr int CHUNK_SIZE = 16;
+static constexpr int PAD        = 1;
+static constexpr int PADDED     = CHUNK_SIZE + 2 * PAD;   // 18
+using PaddedVolume = std::array&lt;BlockId, PADDED * PADDED * PADDED&gt;;
+
+// Map a chunk-local coordinate to its slot in the padded volume.
+// x, y, z may be anywhere in [-1, CHUNK_SIZE] — the 1-voxel border included.
+inline int PaddedIndex(int x, int y, int z) {
+    return (x + PAD) + (y + PAD) * PADDED + (z + PAD) * PADDED * PADDED;
+}
+
+// The current chunk plus the six chunks that touch its faces.
+struct Neighborhood {
+    const Chunk* center;
+    const Chunk* west;  const Chunk* east;   // -X / +X
+    const Chunk* down;  const Chunk* up;      // -Y / +Y
+    const Chunk* north; const Chunk* south;   // -Z / +Z
+};
+
+void BuildPadded(const Neighborhood&amp; n, PaddedVolume&amp; out) {
+    const int C = CHUNK_SIZE;
+
+    // A neighbour that has not loaded yet reads as air.
+    auto sample = [](const Chunk* c, int x, int y, int z) -&gt; BlockId {
+        return c ? c-&gt;GetBlock(x, y, z) : BLOCK_AIR;
+    };
+
+    // 1) Copy this chunk into the 16^3 core.
+    for (int z = 0; z &lt; C; ++z)
+      for (int y = 0; y &lt; C; ++y)
+        for (int x = 0; x &lt; C; ++x)
+            out[PaddedIndex(x, y, z)] = n.center-&gt;GetBlock(x, y, z);
+
+    // 2) Copy the one touching slab of each neighbour into the border.
+    for (int a = 0; a &lt; C; ++a)
+      for (int b = 0; b &lt; C; ++b) {
+        out[PaddedIndex(-1, a, b)] = sample(n.west,  C - 1, a,     b);     // -X border
+        out[PaddedIndex( C, a, b)] = sample(n.east,  0,     a,     b);     // +X border
+        out[PaddedIndex(a, -1, b)] = sample(n.down,  a,     C - 1, b);     // -Y border
+        out[PaddedIndex(a,  C, b)] = sample(n.up,    a,     0,     b);     // +Y border
+        out[PaddedIndex(a, b, -1)] = sample(n.north, a,     b,     C - 1); // -Z border
+        out[PaddedIndex(a, b,  C)] = sample(n.south, a,     b,     0);     // +Z border
+      }
+    // The 12 edges and 8 corners stay air; face visibility never reads them.
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Six neighbors are enough — for now</div>
+          <p>Hidden-face removal only ever asks about the block directly across a face, so the six
+          <em>face</em>-adjacent neighbors are all we need; the 12 edge and 8 corner cells of the padding can
+          stay air. When we add ambient occlusion later in this module, each vertex will sample its diagonal
+          neighbors too, and you will extend <code>BuildPadded</code> to fill those edges and corners. Same
+          padded-volume idea, a little more copying.</p></div>
+        </div>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Reuse one scratch buffer</div>
+          <p>A <code>PaddedVolume</code> is 18&sup3; = 5,832 <code>BlockId</code>s, about 11 KB. Do not allocate
+          a fresh one for every chunk you mesh — keep a single <code>thread_local PaddedVolume</code> scratch
+          buffer per meshing thread and overwrite it each time. When we move meshing onto a job system later,
+          one buffer per worker keeps the whole pass allocation-free.</p></div>
+        </div>
+
+        <h2>The mesher, now with sight</h2>
+
+        <p>
+          Set it beside <code>BuildChunkMeshNaive</code> from last lesson and only two things change. The block
+          data now comes from the padded buffer instead of the raw chunk, and each face is guarded by
+          <code>FaceVisible</code> before we append its vertices. The neighbor direction is free — the face's own
+          normal <em>is</em> the step to the neighbor — and because that coordinate lands in <code>[-1, 16]</code>
+          it is always inside the padded volume, so there is no bounds check and no cross-chunk branch anywhere
+          in the hot loop.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkMesher.cpp">#include "VoxelFaces.h"     // BlockFace kFaces[6], kCornerUV[4] — from the naive mesher
+#include "BlockRegistry.h"  // IsSolid, FaceVisible, BLOCK_AIR
+#include "Mesh.h"
+
+// Same shape as BuildChunkMeshNaive, but it needs the six neighbours, so it
+// meshes from the padded volume and gates every face on FaceVisible.
+Mesh BuildChunkMesh(const Neighborhood&amp; hood) {
+    static thread_local PaddedVolume padded;   // one reused scratch buffer per thread
+    BuildPadded(hood, padded);
+
+    std::vector&lt;Vertex&gt;   vertices;
+    std::vector&lt;uint32_t&gt; indices;
+
+    for (int z = 0; z &lt; CHUNK_SIZE; ++z)
+    for (int y = 0; y &lt; CHUNK_SIZE; ++y)
+    for (int x = 0; x &lt; CHUNK_SIZE; ++x) {
+        BlockId here = padded[PaddedIndex(x, y, z)];
+        if (!IsSolid(here))
+            continue;                          // air and non-solids emit nothing
+
+        for (int f = 0; f &lt; 6; ++f) {
+            const BlockFace&amp; face = kFaces[f];
+
+            // The one new line: the face normal IS the direction to the neighbour.
+            BlockId neighbor = padded[PaddedIndex(
+                x + int(face.normal.x),
+                y + int(face.normal.y),
+                z + int(face.normal.z))];
+            if (!FaceVisible(here, neighbor))
+                continue;                      // hidden face: skip it entirely
+
+            // ---- identical to the naive mesher from here down ----
+            const uint32_t base = static_cast&lt;uint32_t&gt;(vertices.size());
+            for (int c = 0; c &lt; 4; ++c) {
+                Vertex v;
+                v.position = { x + face.corners[c].x,
+                               y + face.corners[c].y,
+                               z + face.corners[c].z };
+                v.normal   = face.normal;
+                v.uv       = kCornerUV[c];
+                vertices.push_back(v);
+            }
+            indices.push_back(base + 0);
+            indices.push_back(base + 1);
+            indices.push_back(base + 2);
+            indices.push_back(base + 0);
+            indices.push_back(base + 2);
+            indices.push_back(base + 3);
+        }
+    }
+    return Mesh(std::move(vertices), std::move(indices));
+}</code></pre>
+
+        <p>
+          Look at what did <em>not</em> change: the <code>kFaces</code> table, the four-vertex append, the
+          buffer-relative <code>base</code> offset, the winding — all byte-for-byte the naive mesher. We do not
+          build a face any differently; the single <code>FaceVisible</code> gate just means we build far fewer of
+          them. The result is still a plain <code>std::vector&lt;Vertex&gt;</code> and
+          <code>std::vector&lt;uint32_t&gt;</code>, so <code>Mesh::Upload</code> and every renderer downstream are
+          untouched.
+        </p>
+
+        <h2>How much did that save?</h2>
+
+        <p>
+          The savings are not subtle. Take a chunk that is completely full of stone. The naive mesher emits
+          6 faces &times; 2 triangles for all 4,096 voxels — 49,152 triangles. With hidden-face removal, the
+          answer depends entirely on what surrounds it:
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>A full 16&sup3; chunk&hellip;</th><th>Naive</th><th>Hidden-face removal</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>&hellip;sitting in open air</td><td>49,152 tris</td><td>3,072 tris (its six outer walls)</td></tr>
+              <tr><td>&hellip;buried, solid on all six sides</td><td>49,152 tris</td><td>0 tris (nothing is visible)</td></tr>
+              <tr><td>&hellip;a typical terrain chunk</td><td>tens of thousands</td><td>a few thousand (the surface crust)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          A fully exposed chunk keeps only its shell: 6 sides &times; 16 &times; 16 = 1,536 quads, or 3,072
+          triangles — a 94% cut. A chunk deep underground, walled in by solid neighbors on every face, collapses
+          to <em>zero</em> geometry: you never pay to draw rock you cannot see. Real terrain lands in between,
+          because most chunks are mostly stone below and mostly air above, so the emitted surface is just the
+          thin boundary where the two meet. Across a world, this single change routinely removes 90%&ndash;99%
+          of the triangles the naive mesher would have produced — for the cost of one branch per face.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">This is what makes voxels viable — greedy meshing goes further</div>
+          <p>Hidden-face removal is the optimization you cannot skip; without it a modest render distance drowns
+          the GPU. But look back at the cross-section figure: the surviving faces still come one voxel-quad at a
+          time, so a flat wall of stone is thousands of identical little quads. The next lesson, greedy meshing,
+          <strong>merges those coplanar surviving faces</strong> into a handful of big rectangles — the same
+          shell, a fraction of the vertices. Hidden-face removal decides <em>which</em> faces exist; greedy
+          meshing decides how few triangles express them.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A face between two blocks is only visible when one side is see-through, so the mesher should emit only the boundary between a block and empty (or transparent) space — a chunk's shell, not its interior.</li>
+            <li><code>FaceVisible(self, neighbor)</code> is one line — <code>IsTransparent(neighbor) &amp;&amp; neighbor != self</code> — yielding solid|air, solid|water, and water|air while culling solid|solid and water|water.</li>
+            <li>Air needs no special case — it registers as not solid and transparent, so it is skipped as a source block and reads as see-through as a neighbour.</li>
+            <li>Voxels on a chunk edge have neighbours in adjacent chunks; guessing "air" there causes double walls and seams, so the mesher must read the real neighbour blocks.</li>
+            <li>Copy the chunk plus a one-voxel border from its six neighbours into an 18&sup3; padded volume; then <code>PaddedIndex</code> is always in bounds and the inner loop has zero edge cases.</li>
+            <li>The payoff is enormous: a full chunk drops from 49,152 triangles to its ~3,072-triangle shell, or to zero when buried — usually a 90%+ cut. Re-mesh a chunk when a neighbour loads or its border changes, and greedy meshing next will merge the faces that survive.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A Job System: Meshing Off the Main Thread — Learn C++ Engine Development</title>
+  <meta name="description" content="Terrain generation and meshing are expensive — run them on worker threads with a small thread-pool job system, then hand finished meshes back to the render thread for GPU upload.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>A Job System: Meshing Off the Main Thread</h1>
+
+        <p class="lead">
+          MiniEngine can now stream an infinite world. But fly across it quickly and you feel the world
+          stutter — a little hitch every time a new chunk crosses the horizon. That hitch is generating,
+          lighting, and greedy-meshing a chunk, all happening on the main thread while the frame waits. The
+          fix is not to make that work cheaper; it is to move it <em>off the frame entirely</em>. In this
+          lesson we build a small thread-pool job system: pure CPU work runs on a pool of worker threads, and
+          only the one thing that must stay on the render thread — the GPU upload — comes back to it.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why generating, lighting, and meshing a chunk on the main thread produces visible frame hitches.</li>
+            <li>How to build a compact thread pool with <code>std::thread</code>, <code>std::mutex</code>, and <code>std::condition_variable</code> running on <code>hardware_concurrency() − 1</code> workers.</li>
+            <li>Why every GPU call must stay on one thread, and how to hand finished geometry back as a plain POD result.</li>
+            <li>How to make meshing thread-safe by snapshotting a padded, read-only volume on the main thread so workers never touch a live chunk.</li>
+            <li>How to cancel stale work with a per-chunk version id, and dodge the classic data race when the player edits a chunk mid-mesh.</li>
+          </ul>
+        </div>
+
+        <h2>The hitch you can feel</h2>
+
+        <p>
+          The chunk-streaming lesson gave every new chunk a pipeline: generate its terrain from noise, run
+          flood-fill lighting, then greedy-mesh it into triangles. Each of those steps costs real time — call
+          it a fraction of a millisecond to generate, most of a millisecond to light, and a couple of
+          milliseconds to mesh a busy chunk. At a 16&nbsp;ms frame budget (60&nbsp;FPS), meshing even one
+          chunk inline eats a tenth of the frame; meshing three in a burst as you round a hill blows straight
+          through it and the camera visibly jerks.
+        </p>
+
+        <pre><code class="language-cpp" data-file="World.cpp">// The tempting, wrong approach: do it all inline on the main thread.
+void World::Update() {
+    for (ChunkCoord c : m_chunksNeedingMesh) {
+        Chunk&amp; chunk = m_chunks[c];
+        GenerateTerrain(chunk, c);       // ~0.3 ms
+        ComputeLighting(chunk, c);       // ~0.8 ms
+        Mesh mesh = GreedyMesh(chunk);   // ~2 ms   &lt;-- and this blocks the frame
+        mesh.Upload(m_device);           // the frame cannot present until we get here
+    }
+}</code></pre>
+
+        <p>
+          The streaming lesson papered over this with a <em>per-frame budget</em>: only mesh, say, one chunk
+          per frame so the spike is small. That helps, but it is a compromise on both ends — the world loads
+          in slowly because you are rationing work, and a single heavy chunk still stutters. The real answer
+          is that generation, lighting, and meshing are <strong>pure CPU computation with no graphics API in
+          them at all</strong>. Nothing about turning voxels into a vertex array needs the render thread. So
+          we run it somewhere else.
+        </p>
+
+        <h2>The plan: CPU on workers, GPU on one thread</h2>
+
+        <p>
+          Split the chunk pipeline in two along a bright line. Everything that is arithmetic over voxel data —
+          generation, lighting, meshing — becomes a <strong>job</strong> that a worker thread runs. The job
+          produces a plain array of vertices and indices in ordinary memory. Only the final step, uploading
+          that array into a GPU buffer, comes back to the render thread.
+        </p>
+
+        <p>
+          That last part is not a style choice; it is a hard requirement of the graphics APIs. On Windows,
+          Direct3D&nbsp;11's <strong>immediate context</strong> — the <code>ID3D11DeviceContext</code> you
+          call <code>CreateBuffer</code>-adjacent work and <code>DrawIndexed</code> on — is not safe to touch
+          from multiple threads at once. On macOS, Metal is more forgiving about creating resources, but
+          binding and encoding into the live command stream must stay coordinated on the render thread anyway.
+          The portable rule that keeps both backends simple and correct is the same: <strong>all GPU calls
+          happen on one thread.</strong>
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">The immediate context is single-threaded</div>
+          <p>Direct3D&nbsp;11 does offer <em>deferred contexts</em> for recording commands off-thread, and you
+          <em>can</em> create some resources on a background device thread — but it is fiddly and the win for
+          a voxel engine is small. Uploading a vertex buffer is microseconds; the expensive part was always
+          the meshing, and that is exactly what we moved. Keep the render thread as the sole owner of the
+          device context, and you will never chase a threading crash inside the driver.</p></div>
+        </div>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 660 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The main render thread enqueues chunk jobs into a job queue guarded by a mutex and condition variable; a pool of N worker threads pops jobs, runs the CPU meshing, and pushes plain POD results into a results queue; the main thread drains the results queue and uploads each mesh to the GPU.">
+              <!-- main / render thread band -->
+              <rect x="50" y="28" width="560" height="46" rx="6" fill="#4aa8ff" opacity="0.10"/>
+              <rect x="50" y="28" width="560" height="46" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="330" y="49" fill="currentColor" font-size="13.5" font-weight="600" text-anchor="middle">Main / render thread</text>
+              <text x="330" y="65" fill="currentColor" font-size="11" text-anchor="middle" opacity="0.75">owns the device context &#183; the only thread that talks to the GPU</text>
+
+              <!-- job queue -->
+              <rect x="48" y="160" width="150" height="64" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="123" y="188" fill="currentColor" font-size="12.5" font-weight="600" text-anchor="middle">Job queue</text>
+              <text x="123" y="206" fill="currentColor" font-size="11" text-anchor="middle" opacity="0.75">mutex + cond. var</text>
+
+              <!-- workers -->
+              <g>
+                <rect x="258" y="120" width="144" height="40" rx="5" fill="#4aa8ff" opacity="0.08"/>
+                <rect x="258" y="120" width="144" height="40" rx="5" fill="none" stroke="#4aa8ff" stroke-width="1.75"/>
+                <text x="330" y="145" fill="currentColor" font-size="12" text-anchor="middle">Worker 0</text>
+                <rect x="258" y="172" width="144" height="40" rx="5" fill="#4aa8ff" opacity="0.08"/>
+                <rect x="258" y="172" width="144" height="40" rx="5" fill="none" stroke="#4aa8ff" stroke-width="1.75"/>
+                <text x="330" y="197" fill="currentColor" font-size="12" text-anchor="middle">Worker 1</text>
+                <rect x="258" y="224" width="144" height="40" rx="5" fill="#4aa8ff" opacity="0.08"/>
+                <rect x="258" y="224" width="144" height="40" rx="5" fill="none" stroke="#4aa8ff" stroke-width="1.75"/>
+                <text x="330" y="249" fill="currentColor" font-size="12" text-anchor="middle">Worker N&#8722;1</text>
+              </g>
+
+              <!-- results queue -->
+              <rect x="462" y="160" width="150" height="64" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="537" y="188" fill="currentColor" font-size="12.5" font-weight="600" text-anchor="middle">Results queue</text>
+              <text x="537" y="206" fill="currentColor" font-size="11" text-anchor="middle" opacity="0.75">mutex</text>
+
+              <!-- main -> job queue -->
+              <g stroke="#4aa8ff" stroke-width="1.75" fill="none">
+                <line x1="95" y1="74" x2="95" y2="157"/>
+              </g>
+              <polygon points="95,160 90,151 100,151" fill="#4aa8ff"/>
+              <text x="103" y="112" fill="currentColor" font-size="11">Enqueue</text>
+              <text x="103" y="127" fill="currentColor" font-size="10.5" opacity="0.75">snapshot + version</text>
+
+              <!-- job queue -> workers (distributor) -->
+              <g stroke="#4aa8ff" stroke-width="1.5" fill="none">
+                <line x1="198" y1="192" x2="230" y2="192"/>
+                <line x1="230" y1="140" x2="230" y2="244"/>
+                <line x1="230" y1="140" x2="253" y2="140"/>
+                <line x1="230" y1="192" x2="253" y2="192"/>
+                <line x1="230" y1="244" x2="253" y2="244"/>
+              </g>
+              <polygon points="258,140 251,136 251,144" fill="#4aa8ff"/>
+              <polygon points="258,192 251,188 251,196" fill="#4aa8ff"/>
+              <polygon points="258,244 251,240 251,248" fill="#4aa8ff"/>
+              <text x="212" y="108" fill="currentColor" font-size="10.5" text-anchor="middle" opacity="0.85">pop a job</text>
+
+              <!-- workers -> results (collector) -->
+              <g stroke="#4aa8ff" stroke-width="1.5" fill="none">
+                <line x1="402" y1="140" x2="430" y2="140"/>
+                <line x1="402" y1="192" x2="430" y2="192"/>
+                <line x1="402" y1="244" x2="430" y2="244"/>
+                <line x1="430" y1="140" x2="430" y2="244"/>
+                <line x1="430" y1="192" x2="457" y2="192"/>
+              </g>
+              <polygon points="462,192 455,188 455,196" fill="#4aa8ff"/>
+              <text x="448" y="108" fill="currentColor" font-size="10.5" text-anchor="middle" opacity="0.85">push result</text>
+
+              <!-- results -> main -->
+              <g stroke="#4aa8ff" stroke-width="1.75" fill="none">
+                <line x1="560" y1="157" x2="560" y2="77"/>
+              </g>
+              <polygon points="560,74 555,83 565,83" fill="#4aa8ff"/>
+              <text x="568" y="112" fill="currentColor" font-size="11">Drain &#8804; budget</text>
+              <text x="568" y="127" fill="currentColor" font-size="10.5" opacity="0.75">Upload &#8594; GPU</text>
+
+              <text x="330" y="300" fill="currentColor" font-size="11.5" text-anchor="middle" opacity="0.8">Jobs carry only plain data in; only plain data comes out.</text>
+              <text x="330" y="318" fill="currentColor" font-size="11.5" text-anchor="middle" opacity="0.8">N = hardware_concurrency() &#8722; 1, leaving one core for the render thread.</text>
+            </svg>
+          </div>
+          <figcaption>The job system. The render thread enqueues meshing jobs (each carrying a private data snapshot); a pool of workers runs the pure-CPU work and pushes POD results back; the render thread drains a bounded number of results per frame and does the only GPU uploads.</figcaption>
+        </figure>
+
+        <h2>A thread pool</h2>
+
+        <p>
+          A thread pool is startlingly small. You spawn a fixed set of worker threads once, and each one loops
+          forever: sleep until there is work, take one job, run it, repeat. The only tricky parts are the
+          hand-off (a queue guarded by a mutex) and the sleeping (a condition variable so idle workers burn no
+          CPU). Here is the whole thing.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ThreadPool.h">#include &lt;thread&gt;
+#include &lt;mutex&gt;
+#include &lt;condition_variable&gt;
+#include &lt;queue&gt;
+#include &lt;functional&gt;
+#include &lt;vector&gt;
+
+class ThreadPool {
+public:
+    explicit ThreadPool(unsigned workerCount) {
+        for (unsigned i = 0; i &lt; workerCount; ++i)
+            m_workers.emplace_back([this] { WorkerLoop(); });
+    }
+
+    ~ThreadPool() { Shutdown(); }
+
+    // A thread pool owns OS threads; never copy it.
+    ThreadPool(const ThreadPool&amp;)            = delete;
+    ThreadPool&amp; operator=(const ThreadPool&amp;) = delete;
+
+    // Called from the main thread. Hand a unit of work to the pool.
+    void Enqueue(std::function&lt;void()&gt; job) {
+        {
+            std::lock_guard&lt;std::mutex&gt; lock(m_mutex);
+            m_jobs.push(std::move(job));
+        }
+        m_cv.notify_one();               // wake exactly one sleeping worker
+    }
+
+    void Shutdown() {
+        {
+            std::lock_guard&lt;std::mutex&gt; lock(m_mutex);
+            if (m_stopping) return;
+            m_stopping = true;
+        }
+        m_cv.notify_all();               // wake everyone so they can exit
+        for (std::thread&amp; t : m_workers)
+            if (t.joinable()) t.join();  // wait for each worker to finish cleanly
+        m_workers.clear();
+    }
+
+private:
+    void WorkerLoop() {
+        for (;;) {
+            std::function&lt;void()&gt; job;
+            {
+                std::unique_lock&lt;std::mutex&gt; lock(m_mutex);
+                // Sleep until there is a job to do, or we are shutting down.
+                m_cv.wait(lock, [this] { return m_stopping || !m_jobs.empty(); });
+                if (m_stopping &amp;&amp; m_jobs.empty()) return;
+                job = std::move(m_jobs.front());
+                m_jobs.pop();
+            }
+            job();                       // run OUTSIDE the lock so workers run in parallel
+        }
+    }
+
+    std::vector&lt;std::thread&gt;             m_workers;
+    std::queue&lt;std::function&lt;void()&gt;&gt;    m_jobs;
+    std::mutex                          m_mutex;
+    std::condition_variable             m_cv;
+    bool                                m_stopping = false;
+};</code></pre>
+
+        <p>
+          Three details carry the whole design. The worker <em>copies the job out of the queue and then
+          releases the lock</em> before calling it — if it ran the job while holding <code>m_mutex</code>, the
+          other workers could not pop their own jobs and your "pool" would run one job at a time. The
+          condition variable's predicate (<code>m_stopping || !m_jobs.empty()</code>) guards against spurious
+          wake-ups, which real condition variables do produce. And <code>Shutdown</code> sets the flag, wakes
+          everyone, and <code>join</code>s — no detached threads, no leaks, no work half-done.
+        </p>
+
+        <p>
+          Size the pool to leave the render thread a core to itself:
+        </p>
+
+        <pre><code class="language-cpp" data-file="JobSystem.cpp">inline unsigned WorkerCount() {
+    unsigned hw = std::thread::hardware_concurrency(); // may return 0 on odd platforms
+    return hw &gt; 1 ? hw - 1 : 1;                         // reserve one core for rendering
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">A lock-free queue is the upgrade, not the starting point</div>
+          <p>Under heavy load, a single mutex on the job queue can become a contention point — every worker
+          fights for the same lock to pop. The mature fix is a lock-free multi-producer / multi-consumer
+          (MPMC) queue such as <code>moodycamel::ConcurrentQueue</code>, which lets workers pop without
+          blocking each other. Reach for it only when a profiler says the mutex is hot. For a voxel engine
+          whose jobs each run for milliseconds, the lock is held for nanoseconds and this mutex version is
+          entirely fine — ship it first.</p></div>
+        </div>
+
+        <h2>The chunk job and its POD result</h2>
+
+        <p>
+          Now define what actually crosses the thread boundary. Going <em>in</em>, the worker needs a
+          read-only copy of the voxel data. Coming <em>out</em>, it produces a plain struct holding the vertex
+          and index arrays plus enough identity to route them. Crucially, nothing in either direction is a GPU
+          handle or a pointer into the live world — just owned, self-contained data.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkMeshing.h">// The result a worker hands back. Plain data only: no ID3D11* / MTL* handles,
+// no pointers into the live world. It owns its vectors outright.
+struct ChunkMeshResult {
+    ChunkCoord            coord;    // which chunk this mesh is for
+    uint32_t              version;  // the chunk's generation id when the job was queued
+    std::vector&lt;Vertex&gt;   vertices; // CPU-side geometry, ready for Mesh::Upload
+    std::vector&lt;uint32_t&gt; indices;
+};</code></pre>
+
+        <p>
+          Meshing a chunk needs more than the chunk's own 16&sup3; voxels: greedy meshing and hidden-face
+          removal have to peek one block into each of the six neighbours to decide whether a boundary face is
+          exposed. So the input snapshot is a <strong>padded volume</strong> — 18&sup3; blocks, the chunk plus
+          a one-voxel border. We build it <em>on the main thread</em> by reading from the live world, so the
+          worker never dereferences a chunk that another thread might be changing.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkMeshing.h">// The chunk (16&sup3;) plus a 1-voxel border from its neighbours = 18&sup3; blocks.
+struct PaddedVolume {
+    static constexpr int N = CHUNK_SIZE + 2;                 // 18
+    std::vector&lt;BlockId&gt; blocks = std::vector&lt;BlockId&gt;(N * N * N, 0);
+
+    static int Index(int x, int y, int z) { return x + N * (y + N * z); }
+    BlockId At(int x, int y, int z) const { return blocks[Index(x, y, z)]; } // x,y,z in [0, 18)
+};
+
+// MAIN THREAD: copy the chunk and its neighbour border into a private buffer.
+// world.GetBlock() takes WORLD coords and returns air for anything not loaded.
+PaddedVolume SnapshotPadded(const World&amp; world, ChunkCoord c) {
+    PaddedVolume vol;
+    for (int z = -1; z &lt;= CHUNK_SIZE; ++z)
+        for (int y = -1; y &lt;= CHUNK_SIZE; ++y)
+            for (int x = -1; x &lt;= CHUNK_SIZE; ++x) {
+                int wx = LocalToWorld(c.x, x);              // crossing into a neighbour
+                int wy = LocalToWorld(c.y, y);              // is just a bigger local index
+                int wz = LocalToWorld(c.z, z);
+                vol.blocks[PaddedVolume::Index(x + 1, y + 1, z + 1)] =
+                    world.GetBlock(wx, wy, wz);
+            }
+    return vol;
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Only POD crosses the thread boundary</div>
+          <p>The snapshot is the entire safety argument in one move. Copying 18&sup3; = 5832 block ids is about
+          11&nbsp;KB — a memcpy that costs a handful of microseconds, next to the milliseconds meshing will
+          take. Once the worker holds that private copy, it shares <em>nothing mutable</em> with any other
+          thread, so no lock is needed inside the meshing loop at all. Pass plain data across the boundary and
+          the hardest bugs in threaded code simply cannot occur.</p></div>
+        </div>
+
+        <p>
+          Terrain generation is even easier to hand off. As you built it in the terrain lesson, a chunk's
+          blocks are a <em>deterministic</em> function of the world seed and the chunk coordinate — same seed,
+          same coord, same terrain, every time. That means a generation job needs no inputs at all and shares
+          no mutable state; it produces the chunk's blocks from pure arithmetic. Meshing is the step that
+          depends on neighbours, so in the streaming pipeline you generate first, and only queue a meshing job
+          for a chunk once it and its six neighbours have all been generated.
+        </p>
+
+        <h2>Requesting work and draining results</h2>
+
+        <p>
+          Wrap the pool in a small system that owns the results queue too. <code>RequestMesh</code> runs on the
+          main thread: it snapshots the padded volume, captures the chunk's current version, and enqueues a
+          job that meshes the snapshot and pushes a <code>ChunkMeshResult</code>. Note the second mutex —
+          results have their own lock so that draining them never contends with enqueuing jobs.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkMeshSystem.h">#include &lt;algorithm&gt;
+#include &lt;iterator&gt;
+
+class ChunkMeshSystem {
+public:
+    // MAIN THREAD. Snapshot everything the job needs, then queue it.
+    void RequestMesh(const World&amp; world, ChunkCoord c) {
+        PaddedVolume vol = SnapshotPadded(world, c);   // private copy: no shared state
+        uint32_t     version = world.VersionOf(c);     // captured now, checked on the way back
+
+        m_pool.Enqueue([this, c, version, vol = std::move(vol)]() mutable {
+            ChunkMeshResult result;
+            result.coord   = c;
+            result.version = version;
+            GreedyMesh(vol, result.vertices, result.indices); // pure CPU, read-only input
+
+            std::lock_guard&lt;std::mutex&gt; lock(m_resultsMutex);
+            m_results.push_back(std::move(result));           // hand the POD back
+        });
+    }
+
+    // MAIN THREAD, once per frame. Upload at most `budget` finished meshes.
+    void IntegrateResults(World&amp; world, ID3D11Device* device, int budget) {
+        std::vector&lt;ChunkMeshResult&gt; ready;
+        {
+            std::lock_guard&lt;std::mutex&gt; lock(m_resultsMutex);
+            int n = std::min&lt;int&gt;(budget, (int)m_results.size());
+            ready.insert(ready.end(),
+                         std::make_move_iterator(m_results.begin()),
+                         std::make_move_iterator(m_results.begin() + n));
+            m_results.erase(m_results.begin(), m_results.begin() + n);
+        }
+        for (ChunkMeshResult&amp; r : ready) {
+            // Cancellation: drop results the world has moved past (see below).
+            if (!world.IsLoaded(r.coord) || world.VersionOf(r.coord) != r.version)
+                continue;
+
+            Mesh mesh(std::move(r.vertices), std::move(r.indices));
+            mesh.Upload(device);                        // the ONLY GPU call, on the main thread
+            world.SetChunkMesh(r.coord, std::move(mesh));
+        }
+    }
+
+private:
+    ThreadPool                   m_pool{ WorkerCount() };
+    std::mutex                   m_resultsMutex;
+    std::vector&lt;ChunkMeshResult&gt; m_results;   // written by workers, drained by main thread
+};</code></pre>
+
+        <p>
+          The <code>budget</code> parameter is where the streaming lesson's per-frame limit lives now — but it
+          throttles something far cheaper. Before, the budget rationed <em>meshing</em>, several milliseconds
+          apiece; now it rations only <em>uploads</em>, microseconds apiece. You can integrate a dozen chunks
+          in a frame without a hitch, so the world fills in fast while the render thread stays smooth. Call it
+          once per frame:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Engine.cpp">void Engine::Update() {
+    m_world.StreamAround(m_camera.Position());      // queues RequestMesh for new chunks
+    m_meshSystem.IntegrateResults(m_world, m_device, /*budget=*/8);
+    // ... render the world's chunk meshes as usual ...
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Metal is the same story with different names</div>
+          <p>On macOS, swap the D3D11 device for your <code>id&lt;MTLDevice&gt;</code> and let
+          <code>Mesh::Upload</code> call <code>newBufferWithBytes:length:options:</code>. The
+          <code>ChunkMeshResult</code>, the pool, the snapshot, and the drain loop are all platform-neutral —
+          they are just C++ over plain arrays. Only the one <code>Upload</code> call at the end changes per
+          backend, and it still runs on the render thread.</p></div>
+        </div>
+
+        <h2>Cancelling stale work</h2>
+
+        <p>
+          Between the moment you queue a job and the moment its result arrives, the world can move on. The
+          player flies away and the chunk unloads. The player breaks a block and the chunk needs re-meshing.
+          Either way, the vertices the worker is busy producing are already obsolete. Uploading them would
+          waste GPU memory or, worse, show a mesh that no longer matches the blocks.
+        </p>
+
+        <p>
+          The fix is a monotonically increasing <strong>version</strong> (a generation id) per chunk. Anything
+          that changes a chunk's contents bumps it; the value is captured when a job is queued and checked
+          when its result comes home. A mismatch means "the world changed under this job" — discard it.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Chunk.h">struct Chunk {
+    std::vector&lt;BlockId&gt; blocks = std::vector&lt;BlockId&gt;(CHUNK_VOLUME, 0);
+    uint32_t            version = 0;   // bump on any edit; loading a fresh chunk starts a new line
+
+    void SetBlock(int x, int y, int z, BlockId id) {
+        blocks[Index(x, y, z)] = id;
+        ++version;                     // this chunk's outstanding mesh jobs are now stale
+    }
+};</code></pre>
+
+        <p>
+          You saw the check already in <code>IntegrateResults</code>: <code>world.VersionOf(r.coord) !=
+          r.version</code> throws the stale result away, and because the edit also re-queued a fresh
+          <code>RequestMesh</code> with a new snapshot, the correct mesh is already on its way. Editing a block
+          near a chunk boundary bumps <em>both</em> the edited chunk and the neighbour whose border changed, so
+          both re-mesh.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">The classic voxel data race: editing a chunk a worker is reading</div>
+          <p>The bug that bites every threaded voxel engine is this: the player places a block, the main
+          thread writes into a live <code>Chunk</code>, and at the same instant a worker is iterating that very
+          chunk to mesh it. One thread writes while another reads the same memory with no synchronization —
+          undefined behaviour, and in practice a torn mesh, a garbage vertex, or a crash that reproduces once
+          a week. Our design forecloses it by construction: <strong>workers never read a live chunk.</strong>
+          They mesh a private snapshot taken on the main thread, and the version check discards whatever was
+          in flight when the edit landed. If you ever skip the snapshot to "save a copy," you must instead
+          lock the chunk for the entire mesh or you re-open this exact race — copying is the cheaper and safer
+          trade.</p></div>
+        </div>
+
+        <p>
+          Shutdown is the last loose end, and the pool already handles it: when the engine exits,
+          <code>ThreadPool</code>'s destructor sets the stopping flag, wakes the workers, and joins them. Any
+          results still sitting in <code>m_results</code> are simply never integrated — they hold only plain
+          vectors, which free themselves. No thread outlives the engine, and no GPU resource leaks, because
+          the only resources are made on the thread that is tearing everything down.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Generating, lighting, and meshing a chunk is milliseconds of pure CPU work; doing it inline on the main thread causes visible frame hitches, so we move it onto worker threads.</li>
+            <li>A <strong>thread pool</strong> is a fixed set of workers looping on a mutex-plus-condition-variable job queue; size it to <code>hardware_concurrency() − 1</code> to leave the render thread a core.</li>
+            <li>Every GPU call stays on the render thread — Direct3D&nbsp;11's immediate context is single-threaded and Metal's command stream must stay coordinated — so only <code>Mesh::Upload</code> runs there.</li>
+            <li>Jobs exchange <strong>plain POD</strong>: a padded, read-only <code>PaddedVolume</code> snapshot goes in, a <code>ChunkMeshResult</code> of vertices and indices comes out — no GPU handles, no pointers into the live world.</li>
+            <li>Snapshotting on the main thread means workers share nothing mutable, which forecloses the classic voxel data race of editing a chunk while a worker meshes it.</li>
+            <li>A per-chunk <strong>version id</strong> cancels stale work: edits and unloads bump it, and results whose version no longer matches are discarded on the way back — the per-frame budget now throttles only cheap uploads.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

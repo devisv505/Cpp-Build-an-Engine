@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flood-Fill Lighting — Learn C++ Engine Development</title>
+  <meta name="description" content="Light that spreads around corners and fades with distance, implemented with a breadth-first flood fill — the same technique Minecraft uses for torches and skylight.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Flood-Fill Lighting</h1>
+
+        <p class="lead">Right now every voxel in MiniEngine is lit the same flat brightness: a torch in a cave does nothing, and the underside of an overhang glows as brightly as an open field. Real Minecraft-style light <em>spreads</em> — it pours out of torches, bends around corners, fades one step at a time, and pools in the dark. The lovely part is that the whole thing is one classic graph algorithm, a <strong>breadth-first flood fill</strong>, run over the voxel grid. In this lesson you give every voxel a light level, flood block light out from emitters and sky light down from above, and — the genuinely hard part — tear light back down correctly whenever a block changes.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to store a 0–15 light level per voxel and pack sky light and block light into the two nibbles of one byte.</li>
+            <li>Why block-light propagation is exactly a breadth-first flood fill: fade by one per step, stop at opaque blocks.</li>
+            <li>The subtle sky-light rule: daylight falls straight down through air with <em>no</em> attenuation, then spreads sideways normally.</li>
+            <li>The two-phase "darken, then refill" removal that keeps light correct when a torch is broken or a block is placed.</li>
+            <li>How to bake smooth per-vertex light into the mesh, carry it across chunk borders, and combine sky, block and AO in the shader.</li>
+          </ul>
+        </div>
+
+        <h2>A light level in every voxel</h2>
+
+        <p>Minecraft's whole lighting model rests on a single small number per voxel: a <strong>light level from 0 to 15</strong>. Fifteen is full brightness (right next to a glowstone block, or under open sky at noon); zero is pitch black. Each step away from a source drops the level by one, so light reaches at most fifteen blocks before it dies. Sixteen levels fit neatly in four bits — a <em>nibble</em> — which is the first reason the scheme is so cheap.</p>
+
+        <p>There are actually <em>two</em> independent lights in every voxel. <strong>Block light</strong> comes from emitters you place — torches, glowstone, lava. <strong>Sky light</strong> comes from the sky and is modulated by the time of day: it is full at noon and near zero at night, but the value stored in the voxel does not change as the sun moves — only the multiplier applied in the shader does. Keeping them separate is what lets a torch stay bright through the night while daylight dims. Two nibbles, two lights, one byte per voxel:</p>
+
+        <pre><code class="language-cpp" data-file="Chunk.h">struct Chunk {
+    std::array&lt;PackedVoxel, CHUNK_VOLUME&gt; blocks{};
+    std::array&lt;uint8_t,     CHUNK_VOLUME&gt; light{};   // NEW: one byte per voxel
+
+    // High nibble = sky light, low nibble = block light. Each is 0..15.
+    uint8_t GetSkyLight  (int i) const { return  light[i] &gt;&gt; 4;   }
+    uint8_t GetBlockLight(int i) const { return  light[i] &amp; 0x0F; }
+
+    void SetSkyLight(int i, uint8_t v) {
+        light[i] = uint8_t((light[i] &amp; 0x0F) | (v &lt;&lt; 4));   // keep block nibble
+    }
+    void SetBlockLight(int i, uint8_t v) {
+        light[i] = uint8_t((light[i] &amp; 0xF0) | (v &amp; 0x0F)); // keep sky nibble
+    }
+};</code></pre>
+
+        <p>Throughout this lesson the flood fill works in <em>world</em> voxel coordinates and crosses chunk boundaries freely, so we call through thin <code>World</code> wrappers — <code>world.getBlockLight(glm::ivec3)</code>, <code>world.setBlockLight(...)</code>, <code>world.isTransparent(...)</code> — that resolve a world position to the right chunk and index. These are the same border-crossing accessors the ambient-occlusion mesher already relies on (its <code>isSolid</code>), just for the light array. <code>isTransparent</code> is the mirror of opacity: air, glass and leaves let light through and can hold a light value; a solid stone block is opaque, so light neither enters it nor passes through.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">One byte, both lights — and the mesher already expects it</div><p>Packing sky and block into a single byte is not just tidy; it is exactly the <code>light:8</code> field the vertex-packing layout in the ambient-occlusion lesson reserved next to the texture layer and the two AO bits. When you bake lighting into the mesh later in this lesson, that one byte drops straight into <code>packVertexData(texLayer, light, aoLevel)</code> with zero extra storage per vertex.</p></div></div>
+
+        <h2>Block light: a breadth-first flood fill</h2>
+
+        <p>Here is the whole idea in one sentence: <strong>light spreads outward from every emitter, one voxel per step, losing one level each step, and stops dead at opaque blocks.</strong> That is a textbook breadth-first search (BFS). You seed a queue with every emitter cell at its emission level, then repeatedly pop a cell and try to light its six neighbors. Because BFS visits cells in order of increasing distance from the source, the first time a cell is reached is along a shortest path — which is precisely the brightest that cell can be. That is why the algorithm is breadth-first and not depth-first: BFS hands you the correct light level on the first visit, so no cell ever has to be revisited to be brightened.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A 2D grid slice: a torch at level 14 floods light outward; an opaque wall forces the wavefront to bend around its bottom edge, so cells behind the wall are much dimmer.">
+          <!-- grid lines -->
+          <g stroke="#4aa8ff" stroke-opacity="0.28" stroke-width="1">
+            <line x1="30" y1="30" x2="30" y2="282"/>
+            <line x1="72" y1="30" x2="72" y2="282"/>
+            <line x1="114" y1="30" x2="114" y2="282"/>
+            <line x1="156" y1="30" x2="156" y2="282"/>
+            <line x1="198" y1="30" x2="198" y2="282"/>
+            <line x1="240" y1="30" x2="240" y2="282"/>
+            <line x1="282" y1="30" x2="282" y2="282"/>
+            <line x1="324" y1="30" x2="324" y2="282"/>
+            <line x1="366" y1="30" x2="366" y2="282"/>
+            <line x1="30" y1="30" x2="366" y2="30"/>
+            <line x1="30" y1="72" x2="366" y2="72"/>
+            <line x1="30" y1="114" x2="366" y2="114"/>
+            <line x1="30" y1="156" x2="366" y2="156"/>
+            <line x1="30" y1="198" x2="366" y2="198"/>
+            <line x1="30" y1="240" x2="366" y2="240"/>
+            <line x1="30" y1="282" x2="366" y2="282"/>
+          </g>
+          <!-- opaque wall: column 4, rows 0..3 -->
+          <rect x="198" y="30" width="42" height="168" fill="currentColor" fill-opacity="0.18" stroke="#4aa8ff" stroke-width="1.5"/>
+          <text x="219" y="118" fill="currentColor" font-size="11" text-anchor="middle" style="writing-mode:vertical-rl">wall</text>
+          <!-- torch cell -->
+          <rect x="114" y="114" width="42" height="42" fill="#4aa8ff" fill-opacity="0.30" stroke="#4aa8ff" stroke-width="1.5"/>
+          <!-- light numbers -->
+          <g fill="currentColor" font-size="15" text-anchor="middle" font-family="sans-serif">
+            <text x="135" y="140" font-weight="bold">14</text>
+            <text x="177" y="140">13</text>
+            <text x="135" y="182">13</text>
+            <text x="177" y="182">12</text>
+            <text x="135" y="224">12</text>
+            <text x="177" y="224">11</text>
+            <text x="219" y="224">10</text>
+            <text x="261" y="224">9</text>
+            <text x="303" y="224">8</text>
+            <text x="261" y="182">8</text>
+            <text x="303" y="182">7</text>
+            <text x="261" y="140">7</text>
+            <text x="261" y="98">6</text>
+          </g>
+          <!-- bend arrow around the wall's bottom corner -->
+          <path d="M188 236 C 226 270, 300 258, 288 152" stroke="#4aa8ff" stroke-width="2" fill="none" stroke-dasharray="5 4"/>
+          <path d="M281 160 L288 150 L294 161" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+        </svg></div><figcaption>A 2D slice of the flood fill. The torch seeds level 14; each orthogonal step drops the level by one. The opaque wall blocks the direct path, so the wavefront must wrap around its bottom edge — the cell just behind the wall is only 7, not 13, because light had to travel the long way around.</figcaption></figure>
+
+        <p>First we seed. Walk a chunk's voxels, ask the block registry how much light each type emits (a torch emits 14, glowstone 15 — that is the <code>LightEmission</code> helper from the block lesson), and push every emitter into the queue at its level:</p>
+
+        <pre><code class="language-cpp" data-file="Lighting.cpp">static const glm::ivec3 DIRS[6] = {
+    { 1, 0, 0}, {-1, 0, 0},   // +X, -X
+    { 0, 1, 0}, { 0,-1, 0},   // +Y, -Y
+    { 0, 0, 1}, { 0, 0,-1},   // +Z, -Z
+};
+
+// Seed one chunk's emitters into the shared queue.
+void World::seedBlockLight(std::queue&lt;glm::ivec3&gt;&amp; q, const Chunk&amp; c, glm::ivec3 base)
+{
+    for (int z = 0; z &lt; CHUNK_SIZE; ++z)
+    for (int y = 0; y &lt; CHUNK_SIZE; ++y)
+    for (int x = 0; x &lt; CHUNK_SIZE; ++x)
+    {
+        int i = Index(x, y, z);
+        uint8_t emit = LightEmission(VoxelId(c.blocks[i]));  // torch 14, glowstone 15
+        if (emit &gt; 0) {
+            glm::ivec3 p = base + glm::ivec3{ x, y, z };
+            setBlockLight(p, emit);
+            q.push(p);
+        }
+    }
+}</code></pre>
+
+        <p>Then we flood. Pop a cell, read its current level, and for each of the six neighbors: if the neighbor is transparent and currently darker than <code>level - 1</code>, brighten it and enqueue it. That last condition is the heart of it — we only touch a neighbor when we can genuinely make it brighter, which is what makes the fill terminate and what stops us from re-processing cells we have already settled.</p>
+
+        <pre><code class="language-cpp" data-file="Lighting.cpp">void World::propagateBlockLight(std::queue&lt;glm::ivec3&gt;&amp; q)
+{
+    while (!q.empty())
+    {
+        glm::ivec3 p = q.front();
+        q.pop();
+
+        int level = getBlockLight(p);        // this cell's current light
+        if (level &lt;= 1) continue;            // a level-1 cell has nothing to give
+
+        for (glm::ivec3 d : DIRS)
+        {
+            glm::ivec3 n = p + d;
+            if (!isTransparent(n)) continue;          // opaque blocks stop light
+
+            if (getBlockLight(n) &lt; level - 1) {       // neighbour is too dark
+                setBlockLight(n, uint8_t(level - 1)); // fade by exactly one
+                markChunkDirty(n);                    // its mesh is now stale
+                q.push(n);                            // keep the wavefront moving
+            }
+        }
+    }
+}</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Read <code>level</code> as an <code>int</code>, and mind the underflow</div><p>Notice <code>level</code> is an <code>int</code>, not the <code>uint8_t</code> the storage returns. If you compute <code>level - 1</code> on an unsigned type and <code>level</code> is 0, it wraps to 255 and every neighbor looks "too dark" — the fill never stops. Reading into an <code>int</code> and bailing at <code>level &lt;= 1</code> sidesteps the trap entirely. This is the single most common bug in a first flood-fill implementation.</p></div></div>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Never recompute the whole world's light</div><p>It is tempting, when a player places a torch, to clear all light in a region and re-flood from scratch. Do not. A single chunk holds 4096 voxels and light reaches across chunk borders; recomputing everything on every block edit will hitch the game to a crawl. The entire trick of this system is that it is <em>incremental</em>: adding a light seeds one BFS from one cell, and removing a light runs the bounded remove-then-refill you will build next. Touch only what actually changed.</p></div></div>
+
+        <h2>Sky light and the straight-down rule</h2>
+
+        <p>Sky light uses the very same BFS for its horizontal spread, but it has one special case that trips up everyone the first time: <strong>daylight falls straight down through air with no attenuation at all</strong>. Stand in a hundred-block-deep open shaft and the floor is still at level 15, because every cell in that column is directly exposed to the sky. Only when light has to move <em>sideways</em> — under an overhang, into a cave mouth — does it fade by one per step like block light does.</p>
+
+        <p>We handle the vertical no-attenuation case during a top-down column pass. For each <code>(x, z)</code> column, walk down from the top of the world; while the voxel is transparent, set its sky light to 15 and seed it into the queue; the moment you hit a solid block, stop — everything below it is in shadow and will only be reached (dimmed) by the horizontal BFS, if at all.</p>
+
+        <pre><code class="language-cpp" data-file="Lighting.cpp">// Pour daylight down every column, then hand the queue to the horizontal flood.
+void World::seedSkyLight(std::queue&lt;glm::ivec3&gt;&amp; q, glm::ivec3 columnBase, int worldTopY)
+{
+    for (int z = 0; z &lt; CHUNK_SIZE; ++z)
+    for (int x = 0; x &lt; CHUNK_SIZE; ++x)
+    {
+        for (int y = worldTopY; y &gt;= 0; --y)
+        {
+            glm::ivec3 p = columnBase + glm::ivec3{ x, y, z };
+            if (!isTransparent(p)) break;   // a solid block shadows everything below
+            setSkyLight(p, 15);             // full daylight -- NO downward fade
+            q.push(p);                      // seed for horizontal spread
+        }
+    }
+}</code></pre>
+
+        <p>Now run the horizontal spread. It is byte-for-byte <code>propagateBlockLight</code> with the sky accessors swapped in — <code>getSkyLight</code>/<code>setSkyLight</code> in place of the block versions. Copy the function, rename it <code>propagateSkyLight</code>, and change those two calls. (If you prefer, template the propagation on a pair of getter/setter lambdas so there is only one copy of the loop.) Because every open-sky cell was already seeded at 15, the BFS never lowers them; it only reaches <em>into</em> the shadows, dropping one level per sideways or downward step. That single asymmetry — full 15 straight down, minus-one everywhere else — is the whole of skylight.</p>
+
+        <h2>Taking light away: the two-phase remove</h2>
+
+        <p>Adding light is the easy half. The hard, essential half is <em>removing</em> it: the player breaks the torch, or drops a block into a lit region and casts a shadow. You cannot simply zero the source cell — light had already spread fifteen blocks in every direction, and all of that has to be pulled back. And you cannot naively zero the whole neighborhood either, because some of those cells may be lit by a <em>second</em> torch that must survive.</p>
+
+        <p>The correct algorithm is the classic <strong>two-phase remove-then-refill</strong>. Phase one is a BFS that carries the <em>old</em> level of each cell it visits and erases the light that this source had placed. Along the way it notices cells that are brighter than expected — those are being fed by another source — and remembers them as refill seeds. Phase two runs the normal add-propagation from exactly those seeds, so any light that was legitimately there flows back in and fills the hole.</p>
+
+        <pre><code class="language-cpp" data-file="Lighting.cpp">struct LightRemovalNode { glm::ivec3 pos; uint8_t level; };  // carries the OLD level
+
+void World::removeBlockLight(glm::ivec3 origin)
+{
+    std::queue&lt;LightRemovalNode&gt; removeQ;   // cells to darken
+    std::queue&lt;glm::ivec3&gt;       addQ;      // surviving sources to re-flood from
+
+    // Phase 0: pick up the light that was here, then zero it.
+    uint8_t startLevel = getBlockLight(origin);
+    if (startLevel == 0) return;            // nothing to remove
+    setBlockLight(origin, 0);
+    markChunkDirty(origin);
+    removeQ.push({ origin, startLevel });
+
+    // Phase 1: the darkening sweep.
+    while (!removeQ.empty())
+    {
+        LightRemovalNode node = removeQ.front();
+        removeQ.pop();
+        int oldLevel = node.level;
+
+        for (glm::ivec3 d : DIRS)
+        {
+            glm::ivec3 n = node.pos + d;
+            int nLevel = getBlockLight(n);
+
+            if (nLevel != 0 &amp;&amp; nLevel &lt; oldLevel) {
+                // n was lit BY the light we just removed -- erase it and keep going.
+                setBlockLight(n, 0);
+                markChunkDirty(n);
+                removeQ.push({ n, uint8_t(nLevel) });
+            }
+            else if (nLevel &gt;= oldLevel) {
+                // n is as bright as we were, or brighter: it has its OWN source.
+                // Remember it -- in phase 2 it will refill the hole we are digging.
+                addQ.push(n);
+            }
+        }
+    }
+
+    // Phase 2: refill from every surviving source we bumped into.
+    propagateBlockLight(addQ);
+}</code></pre>
+
+        <p>The two comparisons are the entire logic, so it is worth reading them slowly. A neighbor dimmer than the node's old level (<code>nLevel &lt; oldLevel</code>) can only have gotten its light <em>from</em> this source, because a shortest-path fill makes each step exactly one dimmer — so we erase it and push it with <em>its</em> old level, continuing the sweep outward. A neighbor at least as bright (<code>nLevel &gt;= oldLevel</code>) cannot have come from us; something else is feeding it, so we drop it into the add queue as a refill seed. Phase two's <code>propagateBlockLight</code> then re-brightens the erased region up to whatever those surviving sources can reach.</p>
+
+        <p>Placing an opaque block reuses this exact machinery. Set the new block, then call <code>removeBlockLight</code> on that cell (its own light, if any, is now blocked) and <code>removeSkyLight</code> for the shadow it casts below; the refill phase pulls surrounding light back around the new obstruction. Removing sky light is <em>almost</em> the same function with the sky accessors, but the no-attenuation column forces one extra rule: when the darkening sweep steps straight <em>down</em> from a cell that was at full 15, the cell below was being fed by the sky through it, so it must be erased and followed even though it is not dimmer than 15 — the plain <code>nLevel &lt; oldLevel</code> test would mistake it for an independent source and leave the shadow un-cast. Conversely, breaking a block that was blocking the sky re-opens the column: re-run the top-down column seed so every newly exposed cell is set straight to 15 (the horizontal BFS on its own would attenuate it as it descends), then propagate to refill the sides.</p>
+
+        <h2>Baking light into the mesh</h2>
+
+        <p>The light lives in the chunk, but the GPU never reads it directly; the mesher <strong>bakes</strong> a light value onto each vertex, exactly as it already bakes ambient occlusion. And just like AO, we want it <em>smooth</em>: a hard per-face light looks blocky, so for each of a face's four corners we average the light of the transparent voxels that hug that corner on the outer side of the face. Solid neighbors contribute nothing (they hold no light), so a corner tucked against a wall naturally comes out darker.</p>
+
+        <p>This mirrors <code>computeFaceAO</code> one-for-one: the same face axes <code>N</code>, <code>u</code>, <code>v</code> and the same corner order <code>(&minus;,&minus;) (+,&minus;) (+,+) (&minus;,+)</code>. The only difference is that instead of counting solid neighbors we average light through the air ones, and we do it for both nibbles so day and night can be resolved separately in the shader.</p>
+
+        <pre><code class="language-cpp" data-file="Lighting.cpp">struct FaceLight { uint8_t light[4]; };   // packed sky|block, one byte per corner
+
+// Same N, u, v and corner order as computeFaceAO. For each vertex, average the
+// light of the (up to four) transparent cells around that corner on the face's
+// outer side; opaque cells contribute nothing.
+FaceLight computeFaceLight(const World&amp; world, glm::ivec3 b,
+                           glm::ivec3 N, glm::ivec3 u, glm::ivec3 v)
+{
+    static const int su[4] = { -1, +1, +1, -1 };
+    static const int sv[4] = { -1, -1, +1, +1 };
+
+    FaceLight fl;
+    for (int i = 0; i &lt; 4; ++i)
+    {
+        glm::ivec3 cells[4] = {
+            b + N,                            // the air voxel in front of the face
+            b + N + su[i] * u,                // one edge neighbour
+            b + N + sv[i] * v,                // the other edge neighbour
+            b + N + su[i] * u + sv[i] * v,    // the diagonal
+        };
+
+        int skySum = 0, blkSum = 0, n = 0;
+        for (glm::ivec3 c : cells) {
+            if (!world.isTransparent(c)) continue;   // walls give no light
+            skySum += world.getSkyLight(c);
+            blkSum += world.getBlockLight(c);
+            ++n;
+        }
+        uint8_t sky = n ? uint8_t(skySum / n) : 0;
+        uint8_t blk = n ? uint8_t(blkSum / n) : 0;
+        fl.light[i] = uint8_t((sky &lt;&lt; 4) | blk);      // repack into one byte
+    }
+    return fl;
+}</code></pre>
+
+        <p>That per-corner byte is the <code>light</code> argument to <code>packVertexData(texLayer, light, aoLevel)</code> — the field the AO lesson set aside. And because different corners now hold different light, the value must also join the <strong>greedy merge key</strong>: recall <code>FaceKey</code> carries a <code>uint8_t light</code> alongside block id, texture layer, AO and face direction. Two coplanar faces may only merge into one big quad when <em>all</em> of that matches, light included — otherwise a bright face and a dim one would fuse and the light would smear flatly across the seam. Leaving light out of the key is a classic cause of blocky, jarring lighting on merged walls.</p>
+
+        <h2>Light crosses chunk borders</h2>
+
+        <p>Light does not respect chunk boundaries — a torch one voxel from the edge lights its neighbor chunk too. That is exactly why every accessor in this lesson takes a world position and resolves the chunk itself: the BFS walks into <code>Chunk[+1, 0, 0]</code> without noticing the seam, writing light there just as happily as in the home chunk. The mesher's padded read (the one-voxel skirt of neighbor data the greedy and AO lessons already sample) picks up that neighbor light, so <code>computeFaceLight</code> at a chunk edge averages across the border and the seam disappears.</p>
+
+        <p>But writing light into a neighbor chunk means that neighbor's mesh is now wrong — it was built with the old, darker values. That is what <code>markChunkDirty</code> tracks: every time the fill or the removal sweep changes a voxel's light, we look up which chunk owns that voxel and add it to a set of chunks that need re-meshing.</p>
+
+        <pre><code class="language-cpp" data-file="World.cpp">void World::markChunkDirty(glm::ivec3 worldPos)
+{
+    ChunkCoord cc = ToChunkCoord(worldPos);   // floor-divide by CHUNK_SIZE
+    m_dirtyChunks.insert(cc);                  // std::unordered_set&lt;ChunkCoord&gt;
+}
+
+// After an edit's add/remove flood settles, rebuild every touched chunk's mesh.
+void World::rebuildDirtyChunks()
+{
+    for (ChunkCoord cc : m_dirtyChunks)
+        RemeshChunk(cc);       // hand off to the job system in a later lesson
+    m_dirtyChunks.clear();
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">A light edit re-meshes the neighbors too, not just the edited chunk</div><p>Place a torch on a chunk's edge and its glow spills into the chunk next door, so both chunks must re-mesh — and if the light reaches a corner, even the diagonal chunk may need rebuilding because the mesher's padded border reads it. Trust the dirty set rather than re-meshing only the chunk you edited: whatever <code>markChunkDirty</code> collected during the flood <em>is</em> the exact set of chunks whose vertices changed. Meshing is the expensive step here, which is the whole reason the next lesson moves it onto a background job system.</p></div></div>
+
+        <h2>Combining light in the shader</h2>
+
+        <p>Baking gives each vertex a byte holding a smoothed sky nibble and block nibble. The vertex shader unpacks it and divides by 15 to get two 0–1 factors; the pixel shader combines them with the time of day and the AO term. Sky light is scaled by a <code>dayFactor</code> uniform (1 at noon, near 0 at night) while block light is not — that is what keeps torches glowing after dark. We take the brighter of the two contributions, then darken by AO on top, so a shadowed corner under a torch is both lit and creased:</p>
+
+        <pre><code class="language-hlsl" data-file="VoxelPS.hlsl">// Interpolated per-pixel: sky/block are 0..1 (unpacked in the vertex shader,
+// each nibble / 15); ao is 0.4..1.0 from the AO ramp.
+struct PSInput {
+    float4 pos   : SV_Position;
+    float2 uv    : TEXCOORD0;
+    float  sky   : TEXCOORD1;   // baked sky light, 0..1
+    float  block : TEXCOORD2;   // baked block light, 0..1
+    float  ao    : TEXCOORD3;   // baked ambient occlusion, 0.4..1
+};
+
+cbuffer Frame : register(b0) { float dayFactor; };  // 0 = midnight, 1 = noon
+
+Texture2D    gAtlas : register(t0);
+SamplerState gSamp  : register(s0);
+
+float4 main(PSInput i) : SV_Target
+{
+    float3 albedo = gAtlas.Sample(gSamp, i.uv).rgb;
+
+    // Sky fades with the day; block light (torches) never does. Take the brighter.
+    float lit = max(i.sky * dayFactor, i.block);
+
+    // AO darkens creases on top of the light level.
+    float3 color = albedo * lit * i.ao;
+    return float4(color, 1.0);
+}</code></pre>
+
+        <p>Metal Shading Language expresses the same math: the interpolated <code>sky</code>, <code>block</code> and <code>ao</code> ride in the fragment input struct, <code>dayFactor</code> comes from a constant buffer, the atlas is a <code>texture2d&lt;float&gt;</code>, and the body is the identical <code>max(sky * dayFactor, block)</code> then multiply by AO. Because HLSL's <code>register(t0)</code> lines up with the Metal fragment texture at index 0, the two shaders stay near-mirror images, just as they have all through MiniEngine.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Curve the falloff — and let emitters bloom</div><p>Linear light looks a little flat; Minecraft ramps brightness roughly as <code>0.8^(15 - level)</code>, so each step near the source matters more than each step in the gloom. Bake that curve into a 16-entry lookup or apply it in the shader. And tie this back to Module 10: a glowstone block is <code>emissive</code>, so when it writes to the HDR target you can push its output above 1.0 and the bloom pass makes it visibly <em>glow</em>. Flood-fill lighting decides how far a light reaches; bloom sells the source itself.</p></div></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Every voxel stores a 0–15 light level; pack sky light in the high nibble and block light in the low nibble of one byte — the same <code>light:8</code> field the vertex layout already reserved.</li>
+            <li>Block light is a breadth-first flood fill: seed a queue with every emitter at its level, then pop cells and brighten each transparent neighbor to <code>level - 1</code>, stopping at opaque blocks. Read the level as an <code>int</code> so <code>level - 1</code> never underflows.</li>
+            <li>Sky light seeds top-down at 15 with <em>no</em> downward attenuation until a solid block, then runs the identical BFS for horizontal spread — that asymmetry is the entire special case.</li>
+            <li>Removing light needs the two-phase remove-then-refill: a BFS carrying each cell's old level erases the removed source's light and collects surviving sources, then normal propagation refills from those seeds.</li>
+            <li>The mesher bakes a smoothed per-corner light byte, exactly like AO, into <code>packVertexData</code> and into the greedy merge key, so bright and dim faces never fuse.</li>
+            <li>Light crosses chunk borders, so the flood writes into neighbor chunks and <code>markChunkDirty</code> collects every chunk to re-mesh; in the shader, combine <code>max(sky * dayFactor, block)</code> and multiply by AO, and let emissive blocks feed the bloom pass.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

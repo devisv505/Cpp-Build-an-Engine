@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Water, Transparency &amp; Glow — Learn C++ Engine Development</title>
+  <meta name="description" content="Render see-through water and glass correctly with a separate blended pass and sorting, and let bright blocks like lava and glowstone drive the bloom you built in Module 10.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Water, Transparency &amp; Glow</h1>
+
+        <p class="lead">
+          Your world already renders — stone, dirt, grass, all crisply opaque. But water, glass and leaves break
+          every assumption the opaque path makes: they let you see what sits behind them, so they cannot simply
+          overwrite those pixels. And the glowing blocks — lava, glowstone, ore — need to do the opposite of
+          hiding: they need to pour light <em>into</em> the scene. This lesson closes MiniEngine's voxel rendering
+          story by adding a second, alpha-blended pass for see-through blocks, and by wiring bright blocks straight
+          into the bloom pipeline you built back in Module 10.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why opaque and transparent geometry need different draw rules, and how to split each chunk into <strong>two meshes</strong> by the block's <code>transparent</code> flag.</li>
+            <li>How to build the alpha-blend and depth-write-off render state on Direct3D 11, and the Metal pipeline/depth equivalents.</li>
+            <li>How to order the frame: all opaque first, then transparent sorted <strong>far-to-near</strong> at chunk granularity — and why that order is non-negotiable.</li>
+            <li>How to give water a tint and a watertight animated wobble with a sum of sines in the vertex shader.</li>
+            <li>How to make lava, glowstone and ore emit HDR color above <code>1.0</code> so Module 10's bloom makes them glow for free.</li>
+          </ul>
+        </div>
+
+        <h2>Two kinds of geometry, two sets of rules</h2>
+
+        <p>
+          Everything you have drawn so far is <strong>opaque</strong>: each pixel a block covers is that block, full
+          stop. Opaque geometry is wonderfully forgiving. Because it writes depth and every fragment fully replaces
+          whatever was behind it, you can draw opaque blocks in <em>any order at all</em> — the depth buffer sorts
+          them per-pixel for you, keeping the nearest surface and discarding the rest.
+        </p>
+
+        <p>
+          <strong>Transparent</strong> geometry throws that guarantee away. A pixel of water is <em>part</em> water
+          and <em>part</em> whatever is behind it, mixed by the water's alpha. That mixing — alpha blending — reads
+          the color already in the framebuffer, so what is behind the water must already have been drawn. And it must
+          be composited in the right order, because "60% blue over stone, then 60% blue over that" is a different
+          result than doing it the other way around. Three rules fall straight out of this:
+        </p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th></th><th>Opaque pass</th><th>Transparent pass</th></tr></thead>
+          <tbody>
+            <tr><td>Blending</td><td>off — fragment replaces the pixel</td><td><strong>on</strong> — src·α + dst·(1−α)</td></tr>
+            <tr><td>Depth test</td><td>on</td><td>on</td></tr>
+            <tr><td>Depth <em>write</em></td><td>on</td><td><strong>off</strong></td></tr>
+            <tr><td>Draw order</td><td>any (depth buffer sorts)</td><td><strong>far → near</strong></td></tr>
+            <tr><td>When</td><td>first</td><td>after all opaque</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>
+          The subtle one is <strong>depth write off</strong>. Transparent surfaces still <em>test</em> against the
+          depth buffer — water behind a solid wall must be hidden by that wall. But a transparent fragment must not
+          <em>write</em> its own depth, because it did not replace what is behind it; it let it show through. If it
+          wrote depth, a nearer pane of glass would stamp its distance into the buffer and then wrongly occlude a
+          farther transparent surface you should still be able to see through it.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Opaque first, and depth-write OFF for transparent — or nothing works</div>
+          <p>These two are the load-bearing rules of the whole lesson. Draw transparent geometry <em>before</em> the
+          opaque behind it and there is nothing in the framebuffer to blend against — the water blends with the sky.
+          Leave depth-<em>write</em> enabled on the transparent pass and your translucent surfaces stamp depth and
+          then occlude each other (and the scene behind them) as if they were solid, so you get hard black or
+          clipped edges instead of see-through blue. If transparency ever looks "solid but tinted," check these two
+          first.</p></div>
+        </div>
+
+        <h2>Splitting the chunk into two meshes</h2>
+
+        <p>
+          Because the two categories are drawn with different state, they cannot share a draw call. The clean fix is
+          to have the mesher emit <strong>two meshes per chunk</strong>: an opaque mesh and a transparent mesh. This
+          is a tiny extension of the mesher from the earlier lessons — the geometry it builds per face is byte-for-byte
+          identical, we only choose <em>which buffer</em> the face lands in, based on the block's <code>transparent</code>
+          flag from the registry.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkMesher.cpp">#include "BlockQueries.h"   // IsTransparent, FaceVisible, FaceTexture, LightEmission
+#include "Vertex.h"
+#include &lt;vector&gt;
+#include &lt;cstdint&gt;
+
+// One CPU-side mesh: a vertex list and an index list.
+struct MeshBuffers {
+    std::vector&lt;Vertex&gt;   verts;
+    std::vector&lt;uint32_t&gt; indices;
+};
+
+// A chunk now produces TWO meshes: everything opaque, and everything
+// see-through. They are uploaded separately and drawn in different passes.
+struct ChunkMeshData {
+    MeshBuffers opaque;       // stone, dirt, grass, ...   (depth write ON)
+    MeshBuffers transparent;  // water, glass, leaves      (alpha-blended)
+};
+
+void BuildChunkMesh(const Chunk&amp; chunk, ChunkMeshData&amp; out) {
+    for (int z = 0; z &lt; Chunk::SIZE; ++z)
+    for (int y = 0; y &lt; Chunk::SIZE; ++y)
+    for (int x = 0; x &lt; Chunk::SIZE; ++x) {
+        BlockId here = chunk.At(x, y, z);
+        if (here == BLOCK_AIR) continue;
+
+        // The whole split, in one line: route this block's faces to the
+        // matching buffer set. Same geometry — only the destination differs.
+        MeshBuffers&amp; dst = IsTransparent(here) ? out.transparent : out.opaque;
+
+        for (int f = 0; f &lt; 6; ++f) {
+            BlockId neighbor = chunk.NeighborAt(x, y, z, f);
+
+            // Exactly the visibility rule from Hidden Face Removal, reused
+            // unchanged. FaceVisible = IsTransparent(neighbor) &amp;&amp; neighbor != self,
+            // so the 'neighbor != self' term still culls water-water and
+            // glass-glass interior faces. A water face pressed against solid
+            // stone is left to the stone's own opaque face — nothing is drawn
+            // twice, and no two coplanar faces z-fight.
+            if (!FaceVisible(here, neighbor)) continue;
+
+            EmitFace(dst, x, y, z, f, here);   // the greedy/naive emit from earlier
+        }
+    }
+}</code></pre>
+
+        <p>
+          That single ternary is the entire structural change. Everything downstream stays the same: two
+          <code>MeshBuffers</code> in, two <code>Mesh</code> objects out, each uploaded once. Note that reusing
+          <code>FaceVisible</code> for both meshes is exactly what we want — it culls the interior faces between two
+          water cells (you never see the seam inside a lake) while still keeping the water surface that meets air.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Leaves want alpha-<em>test</em>, not alpha-blend</div>
+          <p>Our two-way split treats every <code>transparent</code> block the same, but there are really two
+          flavors of see-through. <strong>Translucent</strong> surfaces (water, glass) mix smoothly with what is
+          behind them and must be blended and sorted. <strong>Cutout</strong> surfaces (leaves, grass, saplings)
+          are fully opaque where the texture is opaque and fully gone where it is not — a hard <code>clip()</code> on
+          alpha with no blending. Cutout geometry writes depth and needs no sorting, so a fuller engine keeps a
+          <em>third</em> mesh for it and draws it in the opaque pass with an alpha-tested shader. Water and glass are
+          the only blocks that truly need the blended pass below; leaves are along for the ride only to keep this
+          lesson to two meshes.</p></div>
+        </div>
+
+        <p>
+          The emit step packs one extra thing now. We already pack a texture layer, ambient occlusion and baked
+          light into a single <code>uint32_t</code> per vertex (from <em>Texturing Voxels with an Atlas</em>). We add
+          two fields the shaders below need: an <strong>emissive strength</strong> for glow, and a one-bit
+          <strong>wave</strong> flag for water. There is plenty of room left in the word.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">// Extends the packed vertex from "Texturing Voxels with an Atlas".
+//   bits  0..15  texture-array layer
+//   bits 16..17  ambient occlusion (0..3)
+//   bits 18..21  baked light level (0..15)
+//   bits 22..25  emissive strength (0..15, 0 = not emissive)   &lt;-- new
+//   bit  26      wave (1 = water surface, animate it)          &lt;-- new
+inline uint32_t packVertex(uint16_t layer, uint8_t ao, uint8_t light,
+                           uint8_t emissive, bool wave) {
+    return  uint32_t(layer)
+         | (uint32_t(ao       &amp; 0x3u) &lt;&lt; 16)
+         | (uint32_t(light    &amp; 0xFu) &lt;&lt; 18)
+         | (uint32_t(emissive &amp; 0xFu) &lt;&lt; 22)
+         | (uint32_t(wave ? 1u : 0u)  &lt;&lt; 26);
+}
+
+// Inside EmitFace, the two new fields come straight from the block type:
+//   const BlockType&amp; bt = Blocks().Get(here);
+//   uint8_t emissive = bt.emissive ? bt.lightLevel : 0;  // reuse the 0..15 level
+//   bool    wave     = (here == BLOCK_WATER);
+//   uint32_t data    = packVertex(layer, ao, light, emissive, wave);</code></pre>
+
+        <h2>The blend and depth state</h2>
+
+        <p>
+          Transparency is just two pieces of pipeline state: a <em>blend state</em> that performs the "over"
+          composite, and a <em>depth-stencil state</em> that tests but does not write. On Direct3D 11 you create both
+          once at startup and bind them for the transparent pass.
+        </p>
+
+        <pre><code class="language-cpp" data-file="RenderStates.cpp">// --- created once at startup ---
+
+// OPAQUE depth: test AND write. (You already have this from the depth lesson.)
+D3D11_DEPTH_STENCIL_DESC opaqueDS = {};
+opaqueDS.DepthEnable    = TRUE;
+opaqueDS.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;    // writes depth
+opaqueDS.DepthFunc      = D3D11_COMPARISON_LESS;
+device-&gt;CreateDepthStencilState(&amp;opaqueDS, &amp;m_depthWrite);
+
+// TRANSPARENT depth: test stays ON, but depth WRITE is OFF.
+D3D11_DEPTH_STENCIL_DESC blendDS = {};
+blendDS.DepthEnable    = TRUE;
+blendDS.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;    // &lt;-- test yes, WRITE no
+blendDS.DepthFunc      = D3D11_COMPARISON_LESS_EQUAL;
+device-&gt;CreateDepthStencilState(&amp;blendDS, &amp;m_depthTestNoWrite);
+
+// TRANSPARENT blend: standard straight-alpha "over".
+D3D11_BLEND_DESC bd = {};
+bd.RenderTarget[0].BlendEnable    = TRUE;
+bd.RenderTarget[0].SrcBlend       = D3D11_BLEND_SRC_ALPHA;      // out = src.rgb * src.a
+bd.RenderTarget[0].DestBlend      = D3D11_BLEND_INV_SRC_ALPHA;  //     + dst.rgb * (1 - src.a)
+bd.RenderTarget[0].BlendOp        = D3D11_BLEND_OP_ADD;
+bd.RenderTarget[0].SrcBlendAlpha  = D3D11_BLEND_ONE;
+bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+bd.RenderTarget[0].BlendOpAlpha   = D3D11_BLEND_OP_ADD;
+bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+device-&gt;CreateBlendState(&amp;bd, &amp;m_alphaBlend);</code></pre>
+
+        <p>
+          On <strong>Metal</strong> the split is a little different: blending is baked into the render
+          <em>pipeline</em> state object, not a separate bindable, so you compile a second pipeline for transparent
+          geometry with blending switched on. Depth-write-off, however, is still a standalone
+          <code>MTLDepthStencilState</code> you set per pass, just like on D3D11.
+        </p>
+
+        <pre><code class="language-cpp" data-file="MetalStates.mm">// Metal: blending lives on the transparent PIPELINE's color attachment.
+auto* ca = pipelineDesc-&gt;colorAttachments()-&gt;object(0);
+ca-&gt;setBlendingEnabled(true);
+ca-&gt;setSourceRGBBlendFactor(MTL::BlendFactorSourceAlpha);
+ca-&gt;setDestinationRGBBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
+ca-&gt;setRgbBlendOperation(MTL::BlendOperationAdd);
+ca-&gt;setSourceAlphaBlendFactor(MTL::BlendFactorOne);
+ca-&gt;setDestinationAlphaBlendFactor(MTL::BlendFactorOneMinusSourceAlpha);
+ca-&gt;setAlphaBlendOperation(MTL::BlendOperationAdd);
+
+// Depth WRITE off is a separate depth-stencil state, set per render pass:
+auto* dsd = MTL::DepthStencilDescriptor::alloc()-&gt;init();
+dsd-&gt;setDepthCompareFunction(MTL::CompareFunctionLessEqual);
+dsd-&gt;setDepthWriteEnabled(false);   // test on, write off
+m_depthTestNoWrite = device-&gt;newDepthStencilState(dsd);</code></pre>
+
+        <h2>Ordering the frame</h2>
+
+        <p>
+          Now the render loop puts it together. We already have a list of <em>visible</em> chunks from
+          <em>Frustum Culling &amp; Draw-Call Batching</em>. Pass one draws all of their opaque meshes in whatever
+          order they come. Then we sort the same chunks far-to-near and draw their transparent meshes with the
+          blended state.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkRenderer.cpp">// visibleChunks: already frustum-culled this frame. cam = camera world position.
+
+// --- PASS 1: OPAQUE ------------------------------------------------------
+// Depth write ON, no blending. Any draw order is fine; the depth buffer
+// resolves overlaps per pixel.
+ctx-&gt;OMSetBlendState(nullptr, nullptr, 0xffffffff);          // blending off
+ctx-&gt;OMSetDepthStencilState(m_depthWrite.Get(), 0);
+for (const Chunk* c : visibleChunks)
+    c-&gt;mesh.opaque.Draw(ctx);
+
+// --- sort transparent chunks FAR -&gt; NEAR --------------------------------
+// Nearer water must blend on top of farther water. Per-face sorting is
+// impractical in a voxel world, so we sort at chunk granularity and accept
+// the small error (see the note below).
+std::sort(visibleChunks.begin(), visibleChunks.end(),
+    [&amp;](const Chunk* a, const Chunk* b) {
+        return DistanceSq(a-&gt;CenterWorld(), cam)
+             &gt; DistanceSq(b-&gt;CenterWorld(), cam);   // farthest first
+    });
+
+// --- PASS 2: TRANSPARENT -------------------------------------------------
+// Blend ON, depth test ON, depth WRITE off.
+ctx-&gt;OMSetBlendState(m_alphaBlend.Get(), nullptr, 0xffffffff);
+ctx-&gt;OMSetDepthStencilState(m_depthTestNoWrite.Get(), 0);
+for (const Chunk* c : visibleChunks)
+    if (c-&gt;mesh.transparent.IndexCount() &gt; 0)      // skip chunks with no water/glass
+        c-&gt;mesh.transparent.Draw(ctx);</code></pre>
+
+        <p>
+          Both passes render into the same HDR <code>sceneTarget</code> (the <code>RGBA16Float</code> texture from
+          Module 10), because everything you draw still has to flow through tone mapping at the end. That target is
+          also what makes the glow in the next section possible.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 760 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A left-to-right frame timeline: opaque geometry, then transparent geometry, both into the HDR scene target, then bloom, then tone map, then the screen.">
+              <!-- bracket: scene render into HDR -->
+              <path d="M20 44 L20 34 L370 34 L370 44" stroke="#4aa8ff" stroke-width="1.5" fill="none"/>
+              <text x="195" y="26" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">rendered into the HDR sceneTarget (RGBA16F)</text>
+              <!-- bracket: post-processing -->
+              <path d="M400 44 L400 34 L740 34 L740 44" stroke="#4aa8ff" stroke-width="1.5" fill="none"/>
+              <text x="570" y="26" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">post-processing (Module 10)</text>
+
+              <!-- stage 1: opaque -->
+              <rect x="20" y="60" width="165" height="66" rx="8" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <text x="102" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle" font-weight="600">1 · Opaque</text>
+              <text x="102" y="110" fill="currentColor" stroke="none" font-size="10.5" text-anchor="middle">depth test + WRITE</text>
+              <text x="102" y="123" fill="currentColor" stroke="none" font-size="10.5" text-anchor="middle">any order</text>
+
+              <!-- stage 2: transparent -->
+              <rect x="205" y="60" width="165" height="66" rx="8" stroke="#4aa8ff" stroke-width="2.6" fill="none"/>
+              <text x="287" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle" font-weight="600">2 · Transparent</text>
+              <text x="287" y="110" fill="currentColor" stroke="none" font-size="10.5" text-anchor="middle">alpha blend · no depth write</text>
+              <text x="287" y="123" fill="currentColor" stroke="none" font-size="10.5" text-anchor="middle">far → near</text>
+
+              <!-- stage 3: bloom -->
+              <rect x="400" y="60" width="165" height="66" rx="8" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <text x="482" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle" font-weight="600">3 · Bloom</text>
+              <text x="482" y="110" fill="currentColor" stroke="none" font-size="10.5" text-anchor="middle">bright pass → blur</text>
+              <text x="482" y="123" fill="currentColor" stroke="none" font-size="10.5" text-anchor="middle">→ composite (HDR)</text>
+
+              <!-- stage 4: tone map -->
+              <rect x="585" y="60" width="155" height="66" rx="8" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <text x="662" y="90" fill="currentColor" stroke="none" font-size="14" text-anchor="middle" font-weight="600">4 · Tone map</text>
+              <text x="662" y="110" fill="currentColor" stroke="none" font-size="10.5" text-anchor="middle">HDR → display</text>
+              <text x="662" y="123" fill="currentColor" stroke="none" font-size="10.5" text-anchor="middle">once, at the end</text>
+
+              <!-- arrows -->
+              <g stroke="#4aa8ff" stroke-width="2" fill="#4aa8ff">
+                <path d="M185 93 L203 93" fill="none"/><path d="M199 89 L207 93 L199 97 Z" stroke="none"/>
+                <path d="M370 93 L398 93" fill="none"/><path d="M394 89 L402 93 L394 97 Z" stroke="none"/>
+                <path d="M565 93 L583 93" fill="none"/><path d="M579 89 L587 93 L579 97 Z" stroke="none"/>
+              </g>
+
+              <!-- to screen -->
+              <path d="M662 126 L662 168" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+              <path d="M658 164 L662 172 L666 164 Z" stroke="none" fill="#4aa8ff"/>
+              <rect x="597" y="176" width="130" height="40" rx="8" stroke="#4aa8ff" stroke-width="2" fill="#4aa8ff" fill-opacity="0.10"/>
+              <text x="662" y="201" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">back buffer · screen</text>
+
+              <!-- emissive callout arrow into bloom -->
+              <text x="300" y="205" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">emissive blocks write color &gt; 1.0 here …</text>
+              <path d="M300 190 C 360 170, 430 165, 470 132" stroke="#4aa8ff" stroke-width="1.5" fill="none" stroke-dasharray="4 3"/>
+              <path d="M466 136 L472 128 L474 138 Z" stroke="none" fill="#4aa8ff"/>
+              <text x="482" y="205" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">… the bright pass catches them</text>
+            </svg>
+          </div>
+          <figcaption>One frame. Opaque then transparent both draw into the HDR scene target; bloom and tone map read
+          it afterward. Anything an emissive block writes above <code>1.0</code> survives into the bright pass and
+          blooms.</figcaption>
+        </figure>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Chunk-granularity sorting is an accepted approximation</div>
+          <p>Truly correct alpha blending would sort every transparent <em>triangle</em> back-to-front every frame —
+          hopeless when a lake is thousands of quads. Sorting whole chunks is cheap (a few hundred entries) and
+          looks right almost always, because a chunk's transparent surfaces are usually a single flat water plane
+          with no self-overlap. The error only shows up in pathological cases — two panes of glass in the same chunk
+          seen edge-on — and players never notice. Disabling depth-<em>write</em> is what keeps even that error
+          graceful: surfaces blend in a slightly wrong order rather than punching holes in each other.</p></div>
+        </div>
+
+        <h2>Water: a tint and a wobble</h2>
+
+        <p>
+          Water is drawn with its own shader in the transparent pass. Two things make it read as water: a
+          semi-transparent blue, and a gentle animated surface. The color is easy — sample the water tile and output
+          an alpha below <code>1.0</code> so the blend state lets the scene behind show through. The motion is a
+          vertex-shader trick: nudge each surface vertex up and down by a sum of sines of time.
+        </p>
+
+        <p>
+          The one detail that keeps the surface from tearing apart: the wave must be a function of <strong>world
+          <code>(x, z)</code> and time only</strong> — never of the vertex's own identity. Then any two vertices that
+          share an <code>(x, z)</code> — across faces, across blocks, across chunk borders — receive the
+          <em>identical</em> offset and stay welded together. The whole sheet ripples as one continuous surface with
+          no cracks.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Water.hlsl">cbuffer PerFrame : register(b0) { float4x4 gViewProj; float gTime; float3 _pad0; };
+cbuffer PerChunk : register(b1) { float3 gChunkOrigin; float _pad1; };
+
+Texture2DArray gBlocks : register(t0);
+SamplerState   gSamp   : register(s0);
+
+struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; uint data : TEXCOORD1; };
+struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0;
+               nointerpolation float layer : TEXCOORD1; float shade : TEXCOORD2; };
+
+// Gentle sum-of-sines ripple. Depends ONLY on world (x,z) and time, so
+// vertices that share an (x,z) always get the same offset -&gt; watertight.
+float WaveHeight(float2 worldXZ, float t) {
+    return 0.06 * sin(worldXZ.x * 0.7 + t * 1.5)
+         + 0.04 * sin(worldXZ.y * 0.9 + t * 1.1);
+}
+
+VSOut VSWater(VSIn i) {
+    float3 world = i.pos + gChunkOrigin;                 // chunk-local -&gt; world
+
+    // Bit 26 (the 'wave' flag) gates the animation, so glass and leaves that
+    // share this transparent mesh stay perfectly still.
+    float wave = (float)((i.data &gt;&gt; 26) &amp; 0x1u);
+    world.y += wave * WaveHeight(world.xz, gTime);
+
+    VSOut o;
+    o.pos   = mul(float4(world, 1.0), gViewProj);
+    o.uv    = i.uv;
+    o.layer = (float)(i.data &amp; 0xFFFFu);
+    o.shade = (float)((i.data &gt;&gt; 18) &amp; 0xFu) / 15.0;      // baked light, as before
+    return o;
+}
+
+float4 PSWater(VSOut i) : SV_TARGET {
+    float4 tex = gBlocks.Sample(gSamp, float3(i.uv, i.layer));
+    float3 col = tex.rgb * i.shade;
+    // Alpha &lt; 1 is what the blend state reads as SRC_ALPHA. ~0.6 keeps the
+    // water clearly blue while letting most of the scene behind through.
+    return float4(col, 0.6);
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Never tie the wave to a per-vertex value</div>
+          <p>If <code>WaveHeight</code> reads anything unique to the vertex — a vertex index, a random per-quad seed,
+          the chunk-local position instead of the world position — then two surface quads that meet at a shared edge
+          compute different offsets and a visible crack opens along the seam, flickering as the water moves. Chunk
+          borders are where this bites hardest, because the two sides are meshed independently. Feed the wave
+          <em>world</em> coordinates and the seam is invisible by construction.</p></div>
+        </div>
+
+        <p>
+          The <code>MTLSL</code> version is a direct translation: the same <code>WaveHeight</code>, reading
+          <code>time</code> from a uniform and the packed <code>data</code> from a vertex attribute, with
+          <code>[[flat]]</code> on the layer output instead of <code>nointerpolation</code>. If you want to go
+          further, the completed HDR <code>sceneTarget</code> is already a sampleable image — a screen-space
+          <strong>refraction</strong> pass can sample it at a UV nudged by the water's normal to bend whatever is
+          underwater, exactly the render-target-as-input trick from Module 10. That is an optional extension; the
+          tint-and-wobble above is already convincing.
+        </p>
+
+        <h2>Glow: driving bloom from emissive blocks</h2>
+
+        <p>
+          Now the payoff the bloom lesson promised. Lava, glowstone and glowing ore should not just be bright
+          textures — they should <em>bleed light</em> into the pixels around them. You already built the machine for
+          that in Module 10: bloom extracts everything in the HDR scene above a luminance threshold, blurs it wide,
+          and adds it back. All this lesson has to do is make emissive blocks write color <em>above</em>
+          <code>1.0</code> into the scene target. The bright pass does the rest.
+        </p>
+
+        <p>
+          The opaque block pixel shader already computes a lit color from the texture and the baked
+          AO·light shade. We add one term on top: an emissive contribution that is <em>not</em> dimmed by shade —
+          glowstone glows just as hard in a pitch-black cave — and is free to exceed <code>1.0</code>.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Block.hlsl">// Opaque block pixel shader. Writes into the HDR sceneTarget (RGBA16F),
+// BEFORE tone mapping, so values above 1.0 are preserved for bloom.
+Texture2DArray gBlocks : register(t0);
+SamplerState   gSamp   : register(s0);
+
+struct PSIn {
+    float4 pos      : SV_POSITION;
+    float2 uv       : TEXCOORD0;
+    nointerpolation float layer    : TEXCOORD1;
+    float  shade    : TEXCOORD2;                 // ao * light, in [0,1]
+    nointerpolation float emissive : TEXCOORD3;  // 0..15 unpacked from the vertex
+};
+
+// Peak HDR multiplier for a fully-emissive block (light level 15).
+static const float kEmissiveScale = 6.0;
+
+float4 PSBlock(PSIn i) : SV_TARGET {
+    float4 base = gBlocks.Sample(gSamp, float3(i.uv, i.layer));
+
+    // Reflected light: dimmed by AO and baked light, stays within [0,1].
+    float3 lit = base.rgb * i.shade;
+
+    // Emissive light ADDS on top and is NOT dimmed. Scaled past 1.0 it lands
+    // as genuine HDR in the scene target -- exactly what the bright pass wants.
+    float  strength = (i.emissive / 15.0) * kEmissiveScale;   // glowstone(15) -&gt; 6.0
+    float3 hdr = lit + base.rgb * strength;
+
+    return float4(hdr, 1.0);
+}</code></pre>
+
+        <p>
+          That is the whole connection. A glowstone block has <code>emissive = 15</code>, so its pixels leave this
+          shader at roughly <code>6&times;</code> their texture color — far above the display's ceiling of
+          <code>1.0</code>. Tone mapping will later squeeze that back into range, but bloom runs first, sees those
+          bright pixels, and smears a soft halo of light around them. Dial <code>kEmissiveScale</code> per material if
+          you like — a lava block wants to be brighter than an ore vein — but the mechanism never changes.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Reuse Module 10's post stack verbatim — the glow is already built</div>
+          <p>Do not write a new "block glow" effect. The exact <code>PostProcessStack</code> you assembled in Module
+          10 — bright pass, separable blur down the mip chain, composite, then tone map — already turns any
+          above-<code>1.0</code> pixel into a halo. Emissive-in-HDR is the <em>only</em> new ingredient: the moment
+          your lava writes <code>&gt; 1.0</code> into the scene target, it blooms with zero extra rendering code.
+          This is the concrete reason the whole engine keeps its lighting in linear HDR and tone-maps exactly once,
+          at the very end.</p></div>
+        </div>
+
+        <p>
+          Where does the shader's <code>emissive</code> input come from? The mesher packed it: bits 22–25 of the
+          vertex <code>data</code>, set to <code>bt.lightLevel</code> for emissive blocks and <code>0</code>
+          otherwise. The vertex shader unpacks those four bits with <code>(data &gt;&gt; 22) &amp; 0xF</code> and
+          forwards them as a <code>nointerpolation</code> float — flat across the quad, since every corner of a
+          glowstone face is equally bright. No new buffers, no new draw calls; the glow rides along in the geometry
+          you were already emitting.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Split each chunk into an <strong>opaque</strong> mesh and a <strong>transparent</strong> mesh by the block's <code>transparent</code> flag; both reuse <code>FaceVisible</code>, so water-water and glass-glass interior faces still vanish.</li>
+            <li>Draw all opaque geometry first (depth test + write, any order), then the transparent mesh with alpha blending, depth test on, and depth <strong>write off</strong>.</li>
+            <li>Sort transparent chunks far-to-near; per-face sorting is impractical in a voxel world, so chunk granularity is the accepted approximation and depth-write-off keeps its error graceful.</li>
+            <li>The blend is straight-alpha "over": <code>SrcBlend = SRC_ALPHA</code>, <code>DestBlend = INV_SRC_ALPHA</code> on D3D11, the matching factors on the Metal pipeline; depth-write-off is a separate depth-stencil / <code>MTLDepthStencilState</code>.</li>
+            <li>Water gets alpha near <code>0.6</code> and a sum-of-sines wobble that depends only on world <code>(x, z)</code> and time, keeping the surface watertight across chunk borders; refraction via the scene target is an optional extension.</li>
+            <li>Emissive blocks add unclamped <code>base × strength</code> into the HDR <code>sceneTarget</code>; Module 10's bright pass catches everything above <code>1.0</code>, so lava and glowstone bloom with no new rendering code.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
