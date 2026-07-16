@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Render Targets: Clearing the Screen — Learn C++ Engine Development</title>
-  <meta name="description" content="Bind a render target, set the viewport, then clear the screen to a solid color and present it every frame with Direct3D 11.">
+  <meta name="description" content="Continue the renderer from Lesson 39: clear and present a Direct3D 11 back buffer on Windows or a Metal drawable on macOS from the same GLFW loop.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -13,307 +13,278 @@
       <article class="lesson">
         <h1>Render Targets: Clearing the Screen</h1>
 
-        <p class="lead">
-          In the previous lesson we brought Direct3D 11 to life: a device, a context, and a swap chain
-          all wired up and ready. But the window still shows whatever garbage was in memory. In this
-          lesson we take the first real step toward drawing — we tell the GPU <em>where</em> to draw,
-          <em>how big</em> the drawable area is, and then fill it with a color every single frame. This
-          clear-and-present loop is the beating heart your engine's renderer will be built around.
-        </p>
+        <p class="lead">Lesson 39 connected the GLFW window to Direct3D 11 on Windows or Metal on macOS. The renderer can now reach the GPU and presentation system, but it has not submitted a frame. In this lesson you will add the same final method on both platforms—<code>RenderFrame()</code>—then clear the window to a solid color and present it from the existing GLFW loop.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>What a <strong>render target view</strong> is and why the output-merger stage needs one.</li>
-            <li>How to bind the back buffer with <code>OMSetRenderTargets</code>.</li>
-            <li>How to describe and set the <strong>viewport</strong> using <code>D3D11_VIEWPORT</code> and <code>RSSetViewports</code>.</li>
-            <li>How to clear the screen with <code>ClearRenderTargetView</code> and show it with <code>Present</code>.</li>
-            <li>How to structure a minimal, reusable per-frame render function.</li>
+            <li>How a Direct3D render-target view and a Metal drawable texture perform the same engine job</li>
+            <li>How to clear and present a frame with Direct3D 11 on Windows</li>
+            <li>How to encode, commit and present a Metal render pass on macOS</li>
+            <li>How to recreate the D3D11 back-buffer view when the GLFW framebuffer size changes</li>
+            <li>How both platform paths fit into the same <code>Renderer</code> interface and GLFW loop</li>
           </ul>
         </div>
 
-        <h2>The output-merger needs a target</h2>
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Continue in the same files</div><p>Do not create a second renderer or return to the Win32 <code>MSG</code>/<code>PeekMessage</code> loop. Update the platform header and source file you created in Lesson 39, then add one call to its existing GLFW loop.</p></div></div>
 
-        <p>
-          The GPU pipeline ends at the <strong>output-merger stage</strong> (abbreviated <strong>OM</strong>).
-          This is the stage that decides where finished pixels land. It cannot write pixels into thin air —
-          it needs a concrete destination, and that destination is a <strong>render target view</strong>
-          (<code>ID3D11RenderTargetView</code>). Think of the render target view as a "writable lens" onto a
-          texture. In our case that texture is the swap chain's <strong>back buffer</strong>: the off-screen
-          image we draw into before flipping it to the monitor.
-        </p>
+        <h2>The frame has four jobs</h2>
+        <p>The API calls differ, but the frame sequence is the same. Metal acquires a fresh drawable each frame, while D3D11 keeps a render-target view for the current swap-chain back buffer.</p>
 
-        <p>
-          You already created this render target view at the end of the init lesson. As a quick refresher,
-          that code grabbed the back buffer texture out of the swap chain and asked the device to make a view
-          of it:
-        </p>
+        <div class="table-wrap"><table><thead><tr><th>Frame job</th><th>Direct3D 11</th><th>Metal</th></tr></thead><tbody>
+          <tr><td>Obtain the color target</td><td>Use the existing <code>renderTargetView</code></td><td>Call <code>layer-&gt;nextDrawable()</code></td></tr>
+          <tr><td>Describe the clear</td><td>Pass a color to <code>ClearRenderTargetView</code></td><td>Set the render-pass attachment's load action and clear color</td></tr>
+          <tr><td>Submit work</td><td>Commands go through the immediate <code>context</code></td><td>End the encoder and commit a command buffer</td></tr>
+          <tr><td>Show the frame</td><td>Call <code>swapChain-&gt;Present</code></td><td>Present the drawable through the command buffer</td></tr>
+        </tbody></table></div>
 
-        <pre><code class="language-cpp" data-file="Renderer.cpp">// Grab the swap chain's back buffer (index 0) as a texture.
-Microsoft::WRL::ComPtr&lt;ID3D11Texture2D&gt; backBuffer;
-HRESULT hr = m_swapChain-&gt;GetBuffer(
-    0, __uuidof(ID3D11Texture2D),
-    reinterpret_cast&lt;void**&gt;(backBuffer.GetAddressOf()));
-if (FAILED(hr)) { /* handle error */ }
+        <p>Use this same clear color on both platforms so the expected result is identical:</p>
+        <pre><code class="language-cpp" data-file="Clear color">// RGBA channels use the range 0.0 to 1.0.
+// This is a dark engine-blue.
+constexpr float clearRed   = 0.10f;
+constexpr float clearGreen = 0.18f;
+constexpr float clearBlue  = 0.30f;
+constexpr float clearAlpha = 1.00f;</code></pre>
 
-// Create a render target view of that back buffer.
-hr = m_device-&gt;CreateRenderTargetView(
-    backBuffer.Get(),
-    nullptr,                      // null = default view description
-    m_renderTargetView.GetAddressOf());
-if (FAILED(hr)) { /* handle error */ }</code></pre>
+        <h2>Windows path — clear the D3D11 back buffer</h2>
+        <p>Direct3D cannot write directly to an untyped texture resource. The <code>renderTargetView</code> created in Lesson 39 tells the output-merger stage to treat the swap chain's back buffer as a writable color target.</p>
 
-        <p>
-          From here on we assume <code>m_device</code>, <code>m_context</code>, <code>m_swapChain</code>, and
-          <code>m_renderTargetView</code> are stored members of your <code>Renderer</code> class, each held in
-          a <code>Microsoft::WRL::ComPtr</code> smart pointer so their lifetimes are managed for you.
-        </p>
+        <h3>1. Replace the D3D11 renderer header</h3>
+        <p>Replace the complete header from Lesson 39 with this version. In particular, replace the inline no-op <code>Resize</code>; do not keep it and add a second function with the same signature.</p>
 
-        <div class="callout">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">View vs. resource</div>
-            <p>
-              The back buffer is the <em>resource</em> (the actual pixels in GPU memory). The render target
-              view is a lightweight <em>interpretation</em> of that resource for the pipeline. One resource
-              can have several views — this separation is a recurring theme in D3D11 and we will lean on it
-              heavily later for textures and depth buffers.
-            </p>
-          </div>
-        </div>
+        <pre><code class="language-cpp" data-file="src/RendererD3D11.h">#pragma once
 
-        <h2>Binding the render target</h2>
+#include &lt;d3d11.h&gt;
+#include &lt;dxgi.h&gt;
+#include &lt;wrl/client.h&gt;
 
-        <p>
-          Having a render target view is not enough — we must <strong>bind</strong> it so the output-merger
-          knows to use it. That is what <code>OMSetRenderTargets</code> does. It takes an array of render
-          target views plus an optional depth-stencil view (we have no depth buffer yet, so we pass
-          <code>nullptr</code>):
-        </p>
+struct GLFWwindow;
 
-        <pre><code class="language-cpp" data-file="Renderer.cpp">// Bind our single render target. No depth buffer for now.
-ID3D11RenderTargetView* rtvs[] = { m_renderTargetView.Get() };
-m_context-&gt;OMSetRenderTargets(
-    1,          // number of render targets
-    rtvs,       // the array of RTVs
-    nullptr);   // depth-stencil view (added in a later lesson)</code></pre>
+class Renderer {
+public:
+    bool Initialize(GLFWwindow* window);
+    void Resize(GLFWwindow* window);
+    void RenderFrame();
+    void Shutdown();
 
-        <div class="callout warn">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">Pass a raw pointer array, not a ComPtr array</div>
-            <p>
-              <code>OMSetRenderTargets</code> wants a <code>ID3D11RenderTargetView* const*</code>. Call
-              <code>.Get()</code> on your <code>ComPtr</code> to hand over the raw pointer. Passing the
-              <code>ComPtr</code> object directly will not compile, and taking its address gives the GPU the
-              wrong thing entirely.
-            </p>
-          </div>
-        </div>
+private:
+    Microsoft::WRL::ComPtr&lt;ID3D11Device&gt; device;
+    Microsoft::WRL::ComPtr&lt;ID3D11DeviceContext&gt; context;
+    Microsoft::WRL::ComPtr&lt;IDXGISwapChain&gt; swapChain;
+    Microsoft::WRL::ComPtr&lt;ID3D11RenderTargetView&gt; renderTargetView;
 
-        <h2>Setting the viewport</h2>
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+};</code></pre>
 
-        <p>
-          The <strong>viewport</strong> tells the rasterizer how to map the GPU's normalized coordinate space
-          onto actual pixels in the render target. If you skip it, D3D11 uses an empty viewport and nothing
-          shows up — a classic "why is my screen black?" trap. A viewport is described by a plain struct,
-          <code>D3D11_VIEWPORT</code>, which you fill in and hand to <code>RSSetViewports</code> (the
-          <strong>RS</strong> is the rasterizer stage):
-        </p>
+        <h3>2. Resize the swap-chain target when needed</h3>
+        <p>The main loop calls <code>Resize(window)</code> every frame, but this method returns immediately when the pixel dimensions have not changed. When they do change, release the old view before calling <code>ResizeBuffers</code>, then create a new view for the replacement back buffer.</p>
 
-        <pre><code class="language-cpp" data-file="Renderer.cpp">// Describe the drawable region: the full window client area.
-D3D11_VIEWPORT viewport = {};
-viewport.TopLeftX = 0.0f;             // left edge, in pixels
-viewport.TopLeftY = 0.0f;             // top edge, in pixels
-viewport.Width    = static_cast&lt;float&gt;(m_width);   // window width
-viewport.Height   = static_cast&lt;float&gt;(m_height);  // window height
-viewport.MinDepth = 0.0f;             // near plane of the depth range
-viewport.MaxDepth = 1.0f;             // far plane of the depth range
+        <pre><code class="language-cpp" data-file="src/RendererD3D11.cpp">void Renderer::Resize(GLFWwindow* window) {
+    int newWidth = 0;
+    int newHeight = 0;
+    glfwGetFramebufferSize(window, &amp;newWidth, &amp;newHeight);
 
-m_context-&gt;RSSetViewports(1, &amp;viewport);</code></pre>
+    // A minimized window can have a zero-sized framebuffer.
+    if (newWidth == 0 || newHeight == 0) return;
 
-        <p>
-          Here <code>m_width</code> and <code>m_height</code> are the client-area dimensions you already used
-          when creating the swap chain. Note that <code>Width</code> and <code>Height</code> are
-          <strong>floats</strong>, not integers — a common source of confused compiler warnings.
-          <code>MinDepth</code> and <code>MaxDepth</code> almost always stay at <code>0.0</code> and
-          <code>1.0</code>; they only matter once we add depth testing for 3D geometry.
-        </p>
+    // Lesson 39 created its swap chain with width/height 0, which made DXGI
+    // match the initial client size. Record that size without rebuilding it.
+    if (framebufferWidth == 0 &amp;&amp; framebufferHeight == 0) {
+        framebufferWidth = newWidth;
+        framebufferHeight = newHeight;
+        return;
+    }
 
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Field</th><th>Meaning</th><th>Typical value</th></tr></thead>
-            <tbody>
-              <tr><td><code>TopLeftX / TopLeftY</code></td><td>Pixel offset of the viewport's top-left corner</td><td><code>0, 0</code></td></tr>
-              <tr><td><code>Width / Height</code></td><td>Size of the drawable region in pixels (as floats)</td><td>window size</td></tr>
-              <tr><td><code>MinDepth / MaxDepth</code></td><td>Range the depth buffer values are mapped into</td><td><code>0.0, 1.0</code></td></tr>
-            </tbody>
-          </table>
-        </div>
+    if (newWidth == framebufferWidth &amp;&amp; newHeight == framebufferHeight) return;
+    if (!swapChain.Get() || !device.Get() || !context.Get()) return;
 
-        <div class="callout tip">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">Bind once, or every frame?</div>
-            <p>
-              For a fixed-size window you can set the render target and viewport once, right after
-              initialization. But binding them at the top of each frame costs almost nothing and saves you
-              from subtle bugs — especially once you add render-to-texture passes that swap targets mid-frame.
-              We'll bind per frame here for clarity.
-            </p>
-          </div>
-        </div>
+    // The pipeline and our ComPtr must release the old back buffer first.
+    context-&gt;OMSetRenderTargets(0, nullptr, nullptr);
+    renderTargetView.Reset();
 
-        <h2>Clear, then present</h2>
+    HRESULT hr = swapChain-&gt;ResizeBuffers(
+        0, // keep the existing buffer count
+        static_cast&lt;UINT&gt;(newWidth),
+        static_cast&lt;UINT&gt;(newHeight),
+        DXGI_FORMAT_UNKNOWN, // keep the existing format
+        0);
+    if (FAILED(hr)) return;
 
-        <p>
-          Now the fun part. <code>ClearRenderTargetView</code> floods the entire bound target with one RGBA
-          color. The color is a 4-element <code>float</code> array where each channel ranges from
-          <code>0.0</code> to <code>1.0</code> — so <code>{0, 0, 0, 1}</code> is opaque black and
-          <code>{1, 1, 1, 1}</code> is white. After clearing, <code>Present</code> flips the finished back
-          buffer to the screen.
-        </p>
+    Microsoft::WRL::ComPtr&lt;ID3D11Texture2D&gt; backBuffer;
+    hr = swapChain-&gt;GetBuffer(0, IID_PPV_ARGS(backBuffer.GetAddressOf()));
+    if (FAILED(hr)) return;
 
-        <pre><code class="language-cpp" data-file="Renderer.cpp">void Renderer::RenderFrame()
-{
-    // 1. Bind the render target for this frame.
-    ID3D11RenderTargetView* rtvs[] = { m_renderTargetView.Get() };
-    m_context-&gt;OMSetRenderTargets(1, rtvs, nullptr);
+    hr = device-&gt;CreateRenderTargetView(
+        backBuffer.Get(), nullptr, renderTargetView.GetAddressOf());
+    if (FAILED(hr)) return;
 
-    // 2. Set the viewport to cover the whole window.
-    D3D11_VIEWPORT viewport = {};
+    framebufferWidth = newWidth;
+    framebufferHeight = newHeight;
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Release the old view before ResizeBuffers</div><p><code>ResizeBuffers</code> fails when a render-target view or a currently bound pipeline slot still holds the old back buffer. Unbind it from the context, reset the <code>ComPtr</code>, resize, and only then create the replacement view.</p></div></div>
+
+        <h3>3. Bind, clear and present</h3>
+        <p>The viewport maps normalized coordinates to pixels. The clear itself does not need a viewport, but setting it now prepares the pipeline for the triangle in Lesson 41.</p>
+
+        <pre><code class="language-cpp" data-file="src/RendererD3D11.cpp">void Renderer::RenderFrame() {
+    if (!renderTargetView.Get()) return;
+    if (framebufferWidth == 0 || framebufferHeight == 0) return;
+
+    // 1. Tell the output-merger where fragment colors should be written.
+    ID3D11RenderTargetView* targets[] = { renderTargetView.Get() };
+    context-&gt;OMSetRenderTargets(1, targets, nullptr);
+
+    // 2. Map normalized coordinates to the complete back buffer.
+    D3D11_VIEWPORT viewport{};
     viewport.TopLeftX = 0.0f;
     viewport.TopLeftY = 0.0f;
-    viewport.Width    = static_cast&lt;float&gt;(m_width);
-    viewport.Height   = static_cast&lt;float&gt;(m_height);
+    viewport.Width = static_cast&lt;float&gt;(framebufferWidth);
+    viewport.Height = static_cast&lt;float&gt;(framebufferHeight);
     viewport.MinDepth = 0.0f;
     viewport.MaxDepth = 1.0f;
-    m_context-&gt;RSSetViewports(1, &amp;viewport);
+    context-&gt;RSSetViewports(1, &amp;viewport);
 
-    // 3. Clear the whole target to a calm engine-blue (RGBA, 0..1).
+    // 3. Replace every pixel in the color target.
     const float clearColor[4] = { 0.10f, 0.18f, 0.30f, 1.0f };
-    m_context-&gt;ClearRenderTargetView(m_renderTargetView.Get(), clearColor);
+    context-&gt;ClearRenderTargetView(renderTargetView.Get(), clearColor);
 
-    // (Later lessons draw triangles and meshes right here.)
+    // Future draw calls go here.
 
-    // 4. Flip the back buffer to the screen.
-    //    First arg = vsync interval: 1 waits for one refresh (no tearing).
-    m_swapChain-&gt;Present(1, 0);
-}</code></pre>
-
-        <p>
-          The two arguments to <code>Present</code> are worth understanding. The first is the
-          <strong>sync interval</strong>: passing <code>1</code> asks the GPU to wait for the next vertical
-          blank before flipping, which caps your frame rate to the monitor's refresh and eliminates tearing.
-          Passing <code>0</code> presents immediately (uncapped, but you may see tearing). The second argument
-          is a flags field; <code>0</code> means "present normally."
-        </p>
-
-        <h3>Wiring it into the message loop</h3>
-
-        <p>
-          <code>RenderFrame</code> does nothing until something calls it repeatedly. In a Win32 app that
-          "something" is your main message loop. We drain any pending window messages, then render a frame,
-          over and over:
-        </p>
-
-        <pre><code class="language-cpp" data-file="main.cpp">// Main loop: pump messages, then render one frame each iteration.
-MSG msg = {};
-while (msg.message != WM_QUIT)
-{
-    // Handle window events without blocking.
-    if (PeekMessage(&amp;msg, nullptr, 0, 0, PM_REMOVE))
-    {
-        TranslateMessage(&amp;msg);
-        DispatchMessage(&amp;msg);
-    }
-    else
-    {
-        // No messages waiting — draw a frame.
-        renderer.RenderFrame();
+    // 4. Wait for the next display refresh and show the back buffer.
+    HRESULT hr = swapChain-&gt;Present(1, 0);
+    if (FAILED(hr)) {
+        // A production renderer would log or recover from a lost device here.
     }
 }</code></pre>
 
-        <p>
-          Build and run with <kbd>Ctrl</kbd> + <kbd>F5</kbd>. If everything is wired correctly, your window is
-          now a solid, steady slab of that engine-blue color. It may not look like much, but you are running
-          a real render loop: clearing and presenting sixty (or more) times a second.
-        </p>
+        <p><code>Present(1, 0)</code> uses a sync interval of one, commonly called <strong>VSync</strong>. It waits for the next display refresh before presenting, which prevents tearing. A sync interval of zero presents immediately but may tear.</p>
 
-        <div class="callout danger">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">Still black? Check these first</div>
-            <p>
-              A black or flickering window almost always means one of: you forgot <code>RSSetViewports</code>
-              (empty viewport), the render target view was never created or is <code>nullptr</code>, or you
-              are clearing but never calling <code>Present</code>. Verify each step ran and check the debug
-              output window — with the debug device layer enabled from the init lesson, D3D11 prints a clear
-              explanation when something is wrong.
-            </p>
-          </div>
-        </div>
+        <h2>macOS path — clear a Metal drawable</h2>
+        <p>Metal does not keep one permanent back-buffer view. The <code>CAMetalLayer</code> from Lesson 39 lends the renderer a drawable for the current frame. Its texture becomes color attachment zero of a render pass.</p>
 
-        <h2>Where this fits in the engine</h2>
+        <h3>1. Add RenderFrame to the Metal header</h3>
+        <p>Replace the complete header with this version so the public interface matches the D3D11 renderer:</p>
 
-        <p>
-          This clear-and-present pair is the outer shell of your engine's render pipeline. As we grow the
-          engine, <code>RenderFrame</code> becomes the place where the <strong>Renderer</strong> walks every
-          object's <strong>Transform</strong> and <strong>Mesh</strong> components and issues draw calls —
-          but the bookends stay the same: bind the target and viewport, clear, draw, present. Unity's
-          <code>Camera.clearFlags</code> and Unreal's scene color clear are doing exactly what you just wrote,
-          only with more layers on top. You now own the foundation they are built on.
-        </p>
+        <pre><code class="language-cpp" data-file="src/MetalRenderer.h">#pragma once
 
-        <figure>
-          <div class="figure-box">
-            <svg viewBox="0 0 600 120" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <g stroke="#4aa8ff" stroke-width="2" font-family="sans-serif" font-size="13">
-                <rect x="12" y="40" width="120" height="40" rx="6"/>
-                <text x="72" y="65" fill="currentColor" text-anchor="middle" stroke="none">Bind RTV+VP</text>
-                <rect x="162" y="40" width="120" height="40" rx="6"/>
-                <text x="222" y="65" fill="currentColor" text-anchor="middle" stroke="none">Clear color</text>
-                <rect x="312" y="40" width="120" height="40" rx="6"/>
-                <text x="372" y="65" fill="currentColor" text-anchor="middle" stroke="none">Draw (soon)</text>
-                <rect x="462" y="40" width="120" height="40" rx="6"/>
-                <text x="522" y="65" fill="currentColor" text-anchor="middle" stroke="none">Present</text>
-                <path d="M132 60 h30 M282 60 h30 M432 60 h30" stroke-linecap="round"/>
-                <path d="M156 55 l6 5 -6 5 M306 55 l6 5 -6 5 M456 55 l6 5 -6 5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-              </g>
-            </svg>
-          </div>
-          <figcaption>The per-frame loop: bind the target and viewport, clear, (later) draw, then present.</figcaption>
-        </figure>
+struct GLFWwindow;
+namespace MTL { class Device; class CommandQueue; }
+namespace CA { class MetalLayer; }
 
-        <h2>macOS — clear a Metal drawable</h2>
-        <p>Metal describes the clear operation on a render-pass color attachment, then commits the encoded command buffer:</p>
-        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">CA::MetalDrawable* drawable = layer-&gt;nextDrawable();
-if (drawable == nullptr) return;
+class Renderer {
+public:
+    bool Initialize(GLFWwindow* window);
+    void Resize(GLFWwindow* window);
+    void RenderFrame();
+    void Shutdown();
 
-MTL::RenderPassDescriptor* pass =
-    MTL::RenderPassDescriptor::renderPassDescriptor();
-auto* color = pass-&gt;colorAttachments()-&gt;object(0);
-color-&gt;setTexture(drawable-&gt;texture());
-color-&gt;setLoadAction(MTL::LoadActionClear);
-color-&gt;setStoreAction(MTL::StoreActionStore);
-color-&gt;setClearColor(MTL::ClearColor(0.05, 0.08, 0.12, 1.0));
+private:
+    MTL::Device* device = nullptr;
+    MTL::CommandQueue* commandQueue = nullptr;
+    CA::MetalLayer* layer = nullptr;
+};</code></pre>
 
-MTL::CommandBuffer* commands = commandQueue-&gt;commandBuffer();
-MTL::RenderCommandEncoder* encoder =
-    commands-&gt;renderCommandEncoder(pass);
-encoder-&gt;endEncoding();
-commands-&gt;presentDrawable(drawable);
-commands-&gt;commit();</code></pre>
-        <p>A Direct3D render-target view and a Metal color attachment both identify the texture receiving fragment output. Presenting the swap chain and presenting the Metal drawable serve the same final purpose.</p>
+        <h3>2. Encode the clear in MetalRenderer.mm</h3>
+        <p>Add the following method to the same <code>MetalRenderer.mm</code> file used in Lesson 39. That file is already listed in CMake; do not create an unlisted <code>MetalRenderer.cpp</code>.</p>
+
+        <pre><code class="language-cpp" data-file="src/MetalRenderer.mm">void Renderer::RenderFrame() {
+    // Metal creates autoreleased temporary objects while encoding a frame.
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()-&gt;init();
+
+    if (!layer || !commandQueue) {
+        pool-&gt;release();
+        return;
+    }
+
+    // 1. Ask the display layer for this frame's presentable texture.
+    CA::MetalDrawable* drawable = layer-&gt;nextDrawable();
+    if (!drawable) { // normal while the window is minimized
+        pool-&gt;release();
+        return;
+    }
+
+    // 2. Describe what should happen to color attachment zero.
+    MTL::RenderPassDescriptor* pass =
+        MTL::RenderPassDescriptor::renderPassDescriptor();
+    MTL::RenderPassColorAttachmentDescriptor* color =
+        pass-&gt;colorAttachments()-&gt;object(0);
+
+    color-&gt;setTexture(drawable-&gt;texture());
+    color-&gt;setLoadAction(MTL::LoadActionClear);
+    color-&gt;setStoreAction(MTL::StoreActionStore);
+    color-&gt;setClearColor(MTL::ClearColor(0.10, 0.18, 0.30, 1.0));
+
+    // 3. Encode an otherwise empty render pass; its load action performs
+    //    the clear before any future draw calls.
+    MTL::CommandBuffer* commands = commandQueue-&gt;commandBuffer();
+    if (!commands) {
+        pool-&gt;release();
+        return;
+    }
+
+    MTL::RenderCommandEncoder* encoder =
+        commands-&gt;renderCommandEncoder(pass);
+    if (!encoder) {
+        pool-&gt;release();
+        return;
+    }
+
+    encoder-&gt;endEncoding();
+
+    // 4. Present after the GPU finishes this command buffer.
+    commands-&gt;presentDrawable(drawable);
+    commands-&gt;commit();
+
+    pool-&gt;release();
+}</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Why Metal does not set a viewport yet</div><p>The render pass's <code>LoadActionClear</code> clears the entire attachment before drawing starts, independent of the viewport. We will set a Metal viewport when Lesson 41 adds geometry. The drawable texture already has the Retina-aware size assigned to <code>CAMetalLayer.drawableSize</code> by <code>Resize(window)</code>.</p></div></div>
+
+        <h2>Use the same GLFW loop on both platforms</h2>
+        <p>Return to <code>main.cpp</code> from Lesson 39 and replace its loop with this version. GLFW processes native Windows or Cocoa events internally; there is no separate Win32 loop in the Windows path.</p>
+
+        <pre><code class="language-cpp" data-file="src/main.cpp">while (!glfwWindowShouldClose(window)) {
+    glfwPollEvents();
+
+    // D3D11 recreates its back-buffer view only when needed.
+    // Metal keeps CAMetalLayer.drawableSize in framebuffer pixels.
+    renderer.Resize(window);
+
+    // This call has the same name on Windows and macOS.
+    renderer.RenderFrame();
+}</code></pre>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 700 140" fill="none" stroke="#4aa8ff" stroke-width="2">
+          <rect x="15" y="45" width="120" height="48" rx="6"/><text x="75" y="74" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">Poll events</text>
+          <rect x="155" y="45" width="120" height="48" rx="6"/><text x="215" y="74" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">Resize if needed</text>
+          <rect x="295" y="45" width="120" height="48" rx="6"/><text x="355" y="74" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">Acquire target</text>
+          <rect x="435" y="45" width="110" height="48" rx="6"/><text x="490" y="74" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">Clear</text>
+          <rect x="565" y="45" width="120" height="48" rx="6"/><text x="625" y="74" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">Present</text>
+          <path d="M135 69 H151M275 69 H291M415 69 H431M545 69 H561"/><path d="M143 63 L153 69 L143 75M283 63 L293 69 L283 75M423 63 L433 69 L423 75M553 63 L563 69 L553 75"/>
+        </svg></div><figcaption>The application loop is shared; only the implementation behind Renderer changes by platform.</figcaption></figure>
+
+        <h2>What success looks like</h2>
+        <p>Build and run from CLion. On either Windows or macOS, the whole drawable area should remain a steady dark blue while you move or resize the window. Closing the window should exit with code <code>0</code>.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Problem</th><th>Likely cause and fix</th></tr></thead><tbody>
+          <tr><td><code>Renderer has no member RenderFrame</code></td><td>Add <code>void RenderFrame();</code> to the platform header selected by the current operating system.</td></tr>
+          <tr><td>Duplicate definition of <code>Resize</code></td><td>Replace Lesson 39's inline D3D11 no-op with the declaration shown above; do not keep both versions.</td></tr>
+          <tr><td>Old <code>m_context</code> or <code>m_swapChain</code> errors</td><td>Use the member names from Lesson 39: <code>context</code>, <code>swapChain</code> and <code>renderTargetView</code>, without an <code>m_</code> prefix.</td></tr>
+          <tr><td>D3D11 window stays black</td><td>Check that <code>Resize</code> recreated the view successfully, the viewport is nonzero, and <code>Present</code> is reached. Inspect D3D debug-layer output.</td></tr>
+          <tr><td>Metal window stays blank</td><td>Keep the method in <code>MetalRenderer.mm</code>, confirm the layer has a nonzero drawable size, and check that both <code>endEncoding()</code> and <code>commit()</code> run.</td></tr>
+          <tr><td>Metal reports missing autorelease pools</td><td>Keep the per-frame <code>NS::AutoreleasePool</code> and ensure <code>Foundation/Foundation.hpp</code> is included by <code>MetalRenderer.mm</code>.</td></tr>
+        </tbody></table></div>
 
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>The output-merger writes pixels into a <strong>render target view</strong>; bind it each frame with <code>OMSetRenderTargets</code>.</li>
-            <li>The <strong>viewport</strong> maps the pipeline's output to pixels — fill a <code>D3D11_VIEWPORT</code> and call <code>RSSetViewports</code>, remembering <code>Width</code>/<code>Height</code> are floats.</li>
-            <li><code>ClearRenderTargetView</code> fills the target with an RGBA color where each channel is <code>0.0</code>–<code>1.0</code>.</li>
-            <li><code>swapChain-&gt;Present(1, 0)</code> flips the finished frame to the screen and syncs to the monitor's refresh.</li>
-            <li>Bind → clear → (draw) → present is the render loop your whole engine will grow from.</li>
+            <li>Both backends implement <code>Initialize</code>, <code>Resize</code>, <code>RenderFrame</code> and <code>Shutdown</code>.</li>
+            <li>D3D11 binds a persistent render-target view, sets a viewport, clears it and presents the swap chain.</li>
+            <li>Metal acquires a drawable, attaches its texture to a render pass, uses <code>LoadActionClear</code>, then commits and presents it.</li>
+            <li>The D3D11 view must be released and recreated after <code>ResizeBuffers</code>; Metal updates <code>CAMetalLayer.drawableSize</code>.</li>
+            <li>The application keeps one cross-platform GLFW loop and calls the same renderer methods on both systems.</li>
           </ul>
         </div>
       </article>

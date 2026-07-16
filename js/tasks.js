@@ -138,7 +138,7 @@ window.TASKS = [
     brief:'Create a Renderer::Initialize(GLFWwindow*) path that builds a D3D11 device, context, swap chain and render-target view on Windows, or a Metal device, command queue and Retina-sized CAMetalLayer on macOS.',
     deliverable:'A Renderer::Initialize() that succeeds and checks every API result.' },
   { id:'06-clear-screen', builds:'Renderer', diff:'Core', title:'Clear to your brand color',
-    brief:'Each frame, set the viewport, clear the back buffer to a chosen color, and Present.',
+    brief:'From the shared GLFW loop, clear and present a D3D11 render-target view on Windows or encode and present a Metal drawable on macOS.',
     deliverable:'A window that repaints a solid color every frame.' },
   { id:'06-first-triangle', builds:'Renderer', diff:'Challenge', title:'Draw a triangle',
     brief:'Create a vertex buffer of three colored vertices and Draw it.',

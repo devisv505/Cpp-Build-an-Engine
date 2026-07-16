@@ -115,9 +115,10 @@ endif()</code></pre>
     #include "RendererD3D11.h"
 #elif defined(__APPLE__)
     #include "MetalRenderer.h"
+    #include &lt;Foundation/Foundation.hpp&gt;
 #endif
 
-int main() {
+int RunEngine() {
     if (!glfwInit()) {
         std::cerr &lt;&lt; "GLFW initialization failed\n";
         return 1;
@@ -149,6 +150,21 @@ int main() {
     renderer.Shutdown();        // release graphics objects before the window
     glfwDestroyWindow(window);
     glfwTerminate();
+    return 0;
+}
+
+int main() {
+#if defined(__APPLE__)
+    // Cocoa and Metal create autoreleased objects during startup and shutdown.
+    NS::AutoreleasePool* appPool = NS::AutoreleasePool::alloc()-&gt;init();
+#endif
+
+    const int exitCode = RunEngine();
+
+#if defined(__APPLE__)
+    appPool-&gt;release();
+#endif
+    return exitCode;
 }</code></pre>
 
         <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">GLFW_NO_API is required</div><p>Without this hint, GLFW creates an OpenGL context. Direct3D 11 and Metal do not use that context; they connect their own presentation objects to the native window.</p></div></div>
@@ -167,7 +183,7 @@ struct GLFWwindow;
 class Renderer {
 public:
     bool Initialize(GLFWwindow* window);
-    void Resize(GLFWwindow*) {} // implemented with swap-chain resizing later
+    void Resize(GLFWwindow*) {} // Lesson 40 replaces this inline no-op.
     void Shutdown();
 
 private:
@@ -270,6 +286,7 @@ class Renderer {
 public:
     bool Initialize(GLFWwindow* window);
     void Resize(GLFWwindow* window);
+    // Lesson 40 adds: void RenderFrame();
     void Shutdown();
 
 private:
@@ -290,6 +307,7 @@ private:
 #import &lt;Cocoa/Cocoa.h&gt;
 #import &lt;QuartzCore/CAMetalLayer.h&gt;
 
+#include &lt;Foundation/Foundation.hpp&gt;
 #include &lt;Metal/Metal.hpp&gt;
 #include &lt;QuartzCore/QuartzCore.hpp&gt;
 
@@ -376,7 +394,7 @@ void Renderer::Shutdown() {
           <li>Every owned object receives one matching <code>release()</code> in <code>Shutdown()</code>.</li>
         </ul>
 
-        <p>Beginning in Lesson 40, Metal also creates short-lived objects every frame. Put an autorelease pool around that frame's Metal work so those temporary objects are reclaimed promptly:</p>
+        <p>The application-level pool in <code>main()</code> catches Cocoa objects created during startup and shutdown. Beginning in Lesson 40, Metal also creates many short-lived objects every frame. Put a smaller autorelease pool around each frame's Metal work so those temporary objects are reclaimed promptly instead of accumulating until the program exits:</p>
 
         <pre><code class="language-cpp" data-file="Metal frame pattern">NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()-&gt;init();
 
