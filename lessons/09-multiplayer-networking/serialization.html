@@ -38,6 +38,8 @@
 
         <p>Serialization fixes both by defining an explicit, byte-for-byte layout that both sides obey — independent of how any one compiler happens to lay out memory.</p>
 
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Not the same job as YAML configuration</div><p>Module 08 used YAML for small, human-edited files read at startup. Gameplay packets are frequent, size-sensitive, and untrusted, so keep the explicit bounded binary format in this lesson; do not send the engine's YAML settings every frame.</p></div></div>
+
         <div class="callout danger">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
           <div class="c-body"><div class="c-title">Never do this</div>

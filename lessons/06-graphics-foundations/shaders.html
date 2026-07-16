@@ -103,8 +103,6 @@ float4 PSMain(PSInput input) : SV_TARGET
 #include &lt;d3dcompiler.h&gt;
 #include &lt;wrl/client.h&gt;   // Microsoft::WRL::ComPtr
 
-#pragma comment(lib, "d3dcompiler.lib")
-
 using Microsoft::WRL::ComPtr;
 
 // Compiles one entry point from an .hlsl file into a blob of bytecode.
@@ -112,7 +110,7 @@ HRESULT CompileShader(const wchar_t* path, const char* entry,
                       const char* target, ComPtr&lt;ID3DBlob&gt;&amp; outBlob)
 {
     UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-#if defined(_DEBUG)
+#if !defined(NDEBUG)
     // Keep symbols and skip optimization so debugging shaders is sane.
     flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif

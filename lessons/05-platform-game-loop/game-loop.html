@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>The Game Loop &amp; Delta Time — Learn C++ Engine Development</title>
-  <meta name="description" content="Build a portable GLFW game loop and measure delta time with std::chrono for frame-rate-independent movement on Windows and macOS.">
+  <meta name="description" content="Build a portable SDL3 game loop and measure delta time with std::chrono for frame-rate-independent movement on Windows and macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -13,7 +13,7 @@
       <article class="lesson">
         <h1>The Game Loop &amp; Delta Time</h1>
 
-        <p class="lead">A game is alive even when no input arrives: every frame it processes events, updates the world, and renders. We'll build that loop once with GLFW and measure time with the standard C++ clock, giving Windows and macOS the same frame-rate-independent behavior.</p>
+        <p class="lead">A game is alive even when no input arrives: every frame it processes events, updates the world, and renders. We'll build that loop once with SDL3 and measure time with the standard C++ clock, giving Windows and macOS the same frame-rate-independent behavior.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
@@ -27,17 +27,32 @@
 
         <h2>The portable real-time loop</h2>
 
-        <pre><code class="language-cpp" data-file="main.cpp">while (!glfwWindowShouldClose(window))
+        <pre><code class="language-cpp" data-file="main.cpp">bool running = true;
+
+while (running)
 {
     input.BeginFrame();
-    glfwPollEvents();
+
+    SDL_Event event;
+    while (SDL_PollEvent(&amp;event))
+    {
+        input.ProcessEvent(event);
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            running = false;
+        }
+    }
+
+    if (!running)
+        break;
 
     const float dt = timer.Tick();
     Update(dt);
     Render();
 }</code></pre>
 
-        <p>Everything an engine does fits around those phases. GLFW pumps the native Windows or Cocoa event system. The update advances gameplay by elapsed time. The selected renderer backend records Direct3D 11 commands on Windows or Metal commands on macOS.</p>
+        <p>Everything an engine does fits around those phases. SDL3 pumps the native Windows or Cocoa event system. The update advances gameplay by elapsed time. The selected renderer backend records Direct3D 11 commands on Windows or Metal commands on macOS.</p>
 
         <h2>Measure time with the standard library</h2>
         <p><code>std::chrono::steady_clock</code> is monotonic: it never jumps backward if the wall clock changes. That makes it the correct portable clock for frame intervals.</p>
@@ -79,16 +94,19 @@ playerX += 5.0f;</code></pre>
 
         <p>Express velocity in units per second and multiply by the seconds elapsed:</p>
 
-        <pre><code class="language-cpp">void Update(GLFWwindow* window, float dt)
+        <pre><code class="language-cpp">void Update(float dt)
 {
     constexpr float speed = 5.0f;
+    const bool* keys = SDL_GetKeyboardState(nullptr);
 
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_D])
         playerX += speed * dt;
 
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+    if (keys[SDL_SCANCODE_A])
         playerX -= speed * dt;
 }</code></pre>
+
+        <p>This direct SDL query is useful while learning the loop. Module 7 moves the scancode mapping into the engine's <code>Input</code> service so gameplay eventually asks for actions rather than library keys.</p>
 
         <div class="table-wrap"><table>
           <thead><tr><th>Frame rate</th><th>Typical dt</th><th>Move per frame at 5 u/s</th><th>Move per second</th></tr></thead>
@@ -105,10 +123,24 @@ playerX += 5.0f;</code></pre>
         <pre><code class="language-cpp">constexpr float kFixedStep = 1.0f / 60.0f;
 float accumulator = 0.0f;
 
-while (!glfwWindowShouldClose(window))
+bool running = true;
+while (running)
 {
     input.BeginFrame();
-    glfwPollEvents();
+
+    SDL_Event event;
+    while (SDL_PollEvent(&amp;event))
+    {
+        input.ProcessEvent(event);
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            running = false;
+        }
+    }
+
+    if (!running)
+        break;
 
     const float dt = timer.Tick();
     accumulator += dt;

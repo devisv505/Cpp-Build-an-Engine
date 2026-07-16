@@ -44,6 +44,8 @@
 
         <p>Notice that not every subsystem runs every frame. The <code>ResourceManager</code> mostly works during loading; the <code>Renderer</code> and <code>Scene</code> are the workhorses of the per-frame loop. That distinction is important — it tells us where to spend our performance budget later.</p>
 
+        <p>Configuration is startup input rather than a sixth per-frame subsystem. In Module 08, <code>main</code> will read a small YAML file once, validate it into an <code>EngineConfig</code>, and pass those ordinary C++ values to the systems that need them.</p>
+
         <div class="callout">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
           <div class="c-body"><div class="c-title">Delta time, in one sentence</div><p>Delta time is the number of seconds the previous frame took. Multiplying movement by it (<code>position += speed * dt</code>) keeps your game running at the same real-world speed whether the machine draws 30 or 300 frames per second.</p></div>
@@ -95,14 +97,14 @@
         <p>Every engine follows the same three-phase lifecycle. It is worth memorising, because it never changes no matter how big the engine grows:</p>
 
         <ol>
-          <li><strong>Initialize</strong> — create the GLFW window, initialize the selected graphics backend, load resources, and build the scene. Runs <em>once</em>.</li>
+          <li><strong>Initialize</strong> — initialize SDL3, create its window, initialize the selected graphics backend, load resources, and build the scene. Runs <em>once</em>.</li>
           <li><strong>The loop</strong> — repeat <strong>ProcessInput &rarr; Update &rarr; Render</strong> until the user quits. Runs thousands of times per second.</li>
           <li><strong>Shutdown</strong> — release GPU resources, close the window, free memory. Runs <em>once</em>.</li>
         </ol>
 
         <div class="callout warn">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body"><div class="c-title">Order matters — both ways</div><p>The Renderer needs a GLFW window before it creates a Direct3D device or Metal layer. Shut down in reverse so the GPU releases its surface before GLFW destroys the window.</p></div>
+          <div class="c-body"><div class="c-title">Order matters — both ways</div><p>The Renderer needs an <code>SDL_Window</code> before it creates a Direct3D swap chain or SDL Metal view. Shut down in reverse so the renderer releases its presentation surface before SDL destroys the window, then call <code>SDL_Quit</code>.</p></div>
         </div>
 
         <h3>Why input, update, render — in that order?</h3>
@@ -217,7 +219,7 @@ int main() {
         </div>
 
         <h2>Where this is heading</h2>
-        <p>Right now the subsystems are empty shells, but the architecture is real. We will put D3D11 or Metal behind <code>Renderer</code>, a portable clock inside <code>Time</code>, and GLFW keyboard/mouse state inside <code>Input</code>. Next we introduce the GameObject–Component model.</p>
+        <p>Right now the subsystems are empty shells, but the architecture is real. We will put D3D11 or Metal behind <code>Renderer</code>, a portable clock inside <code>Time</code>, and SDL3 keyboard, mouse, and gamepad state behind <code>Input</code>. Next we introduce the GameObject–Component model.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

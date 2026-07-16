@@ -3,149 +3,166 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Creating a Window on Windows &amp; macOS — Learn C++ Engine Development</title>
-  <meta name="description" content="Create one cross-platform GLFW window in CLion and learn how it exposes Win32 and Cocoa handles to Direct3D 11 and Metal backends.">
+  <title>Creating a Window with SDL3 — Learn C++ Engine Development</title>
+  <meta name="description" content="Add SDL3 with CMake and create one high-DPI window for Direct3D 11 on Windows or Metal on macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
   <div id="app">
     <main class="content">
       <article class="lesson">
-        <h1>Creating a Window on Windows &amp; macOS</h1>
+        <h1>Creating a Window with SDL3</h1>
 
-        <p class="lead">Every game needs a native window and a drawable surface. Writing separate Win32 and Cocoa applications would bury that simple goal under two very different APIs, so our engine uses <strong>GLFW</strong> as a small cross-platform window layer. The same C++ entry point works in CLion on Windows and macOS, while each renderer can still retrieve the native handle it needs.</p>
+        <p class="lead">Our engine needs one portable platform layer and two native graphics backends. <strong>SDL3</strong> will create the window, translate events, read input, and report drawable pixels on Windows and macOS. Direct3D 11 and Metal still render the frames, so we simplify platform code without hiding the graphics APIs we want to learn.</p>
 
         <div class="objectives">
-          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>How CMake fetches and links GLFW on both course platforms</li>
-            <li>How to initialize GLFW, create a no-API window, and clean it up</li>
-            <li>Why window size and framebuffer size can differ on Retina displays</li>
-            <li>How Direct3D 11 receives an <code>HWND</code> and Metal receives a Cocoa window/layer</li>
+            <li>Where SDL3 belongs in a cross-platform engine</li>
+            <li>How to fetch and link a pinned SDL3 release from <code>CMakeLists.txt</code></li>
+            <li>How to create and destroy a high-DPI SDL window</li>
+            <li>How the same window reaches Direct3D 11 on Windows and Metal on macOS</li>
           </ul>
         </div>
 
-        <h2>Why GLFW?</h2>
-        <p>Windows exposes Win32 handles and a message queue; macOS exposes Cocoa objects and an application event loop. GLFW wraps those differences behind a small C API designed for games and graphics tools. It does not choose our renderer: we ask for <code>GLFW_NO_API</code>, then connect Direct3D 11 on Windows or Metal on macOS ourselves.</p>
+        <h2>What SDL3 does—and does not do</h2>
+        <p>Windows normally uses Win32 for windows and messages, while macOS uses Cocoa. SDL3 wraps those operating-system differences. It does <em>not</em> automatically translate Direct3D 11 commands into Metal commands. We will keep a small renderer interface with a native implementation for each platform.</p>
 
         <div class="table-wrap"><table>
-          <thead><tr><th>Engine concept</th><th>Windows backend</th><th>macOS backend</th><th>Shared GLFW call</th></tr></thead>
+          <thead><tr><th>Engine job</th><th>Shared SDL3 layer</th><th>Windows renderer</th><th>macOS renderer</th></tr></thead>
           <tbody>
-            <tr><td>Window</td><td>Win32 <code>HWND</code></td><td>Cocoa <code>NSWindow</code></td><td><code>glfwCreateWindow</code></td></tr>
-            <tr><td>Events</td><td>Windows messages</td><td>Cocoa events</td><td><code>glfwPollEvents</code></td></tr>
-            <tr><td>Close request</td><td><code>WM_CLOSE</code></td><td>Window delegate event</td><td><code>glfwWindowShouldClose</code></td></tr>
-            <tr><td>Drawable pixels</td><td>Client area</td><td>Retina backing size</td><td><code>glfwGetFramebufferSize</code></td></tr>
+            <tr><td>Window</td><td><code>SDL_Window</code></td><td>SDL exposes its <code>HWND</code></td><td>SDL creates a Metal view</td></tr>
+            <tr><td>Events and input</td><td><code>SDL_PollEvent</code></td><td colspan="2">Same engine code</td></tr>
+            <tr><td>Drawable size</td><td><code>SDL_GetWindowSizeInPixels</code></td><td colspan="2">Physical pixels, including Retina/high-DPI</td></tr>
+            <tr><td>GPU work</td><td>Renderer interface</td><td>Direct3D 11</td><td>Metal</td></tr>
           </tbody>
         </table></div>
 
-        <h2>Step 1 — add GLFW with CMake</h2>
-        <p>Put the dependency in <code>CMakeLists.txt</code>, not in an IDE-specific settings panel. CMake downloads GLFW the first time it configures the project and reuses it afterward.</p>
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why not SDL_GPU?</div><p>SDL_GPU is SDL3's separate cross-platform graphics API. It is a useful option for a production engine, but it would replace much of the raw Direct3D/Metal work taught in Module 6. This course uses SDL3 for the <em>platform layer</em> and keeps native renderer backends so you learn both the abstraction and the APIs underneath it.</p></div></div>
 
-        <pre><code class="language-cmake" data-file="CMakeLists.txt">cmake_minimum_required(VERSION 3.20)
+        <h2>Step 1 — add SDL3 in CMakeLists.txt</h2>
+        <p>Keep dependencies in CMake rather than an IDE-specific panel. This configuration downloads the exact SDL 3.4.12 source release during the first CMake configure, builds it with the project, and reuses it afterward.</p>
+
+        <pre><code class="language-cmake" data-file="CMakeLists.txt">cmake_minimum_required(VERSION 3.24)
 project(PlatformWindow LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
+
+# A static SDL build avoids copying SDL3.dll beside the executable on Windows.
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+
 FetchContent_Declare(
-    glfw
-    GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG 3.4
+    SDL3
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+    GIT_TAG release-3.4.12
+    GIT_SHALLOW TRUE
 )
-FetchContent_MakeAvailable(glfw)
+FetchContent_MakeAvailable(SDL3)
 
 add_executable(PlatformWindow main.cpp)
-target_link_libraries(PlatformWindow PRIVATE glfw)</code></pre>
+target_link_libraries(PlatformWindow PRIVATE SDL3::SDL3)</code></pre>
 
-        <p>When CLion notices the edit, accept <strong>Reload CMake Project</strong>. The target and its dependency now work with bundled MinGW on Windows and Apple Clang on macOS.</p>
+        <p>In CLion, choose <strong>Tools → CMake → Reload CMake Project</strong> after saving. The first configure needs internet access and takes longer because it downloads and builds SDL3. Later configures use CMake's populated dependency directory.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">The target name stays stable</div><p>Link <code>SDL3::SDL3</code>, not a path to a library file. That official CMake target supplies SDL's include folders, compile settings, and required platform libraries on both course platforms.</p></div></div>
 
         <h2>Step 2 — create the window</h2>
+        <p><code>SDL_main.h</code> adapts the normal C++ <code>main</code> entry point to each operating system. Include it exactly once, in the source file that defines <code>main</code>.</p>
 
-        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;GLFW/glfw3.h&gt;
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;SDL3/SDL.h&gt;
+#include &lt;SDL3/SDL_main.h&gt;
 #include &lt;iostream&gt;
 
-int main()
+int main(int argc, char* argv[])
 {
-    if (glfwInit() != GLFW_TRUE)
+    if (!SDL_Init(SDL_INIT_VIDEO))
     {
-        std::cerr &lt;&lt; "GLFW initialization failed\n";
+        std::cerr &lt;&lt; "SDL initialization failed: "
+                  &lt;&lt; SDL_GetError() &lt;&lt; '\n';
         return 1;
     }
 
-    // We will attach Direct3D 11 or Metal later, so GLFW should not
-    // create an OpenGL context for this window.
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    SDL_WindowFlags flags =
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
-    GLFWwindow* window = glfwCreateWindow(
-        1280, 720, "MiniEngine", nullptr, nullptr);
+#if defined(__APPLE__)
+    // Required before SDL_Metal_CreateView in the Metal lesson.
+    flags |= SDL_WINDOW_METAL;
+#endif
+
+    SDL_Window* window = SDL_CreateWindow(
+        "MiniEngine", 1280, 720, flags);
 
     if (window == nullptr)
     {
-        std::cerr &lt;&lt; "Window creation failed\n";
-        glfwTerminate();
+        std::cerr &lt;&lt; "Window creation failed: "
+                  &lt;&lt; SDL_GetError() &lt;&lt; '\n';
+        SDL_Quit();
         return 1;
     }
 
-    while (!glfwWindowShouldClose(window))
+    bool running = true;
+    while (running)
     {
-        glfwPollEvents();
+        SDL_Event event;
+        while (SDL_PollEvent(&amp;event))
+        {
+            if (event.type == SDL_EVENT_QUIT ||
+                event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+            {
+                running = false;
+            }
+        }
     }
 
-    glfwDestroyWindow(window);
-    glfwTerminate();
+    SDL_DestroyWindow(window);
+    SDL_Quit();
     return 0;
 }</code></pre>
 
-        <p>Run the CMake target in CLion. A resizable 1280×720 window should appear on either operating system. Closing it changes GLFW's close flag; the loop ends and releases resources in reverse order.</p>
-
-        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Initialization and shutdown must balance</div><p>Call <code>glfwTerminate</code> once after destroying all GLFW windows. This restores platform resources GLFW changed during initialization.</p></div></div>
+        <p>Run <code>PlatformWindow</code> from CLion. A resizable 1280 × 720 window should open on Windows or macOS, and its close button should end the loop with exit code <code>0</code>.</p>
 
         <h2>Logical size vs drawable pixels</h2>
-        <p>On a standard-density Windows display, a 1280×720 window often has a similarly sized framebuffer. On a Retina Mac, one logical point can cover multiple physical pixels. Always ask for the framebuffer size when creating or resizing render targets:</p>
+        <p>A window's logical size is useful for layout; a render target needs physical pixels. A 1280 × 720 Retina window can contain roughly 2560 × 1440 drawable pixels. Query the pixel size whenever the renderer initializes or handles a pixel-size event:</p>
 
-        <pre><code class="language-cpp">int width = 0;
-int height = 0;
-glfwGetFramebufferSize(window, &amp;width, &amp;height);
+        <pre><code class="language-cpp">int pixelWidth = 0;
+int pixelHeight = 0;
+if (!SDL_GetWindowSizeInPixels(window, &amp;pixelWidth, &amp;pixelHeight))
+{
+    std::cerr &lt;&lt; SDL_GetError() &lt;&lt; '\n';
+}
 
-// Use width and height for the Direct3D back buffer or Metal drawable.</code></pre>
+// Use these dimensions for the D3D back buffer or Metal drawable.</code></pre>
 
-        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">A minimized window can report zero pixels</div><p>Pause render-target recreation while either framebuffer dimension is zero. Wait for a later resize event instead of asking a graphics API to allocate a zero-sized texture.</p></div></div>
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">A minimized window can have zero drawable pixels</div><p>Pause rendering and target recreation while either dimension is zero. Wait for a later <code>SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED</code> event instead of asking a graphics API for a zero-sized texture.</p></div></div>
 
-        <h2>Handing the native surface to the renderer</h2>
-        <p>Most engine code keeps <code>GLFWwindow*</code> opaque. Only a platform renderer asks GLFW for the native object:</p>
+        <h2>Handing the surface to a renderer</h2>
+        <p>Most engine code treats <code>SDL_Window*</code> as an opaque platform handle. Only renderer initialization crosses the native boundary:</p>
 
         <div class="table-wrap"><table>
-          <thead><tr><th>Platform</th><th>Native-access setup</th><th>Result</th><th>Used by</th></tr></thead>
+          <thead><tr><th>Platform</th><th>SDL3 bridge</th><th>Renderer use</th></tr></thead>
           <tbody>
-            <tr><td>Windows</td><td><code>GLFW_EXPOSE_NATIVE_WIN32</code></td><td><code>glfwGetWin32Window(window)</code></td><td>DXGI swap chain</td></tr>
-            <tr><td>macOS</td><td><code>GLFW_EXPOSE_NATIVE_COCOA</code></td><td><code>glfwGetCocoaWindow(window)</code></td><td><code>CAMetalLayer</code></td></tr>
+            <tr><td>Windows</td><td><code>SDL_GetWindowProperties</code> plus <code>SDL_PROP_WINDOW_WIN32_HWND_POINTER</code></td><td>Pass the <code>HWND</code> to the DXGI swap chain</td></tr>
+            <tr><td>macOS</td><td><code>SDL_Metal_CreateView</code> and <code>SDL_Metal_GetLayer</code></td><td>Configure the returned <code>CAMetalLayer</code></td></tr>
           </tbody>
         </table></div>
 
-        <pre><code class="language-cpp" data-file="NativeWindow.h">#if defined(_WIN32)
-    #define GLFW_EXPOSE_NATIVE_WIN32
-#elif defined(__APPLE__)
-    #define GLFW_EXPOSE_NATIVE_COCOA
-#endif
-
-#include &lt;GLFW/glfw3.h&gt;
-#include &lt;GLFW/glfw3native.h&gt;</code></pre>
-
-        <p>The Windows renderer passes its native handle to DXGI. The macOS renderer attaches a <code>CAMetalLayer</code> to the Cocoa content view. That one seam keeps native types out of gameplay code.</p>
-
-        <h2>Wrap ownership in a class</h2>
-        <p>Our engine's <code>Window</code> class will own the pointer and expose platform-neutral operations such as <code>PollEvents</code>, <code>ShouldClose</code>, and <code>GetFramebufferSize</code>. The renderer receives the native handle only during backend initialization.</p>
+        <p>That boundary is deliberately narrow. Gameplay, scene, entity, input-action, and timing code never includes Win32, Cocoa, Direct3D, or Metal types.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>CMake fetches GLFW and links the same window target on Windows and macOS.</li>
-            <li><code>GLFW_NO_API</code> leaves graphics ownership to Direct3D 11 or Metal.</li>
-            <li>Create with <code>glfwCreateWindow</code>, poll events, destroy the window, then terminate GLFW.</li>
-            <li>Use framebuffer dimensions—not logical window dimensions—for render targets, especially on Retina displays.</li>
-            <li>Retrieve native handles only inside the platform renderer backend.</li>
+            <li>SDL3 owns portable window, event, input, timing, and high-DPI work.</li>
+            <li>CMake fetches a pinned SDL3 release and links the portable <code>SDL3::SDL3</code> target.</li>
+            <li><code>SDL_WINDOW_METAL</code> is enabled only on macOS; Direct3D obtains SDL's Win32 handle on Windows.</li>
+            <li>Render-target dimensions come from <code>SDL_GetWindowSizeInPixels</code>.</li>
+            <li>The engine still has separate Direct3D 11 and Metal renderer implementations behind one interface.</li>
           </ul>
         </div>
       </article>

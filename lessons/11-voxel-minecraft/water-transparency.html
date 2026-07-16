@@ -227,7 +227,7 @@ device-&gt;CreateBlendState(&amp;bd, &amp;m_alphaBlend);</code></pre>
           <code>MTLDepthStencilState</code> you set per pass, just like on D3D11.
         </p>
 
-        <pre><code class="language-cpp" data-file="MetalStates.mm">// Metal: blending lives on the transparent PIPELINE's color attachment.
+        <pre><code class="language-cpp" data-file="MetalStates.cpp">// Metal: blending lives on the transparent PIPELINE's color attachment.
 auto* ca = pipelineDesc-&gt;colorAttachments()-&gt;object(0);
 ca-&gt;setBlendingEnabled(true);
 ca-&gt;setSourceRGBBlendFactor(MTL::BlendFactorSourceAlpha);

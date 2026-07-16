@@ -86,12 +86,12 @@ window.CURRICULUM = [
   {
     num: "05",
     title: "Platform & the Game Loop",
-    tag: "GLFW & timing",
-    blurb: "Open a portable GLFW window, process events and input, and drive everything from a real-time game loop.",
+    tag: "SDL3 & timing",
+    blurb: "Open a portable SDL3 window, process events and input, and drive everything from a real-time game loop.",
     dir: "lessons/05-platform-game-loop",
     lessons: [
-      { slug: "platform-window", title: "Creating a Window on Windows & macOS" },
-      { slug: "message-loop",    title: "Events & Input with GLFW" },
+      { slug: "platform-window", title: "Creating a Window with SDL3" },
+      { slug: "message-loop",    title: "Events & Input with SDL3" },
       { slug: "game-loop",    title: "The Game Loop & Delta Time" }
     ]
   },
@@ -137,10 +137,11 @@ window.CURRICULUM = [
     num: "08",
     title: "Build Your Engine",
     tag: "Capstone project",
-    blurb: "Assemble everything into a component-based engine with portable systems and native Windows/macOS renderers.",
+    blurb: "Assemble everything into a component-based engine with YAML configuration, portable systems, and native Windows/macOS renderers.",
     dir: "lessons/08-build-engine",
     lessons: [
       { slug: "project-setup",        title: "Structuring the Engine Project" },
+      { slug: "yaml-configuration",   title: "Reading & Writing YAML Configuration" },
       { slug: "application-window",   title: "The Application & Window Classes" },
       { slug: "renderer-abstraction", title: "Abstracting the Renderer" },
       { slug: "math-library",         title: "Building a Small Math Library" },

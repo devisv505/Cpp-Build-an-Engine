@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Structuring the Engine Project — Learn C++ Engine Development</title>
-  <meta name="description" content="Structure a portable CMake engine project with an Engine library, Sandbox executable, GLFW, Direct3D 11 on Windows, and Metal on macOS.">
+  <meta name="description" content="Structure a portable CMake engine project with an Engine library, Sandbox executable, SDL3, Direct3D 11 on Windows, and Metal on macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -32,18 +32,27 @@
     <h2>A cross-platform folder tree</h2>
     <pre><code class="language-text" data-file="folder tree">MyEngine/
 ├─ CMakeLists.txt
+├─ config/
+│  └─ default-engine.yaml      # shipped startup settings (next lesson)
+├─ external/
+│  └─ metal-cpp/               # pinned Apple C++ headers (macOS)
 ├─ Engine/
 │  ├─ CMakeLists.txt
 │  └─ src/
-│     ├─ Core/                 # application, loop, logging
+│     ├─ Core/                 # application, config, loop, logging
+│     │  ├─ EngineConfig.h     # typed public settings (next lesson)
+│     │  └─ EngineConfig.cpp   # private YAML parsing (next lesson)
 │     ├─ Math/                 # vectors, matrices, transforms
 │     ├─ Platform/
 │     │  ├─ Window.h           # portable interface
-│     │  └─ GLFWWindow.cpp     # Windows + macOS implementation
+│     │  └─ SDLWindow.cpp      # Windows + macOS implementation
 │     ├─ Renderer/
 │     │  ├─ Renderer.h         # portable interface
+│     │  ├─ RendererFactory.h  # selects the compiled backend
+│     │  ├─ RendererFactory.cpp
 │     │  ├─ D3D11Renderer.cpp  # Windows backend
-│     │  └─ MetalRenderer.cpp  # macOS backend
+│     │  ├─ MetalRenderer.cpp  # macOS backend
+│     │  └─ MetalCpp.cpp       # metal-cpp implementations (once)
 │     ├─ Scene/                # entities and components
 │     ├─ Engine.h              # public umbrella header
 │     └─ pch.h
@@ -53,8 +62,9 @@
 
     <div class="table-wrap"><table><thead><tr><th>Folder</th><th>Responsibility</th><th>Platform?</th></tr></thead><tbody>
       <tr><td><code>Core</code></td><td>Game loop, logging, assertions, base types.</td><td>Shared</td></tr>
+      <tr><td><code>external</code></td><td>Pinned third-party source or headers.</td><td>metal-cpp is used on macOS.</td></tr>
       <tr><td><code>Math</code></td><td>Vectors, matrices, transforms.</td><td>Shared</td></tr>
-      <tr><td><code>Platform</code></td><td>Window, events, input, timing.</td><td>GLFW hides Cocoa and Win32.</td></tr>
+      <tr><td><code>Platform</code></td><td>Window, events, input, timing.</td><td>SDL3 hides Cocoa and Win32.</td></tr>
       <tr><td><code>Renderer</code></td><td>GPU resources, commands, presentation.</td><td>D3D11 or Metal backend.</td></tr>
       <tr><td><code>Scene</code></td><td>Objects and components.</td><td>Shared</td></tr>
     </tbody></table></div>
@@ -71,37 +81,71 @@ add_subdirectory(Engine)
 add_subdirectory(Sandbox)</code></pre>
 
     <h2>The Engine target</h2>
+    <p>On macOS, add the same tested metal-cpp release used in Lesson 39 before configuring the new project:</p>
+
+    <pre><code class="language-bash">git clone --depth 1 \
+  --branch release/metal-cpp_macOS26_iOS26 \
+  https://github.com/apple/metal-cpp.git external/metal-cpp</code></pre>
+
     <pre><code class="language-cmake" data-file="Engine/CMakeLists.txt">include(FetchContent)
-FetchContent_Declare(glfw
-  GIT_REPOSITORY https://github.com/glfw/glfw.git
-  GIT_TAG 3.4)
-FetchContent_MakeAvailable(glfw)
+
+# Build SDL3 into the project. A static build avoids copying SDL3.dll
+# beside Sandbox on Windows.
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(SDL3
+  GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+  GIT_TAG release-3.4.12
+  GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(SDL3)
 
 add_library(Engine STATIC
   src/Core/Application.cpp
-  src/Platform/GLFWWindow.cpp)
+  src/Platform/SDLWindow.cpp
+  src/Renderer/RendererFactory.cpp)
 
 target_include_directories(Engine PUBLIC src)
-target_link_libraries(Engine PUBLIC glfw)
+target_link_libraries(Engine PUBLIC SDL3::SDL3)
 
 if(WIN32)
   target_sources(Engine PRIVATE src/Renderer/D3D11Renderer.cpp)
   target_link_libraries(Engine PRIVATE d3d11 dxgi d3dcompiler)
 elseif(APPLE)
-  enable_language(OBJCXX)
-  target_sources(Engine PRIVATE src/Renderer/MetalRenderer.mm)
+  if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/metal-cpp/Metal/Metal.hpp")
+    message(FATAL_ERROR
+      "Clone the pinned metal-cpp release into external/metal-cpp")
+  endif()
+
+  target_sources(Engine PRIVATE
+    src/Renderer/MetalRenderer.cpp
+    src/Renderer/MetalCpp.cpp)
   target_include_directories(Engine PRIVATE ${PROJECT_SOURCE_DIR}/external/metal-cpp)
   target_link_libraries(Engine PRIVATE
+    "-framework Foundation"
     "-framework Metal"
-    "-framework QuartzCore"
-    "-framework Cocoa")
+    "-framework QuartzCore")
 else()
   message(FATAL_ERROR "This course currently supports Windows and macOS")
 endif()
 
 target_precompile_headers(Engine PRIVATE src/pch.h)</code></pre>
 
-    <p>The <code>WIN32</code> and <code>APPLE</code> branches ensure that only one renderer backend is compiled. Shared headers must not expose <code>ID3D11Device</code> or <code>MTL::Device</code>; keep those types in backend implementation files.</p>
+    <p><code>SDL3::SDL3</code> is the same dependency on both platforms. The <code>WIN32</code> and <code>APPLE</code> branches select only the native renderer backend: Direct3D 11 or Metal. Shared headers may forward-declare <code>SDL_Window</code>, but they must not expose <code>ID3D11Device</code> or <code>MTL::Device</code>.</p>
+
+    <p>Emit metal-cpp's private implementations in the one source file already listed by CMake:</p>
+
+    <pre><code class="language-cpp" data-file="Engine/src/Renderer/MetalCpp.cpp">#define NS_PRIVATE_IMPLEMENTATION
+#define CA_PRIVATE_IMPLEMENTATION
+#define MTL_PRIVATE_IMPLEMENTATION
+
+#include &lt;Foundation/Foundation.hpp&gt;
+#include &lt;Metal/Metal.hpp&gt;
+#include &lt;QuartzCore/QuartzCore.hpp&gt;</code></pre>
+
+    <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Reload CMake after adding SDL3</div><p>In CLion, choose <strong>Tools → CMake → Reload CMake Project</strong>. The first configure downloads and builds SDL3, so it takes longer than later reloads. Link the CMake target <code>SDL3::SDL3</code>; do not add platform-specific SDL library paths by hand.</p></div></div>
 
     <h2>The Sandbox target</h2>
     <pre><code class="language-cmake" data-file="Sandbox/CMakeLists.txt">add_executable(Sandbox src/main.cpp)
@@ -126,7 +170,7 @@ target_link_libraries(Sandbox PRIVATE Engine)</code></pre>
 
     <h2>Naming conventions</h2>
     <div class="table-wrap"><table><thead><tr><th>Thing</th><th>Style</th><th>Example</th></tr></thead><tbody>
-      <tr><td>Types</td><td>PascalCase</td><td><code>GraphicsDevice</code></td></tr>
+      <tr><td>Types</td><td>PascalCase</td><td><code>Renderer</code></td></tr>
       <tr><td>Functions</td><td>PascalCase</td><td><code>OnUpdate()</code></td></tr>
       <tr><td>Locals</td><td>camelCase</td><td><code>deltaTime</code></td></tr>
       <tr><td>Private members</td><td><code>m_</code> prefix</td><td><code>m_running</code></td></tr>
@@ -134,23 +178,36 @@ target_link_libraries(Sandbox PRIVATE Engine)</code></pre>
     </tbody></table></div>
 
     <h2>The code we are working toward</h2>
-    <pre><code class="language-cpp" data-file="Sandbox/src/main.cpp">#include &lt;Engine.h&gt;
+    <pre><code class="language-cpp" data-file="Sandbox/src/main.cpp">#include &lt;SDL3/SDL.h&gt;
+#include &lt;SDL3/SDL_main.h&gt; // include once, in the file that defines main
+#include &lt;Engine.h&gt;
+#include &lt;exception&gt;
+#include &lt;iostream&gt;
+#include &lt;utility&gt;
 
-class SandboxApp : public Engine::Application {
+class SandboxApp : public Application {
 public:
+    explicit SandboxApp(EngineConfig config)
+        : Application(std::move(config)) {}
+
     void OnUpdate(float deltaTime) override {
         // Portable game logic goes here.
     }
 };
 
-int main() {
-    SandboxApp app;
-    return app.Run();
+int main(int argc, char* argv[]) {
+    try {
+        SandboxApp app{LoadStartupConfig()};
+        return app.Run();
+    } catch (const std::exception&amp; error) {
+        std::cerr &lt;&lt; "Startup failed: " &lt;&lt; error.what() &lt;&lt; '\n';
+        return 1;
+    }
 }</code></pre>
 
     <div class="recap"><div class="r-title">Recap</div><ul>
       <li>Engine and Sandbox are CMake targets, so the same project opens in CLion on Windows and macOS.</li>
-      <li>GLFW provides the portable window layer; Direct3D 11 and Metal live behind separate renderer implementations.</li>
+      <li>SDL3 provides one portable window, event, and input layer; Direct3D 11 and Metal live behind separate renderer implementations.</li>
       <li>Platform APIs stay out of shared public headers and the portable PCH.</li>
       <li>Sandbox depends on Engine, never the reverse.</li>
     </ul></div>

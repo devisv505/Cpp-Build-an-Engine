@@ -264,7 +264,7 @@ cube.Draw(context.Get());</code></pre>
         <h2>Uploading and drawing with Metal on macOS</h2>
         <p>The CPU-side <code>Vertex</code> and index vectors are shared. The Metal backend copies those bytes into <code>MTLBuffer</code> objects and draws the same indexed triangle list:</p>
 
-        <pre><code class="language-cpp" data-file="MetalMesh.mm">m_vertexBuffer = device-&gt;newBuffer(
+        <pre><code class="language-cpp" data-file="MetalMesh.cpp">m_vertexBuffer = device-&gt;newBuffer(
     vertices.data(), vertices.size() * sizeof(Vertex), MTL::ResourceStorageModeShared);
 m_indexBuffer = device-&gt;newBuffer(
     indices.data(), indices.size() * sizeof(uint32_t), MTL::ResourceStorageModeShared);

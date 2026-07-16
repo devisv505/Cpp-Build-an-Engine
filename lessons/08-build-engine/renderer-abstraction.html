@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Abstracting the Renderer — Learn C++ Engine Development</title>
-  <meta name="description" content="Hide Direct3D 11 on Windows and Metal on macOS behind one renderer interface with Initialize, BeginFrame, Resize, and EndFrame.">
+  <meta name="description" content="Hide Direct3D 11 and Metal behind one renderer interface initialized from SDL_Window, with correct native-surface and SDL_MetalView ownership.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -14,180 +14,139 @@
 
         <h1>Abstracting the Renderer</h1>
 
-        <p class="lead">
-          Over the last few lessons you learned the graphics pipeline through Direct3D 11 on Windows and Metal on
-          macOS. Now we put those platform APIs behind one renderer boundary. The game loop calls
-          <code>BeginFrame()</code> and <code>EndFrame()</code> regardless of which backend CLion compiled.
-        </p>
+        <p class="lead">SDL3 gave the engine one window and event loop, but it does not turn Direct3D commands into Metal commands. We still need two renderer implementations. The important improvement is that the rest of the engine sees one <code>Renderer</code> contract and passes the same <code>SDL_Window*</code> to either backend.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>Why we wrap raw D3D11 and Metal objects behind one <strong>Renderer</strong> interface.</li>
-            <li>How <code>Microsoft::WRL::ComPtr</code> frees GPU resources automatically.</li>
-            <li>Building <code>Initialize</code>, <code>BeginFrame</code>, and <code>EndFrame</code> around the device, context, swap chain, RTV, and DSV.</li>
-            <li>Exposing the device and context so other systems can issue draw calls.</li>
-            <li>How the Metal backend performs the same lifecycle on macOS.</li>
-            <li>Handling window resize cleanly by recreating platform render targets.</li>
+            <li>Why SDL3 unifies the platform layer but not the graphics APIs.</li>
+            <li>How one <code>Renderer::Initialize(SDL_Window*)</code> seam serves both backends.</li>
+            <li>How Direct3D retrieves the SDL window's <code>HWND</code> without leaking Win32 into shared code.</li>
+            <li>How Metal uses <code>SDL_MetalView</code> and a borrowed <code>CAMetalLayer</code>.</li>
+            <li>How <code>BeginFrame</code>, <code>EndFrame</code>, and <code>Resize</code> express the shared frame lifecycle.</li>
+            <li>How the shared VSync setting maps to DXGI and <code>CAMetalLayer</code>.</li>
+            <li>Why renderer shutdown must happen before the SDL window is destroyed.</li>
           </ul>
         </div>
 
-        <h2>Why abstract the renderer at all?</h2>
-        <p>
-          Direct3D is powerful, but it is verbose. Creating a device and swap chain, fishing the back buffer out of
-          that swap chain, wrapping it in a render target view, building a matching depth texture — that is dozens of
-          lines before a single triangle appears. If we leave all of it in <code>main()</code>, every new feature makes
-          that function longer and more fragile.
-        </p>
-        <p>
-          The fix is an <strong>abstraction</strong>: a class that <em>owns</em> the graphics objects and offers a small,
-          friendly set of methods. Callers say "begin the frame, clear to this color" and "end the frame, show it on
-          screen." They never touch a raw <code>ID3D11DeviceContext</code> pointer unless they truly need one. When you
-          later change graphics API or add a debug overlay, you change one backend instead of your whole codebase.
-        </p>
-
         <h2>The shared renderer contract</h2>
-        <p>Start with a platform-neutral interface. It uses plain C++ types and the GLFW window handle; no Direct3D or Metal type can leak into the scene layer.</p>
+        <p>The interface contains standard C++ data plus one opaque SDL window pointer. No Direct3D or Metal type reaches the scene, material, or gameplay layer.</p>
+
         <pre><code class="language-cpp" data-file="Renderer.h">#pragma once
 #include &lt;array&gt;
 
-struct GLFWwindow;
+struct SDL_Window;
 
 class Renderer {
 public:
     virtual ~Renderer() = default;
-    virtual bool Initialize(GLFWwindow* window) = 0;
+
+    virtual bool Initialize(SDL_Window* window, bool vsync) = 0;
     virtual void BeginFrame(const std::array&lt;float, 4&gt;&amp; clearColor) = 0;
     virtual void EndFrame() = 0;
     virtual void Resize(int pixelWidth, int pixelHeight) = 0;
 };</code></pre>
 
-        <div class="callout tip">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">A name that describes a role</div>
-            <p>We call the class <code>GraphicsDevice</code> because it represents "the thing that talks to the GPU." Some engines call it <code>Renderer</code> or <code>RHI</code> (render hardware interface). The name matters less than the boundary it draws.</p>
-          </div>
-        </div>
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">What is really shared?</div><p>The scene traversal, camera, visible-object list, clear color, and calls to <code>BeginFrame</code>/<code>EndFrame</code> are shared. Device creation, shaders, buffers, draw encoding, and presentation remain native backend work. That is the normal shape of a cross-platform engine.</p></div></div>
 
-        <h2>ComPtr: no more manual Release()</h2>
-        <p>
-          Every DirectX object you create — the device, the swap chain, each view — is a COM object with an internal
-          reference count. In older tutorials you must call <code>Release()</code> on each one in the right order, or you
-          leak GPU memory. We are past that. <code>Microsoft::WRL::ComPtr</code> is a smart pointer for COM objects: when
-          it goes out of scope it calls <code>Release()</code> for you, just like <code>std::unique_ptr</code> calls
-          <code>delete</code>. Store every DirectX object in a <code>ComPtr</code> and destruction becomes automatic and
-          correct.
-        </p>
+        <h2>Windows: obtain the HWND from SDL3</h2>
+        <p>DXGI still requires a Win32 <code>HWND</code> when it creates the swap chain. SDL3 stores that pointer as a read-only property on its window. Only the Windows renderer reads it.</p>
 
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>ComPtr call</th><th>What it gives you</th></tr></thead>
-            <tbody>
-              <tr><td><code>.Get()</code></td><td>The raw pointer, for passing <em>into</em> a D3D call.</td></tr>
-              <tr><td><code>.GetAddressOf()</code></td><td>Address of the pointer, for a call that <em>creates</em> an object (an out-parameter).</td></tr>
-              <tr><td><code>.Reset()</code></td><td>Releases the object now and sets the pointer to null.</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <h2>The header</h2>
-        <p>
-          Here is the interface. Notice how small it is compared to the setup work it hides. The private members are all
-          <code>ComPtr</code>s, so the class needs no destructor at all.
-        </p>
-
-        <pre><code class="language-cpp" data-file="GraphicsDevice.h">#pragma once
+        <pre><code class="language-cpp" data-file="D3D11Renderer.h">#pragma once
+#include "Renderer.h"
 #include &lt;d3d11.h&gt;
-#include &lt;wrl/client.h&gt;   // Microsoft::WRL::ComPtr
-#include &lt;cstdint&gt;
+#include &lt;wrl/client.h&gt;
 
-class GraphicsDevice {
+class D3D11Renderer final : public Renderer {
 public:
-    // Create the device, context, swap chain and back-buffer targets.
-    bool Initialize(HWND window, uint32_t width, uint32_t height);
+    ~D3D11Renderer() override;
+    bool Initialize(SDL_Window* window, bool vsync) override;
+    void BeginFrame(const std::array&lt;float, 4&gt;&amp; clearColor) override;
+    void EndFrame() override;
+    void Resize(int pixelWidth, int pixelHeight) override;
 
-    // Bind the render target and wipe it (plus depth) for a new frame.
-    void BeginFrame(const float clearColor[4]);
-
-    // Present the finished frame to the screen.
-    void EndFrame();
-
-    // Recreate the buffers after the window changes size.
-    void Resize(uint32_t width, uint32_t height);
-
-    // Systems that record draw calls (mesh renderer, UI) grab these.
-    ID3D11Device*        Device()  const { return m_device.Get(); }
+    ID3D11Device* Device() const { return m_device.Get(); }
     ID3D11DeviceContext* Context() const { return m_context.Get(); }
 
 private:
-    bool CreateRenderTargets(uint32_t width, uint32_t height);
+    bool CreateRenderTargets(int pixelWidth, int pixelHeight);
 
     template &lt;typename T&gt;
     using ComPtr = Microsoft::WRL::ComPtr&lt;T&gt;;
 
-    ComPtr&lt;ID3D11Device&gt;           m_device;
-    ComPtr&lt;ID3D11DeviceContext&gt;    m_context;
-    ComPtr&lt;IDXGISwapChain&gt;         m_swapChain;
-    ComPtr&lt;ID3D11RenderTargetView&gt; m_renderTargetView;   // the RTV
-    ComPtr&lt;ID3D11DepthStencilView&gt; m_depthStencilView;   // the DSV
-    D3D11_VIEWPORT                 m_viewport{};
+    ComPtr&lt;ID3D11Device&gt; m_device;
+    ComPtr&lt;ID3D11DeviceContext&gt; m_context;
+    ComPtr&lt;IDXGISwapChain&gt; m_swapChain;
+    ComPtr&lt;ID3D11RenderTargetView&gt; m_renderTargetView;
+    ComPtr&lt;ID3D11DepthStencilView&gt; m_depthStencilView;
+    D3D11_VIEWPORT m_viewport{};
+    bool m_vsync = true;
 };</code></pre>
 
-        <h2>Initializing the device</h2>
-        <p>
-          <code>Initialize</code> does the one-time setup. It fills out a swap-chain description and creates the device,
-          context, and swap chain together with <code>D3D11CreateDeviceAndSwapChain</code>. In a debug build we add the
-          debug device flag so DirectX prints helpful validation messages to the output window.
-        </p>
+        <pre><code class="language-cpp" data-file="D3D11Renderer.cpp">#include "D3D11Renderer.h"
+#include &lt;SDL3/SDL.h&gt;
+#include &lt;windows.h&gt;
 
-        <pre><code class="language-cpp" data-file="GraphicsDevice.cpp">#include "GraphicsDevice.h"
+D3D11Renderer::~D3D11Renderer() {
+    if (m_context) {
+        m_context-&gt;ClearState();
+        m_context-&gt;Flush();
+    }
+}
 
-using Microsoft::WRL::ComPtr;
+bool D3D11Renderer::Initialize(SDL_Window* window, bool vsync) {
+    if (!window) return false;
+    m_vsync = vsync;
 
-bool GraphicsDevice::Initialize(HWND window, uint32_t width, uint32_t height) {
-    // Describe the swap chain: one back buffer sized to the window.
-    DXGI_SWAP_CHAIN_DESC scd{};
-    scd.BufferCount       = 1;
-    scd.BufferDesc.Width  = width;
-    scd.BufferDesc.Height = height;
-    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scd.BufferUsage       = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.OutputWindow      = window;
-    scd.SampleDesc.Count  = 1;      // no MSAA for now
-    scd.Windowed          = TRUE;
+    const SDL_PropertiesID properties = SDL_GetWindowProperties(window);
+    HWND hwnd = static_cast&lt;HWND&gt;(SDL_GetPointerProperty(
+        properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+
+    int pixelWidth = 0;
+    int pixelHeight = 0;
+    if (!hwnd ||
+        !SDL_GetWindowSizeInPixels(window, &amp;pixelWidth, &amp;pixelHeight) ||
+        pixelWidth &lt;= 0 || pixelHeight &lt;= 0) {
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc{};
+    desc.BufferCount = 2;
+    desc.BufferDesc.Width = static_cast&lt;UINT&gt;(pixelWidth);
+    desc.BufferDesc.Height = static_cast&lt;UINT&gt;(pixelHeight);
+    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.OutputWindow = hwnd;
+    desc.SampleDesc.Count = 1;
+    desc.Windowed = TRUE;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
     UINT flags = 0;
-#if defined(_DEBUG)
-    flags |= D3D11_CREATE_DEVICE_DEBUG; // extra validation in debug builds
+#if !defined(NDEBUG)
+    flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-    // Create device + context + swap chain in a single call.
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(
-        nullptr,                     // default adapter (GPU)
+    const HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        nullptr,
         D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
         flags,
-        nullptr, 0,                  // default feature levels
+        nullptr, 0,
         D3D11_SDK_VERSION,
-        &amp;scd,
+        &amp;desc,
         m_swapChain.GetAddressOf(),
         m_device.GetAddressOf(),
-        nullptr,                     // we don't need the chosen level
+        nullptr,
         m_context.GetAddressOf());
 
-    if (FAILED(hr)) return false;
-    return CreateRenderTargets(width, height);
+    return SUCCEEDED(hr) &amp;&amp;
+           CreateRenderTargets(pixelWidth, pixelHeight);
 }</code></pre>
 
-        <p>
-          Splitting the target creation into its own helper is deliberate — we will call it again from
-          <code>Resize</code>. It grabs the swap chain's back buffer, wraps it in a render target view, builds a matching
-          depth/stencil texture and view, and sets the viewport.
-        </p>
+        <p><code>SDL_GetPointerProperty</code> returns a borrowed pointer. Do not destroy the <code>HWND</code>; SDL's <code>Window</code> owner will destroy the native window after the renderer releases its swap chain.</p>
 
-        <pre><code class="language-cpp" data-file="GraphicsDevice.cpp">bool GraphicsDevice::CreateRenderTargets(uint32_t width, uint32_t height) {
-    // 1) Wrap the swap chain's back buffer in a render target view.
+        <h3>Create the color and depth targets</h3>
+        <pre><code class="language-cpp" data-file="D3D11Renderer.cpp">bool D3D11Renderer::CreateRenderTargets(int width, int height) {
     ComPtr&lt;ID3D11Texture2D&gt; backBuffer;
     HRESULT hr = m_swapChain-&gt;GetBuffer(
         0, __uuidof(ID3D11Texture2D),
@@ -198,16 +157,15 @@ bool GraphicsDevice::Initialize(HWND window, uint32_t width, uint32_t height) {
         backBuffer.Get(), nullptr, m_renderTargetView.GetAddressOf());
     if (FAILED(hr)) return false;
 
-    // 2) Create a matching depth/stencil texture, then a view onto it.
     D3D11_TEXTURE2D_DESC depthDesc{};
-    depthDesc.Width            = width;
-    depthDesc.Height           = height;
-    depthDesc.MipLevels        = 1;
-    depthDesc.ArraySize        = 1;
-    depthDesc.Format           = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depthDesc.Width = static_cast&lt;UINT&gt;(width);
+    depthDesc.Height = static_cast&lt;UINT&gt;(height);
+    depthDesc.MipLevels = 1;
+    depthDesc.ArraySize = 1;
+    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
     depthDesc.SampleDesc.Count = 1;
-    depthDesc.Usage            = D3D11_USAGE_DEFAULT;
-    depthDesc.BindFlags        = D3D11_BIND_DEPTH_STENCIL;
+    depthDesc.Usage = D3D11_USAGE_DEFAULT;
+    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
 
     ComPtr&lt;ID3D11Texture2D&gt; depthTexture;
     hr = m_device-&gt;CreateTexture2D(
@@ -218,165 +176,342 @@ bool GraphicsDevice::Initialize(HWND window, uint32_t width, uint32_t height) {
         depthTexture.Get(), nullptr, m_depthStencilView.GetAddressOf());
     if (FAILED(hr)) return false;
 
-    // 3) Viewport covers the whole window; depth runs 0 -&gt; 1.
-    m_viewport.Width    = static_cast&lt;float&gt;(width);
-    m_viewport.Height   = static_cast&lt;float&gt;(height);
+    m_viewport.Width = static_cast&lt;float&gt;(width);
+    m_viewport.Height = static_cast&lt;float&gt;(height);
     m_viewport.MinDepth = 0.0f;
     m_viewport.MaxDepth = 1.0f;
-    m_context-&gt;RSSetViewports(1, &amp;m_viewport);
     return true;
 }</code></pre>
 
-        <div class="callout warn">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">Link against d3d11.lib</div>
-            <p>These calls live in the Direct3D 11 runtime. Configure them in CMake with <code>target_link_libraries(Engine PRIVATE d3d11 dxgi d3dcompiler)</code> inside the <code>WIN32</code> branch. If a library is missing, the build fails with unresolved symbols.</p>
-          </div>
-        </div>
-
-        <h2>Begin and end a frame</h2>
-        <p>
-          This is the payoff. All the per-frame boilerplate — binding the targets, clearing color, clearing depth,
-          presenting — collapses into two methods. Every frame of your game loop calls <code>BeginFrame</code>, records
-          draw calls, then calls <code>EndFrame</code>.
-        </p>
-
-        <pre><code class="language-cpp" data-file="GraphicsDevice.cpp">void GraphicsDevice::BeginFrame(const float clearColor[4]) {
-    // Bind our render target + depth buffer for this frame...
+        <h3>Begin, present, and resize</h3>
+        <pre><code class="language-cpp" data-file="D3D11Renderer.cpp">void D3D11Renderer::BeginFrame(
+    const std::array&lt;float, 4&gt;&amp; clearColor) {
     m_context-&gt;OMSetRenderTargets(
         1, m_renderTargetView.GetAddressOf(), m_depthStencilView.Get());
-
-    // ...then wipe both so nothing from the last frame lingers.
-    m_context-&gt;ClearRenderTargetView(m_renderTargetView.Get(), clearColor);
+    m_context-&gt;ClearRenderTargetView(
+        m_renderTargetView.Get(), clearColor.data());
     m_context-&gt;ClearDepthStencilView(
         m_depthStencilView.Get(),
         D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
-
     m_context-&gt;RSSetViewports(1, &amp;m_viewport);
 }
 
-void GraphicsDevice::EndFrame() {
-    // Swap the finished back buffer onto the screen. 1 = wait for vsync.
-    m_swapChain-&gt;Present(1, 0);
-}</code></pre>
+void D3D11Renderer::EndFrame() {
+    m_swapChain-&gt;Present(m_vsync ? 1 : 0, 0);
+}
 
-        <p>
-          And <code>Resize</code>, so a maximized or dragged window does not stretch a stale image. We must release the
-          old views first — the swap chain cannot resize its buffers while anything still references them.
-        </p>
+void D3D11Renderer::Resize(int width, int height) {
+    if (!m_swapChain || width &lt;= 0 || height &lt;= 0) return;
 
-        <pre><code class="language-cpp" data-file="GraphicsDevice.cpp">void GraphicsDevice::Resize(uint32_t width, uint32_t height) {
-    if (!m_swapChain) return;
-
-    // Unbind and release the old views before resizing the buffers.
     m_context-&gt;OMSetRenderTargets(0, nullptr, nullptr);
     m_renderTargetView.Reset();
     m_depthStencilView.Reset();
 
-    m_swapChain-&gt;ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
-    CreateRenderTargets(width, height); // rebuild RTV, DSV, viewport
+    const HRESULT hr = m_swapChain-&gt;ResizeBuffers(
+        0, static_cast&lt;UINT&gt;(width), static_cast&lt;UINT&gt;(height),
+        DXGI_FORMAT_UNKNOWN, 0);
+    if (SUCCEEDED(hr)) CreateRenderTargets(width, height);
 }</code></pre>
 
-        <div class="callout">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
-          <div class="c-body">
-            <div class="c-title">Order of release matters</div>
-            <p>If you skip the <code>Reset()</code> calls, <code>ResizeBuffers</code> fails because the render target view still holds a reference to the old back buffer. This is one place where understanding COM reference counting pays off directly.</p>
-          </div>
-        </div>
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Release views before ResizeBuffers</div><p>The render-target and depth views reference the old swap-chain textures. Unbind and reset them before resizing, then recreate the views and viewport with the new physical pixel dimensions.</p></div></div>
 
-        <h2>Using it in the loop</h2>
-        <p>
-          Remember the <code>Application</code> and <code>Window</code> classes from the previous lesson? The renderer
-          slots right in beside them. Look how readable the loop becomes — no DirectX in sight except the color we choose.
-        </p>
+        <h2>macOS: let SDL3 create the Metal view</h2>
+        <p>The previous graphics lessons introduced the same objects directly. Inside the engine, SDL3 can create and attach the Metal-backed view for us. <code>SDL_Metal_GetLayer</code> returns its <code>CAMetalLayer</code>; our renderer configures and uses that layer but does not own or release it.</p>
 
-        <pre><code class="language-cpp" data-file="main.cpp">GraphicsDevice gfx;
-if (!gfx.Initialize(window.Handle(), 1280, 720)) {
-    return -1; // couldn't reach the GPU
+        <pre><code class="language-cpp" data-file="MetalRenderer.h">#pragma once
+#include "Renderer.h"
+#include &lt;SDL3/SDL_metal.h&gt;
+
+namespace NS { class AutoreleasePool; }
+namespace MTL {
+    class Device;
+    class CommandQueue;
+    class CommandBuffer;
+    class RenderCommandEncoder;
 }
+namespace CA { class MetalLayer; class MetalDrawable; }
 
-const float sky[4] = { 0.10f, 0.12f, 0.18f, 1.0f }; // RGBA
+class MetalRenderer final : public Renderer {
+public:
+    ~MetalRenderer() override;
 
-while (window.ProcessMessages()) {
-    gfx.BeginFrame(sky);
-    //   ... later: systems record draw calls via gfx.Context() ...
-    gfx.EndFrame();
-}</code></pre>
+    bool Initialize(SDL_Window* window, bool vsync) override;
+    void BeginFrame(const std::array&lt;float, 4&gt;&amp; clearColor) override;
+    void EndFrame() override;
+    void Resize(int pixelWidth, int pixelHeight) override;
 
-        <p>
-          That <code>gfx.Context()</code> accessor is our doorway to the future. When we build a mesh renderer, it will
-          ask the <code>GraphicsDevice</code> for the context and issue its own draw calls — but it never needs to know
-          how the swap chain was built or how depth is configured. The abstraction holds, and every new system we add
-          leans on it.
-        </p>
+private:
+    void Shutdown();
 
-        <h2>The Metal backend on macOS</h2>
-        <p><code>MetalRenderer</code> implements the same public lifecycle. Its private state is a Metal device, command queue, <code>CAMetalLayer</code>, depth texture, and current command buffer. With metal-cpp, these types stay in a macOS-only <code>.mm</code> file.</p>
+    SDL_MetalView m_metalView = nullptr; // owned: destroy with SDL
+    CA::MetalLayer* m_layer = nullptr;   // borrowed from m_metalView
+    MTL::Device* m_device = nullptr;
+    MTL::CommandQueue* m_commandQueue = nullptr;
 
-        <pre><code class="language-cpp" data-file="MetalRenderer.mm">#define NS_PRIVATE_IMPLEMENTATION
-#define CA_PRIVATE_IMPLEMENTATION
-#define MTL_PRIVATE_IMPLEMENTATION
+    NS::AutoreleasePool* m_framePool = nullptr;
+    CA::MetalDrawable* m_drawable = nullptr;
+    MTL::CommandBuffer* m_commands = nullptr;
+    MTL::RenderCommandEncoder* m_encoder = nullptr;
+    bool m_frameReady = false;
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">#include "MetalRenderer.h"
+#include &lt;SDL3/SDL.h&gt;
+#include &lt;Foundation/Foundation.hpp&gt;
 #include &lt;Metal/Metal.hpp&gt;
 #include &lt;QuartzCore/QuartzCore.hpp&gt;
-#include "MetalRenderer.h"
 
-bool MetalRenderer::Initialize(GLFWwindow* window) {
-    m_device = MTL::CreateSystemDefaultDevice();
-    if (!m_device) return false;
-    m_queue = m_device-&gt;newCommandQueue();
-
-    // Attach a CAMetalLayer to the NSWindow supplied by GLFW.
-    m_layer = CreateMetalLayer(window, m_device);
-    return m_queue &amp;&amp; m_layer;
+MetalRenderer::~MetalRenderer() {
+    Shutdown();
 }
 
-void MetalRenderer::BeginFrame(const std::array&lt;float, 4&gt;&amp; color) {
-    m_drawable = m_layer-&gt;nextDrawable();
-    m_commands = m_queue-&gt;commandBuffer();
+bool MetalRenderer::Initialize(SDL_Window* window, bool vsync) {
+    if (!window) return false;
 
-    MTL::RenderPassDescriptor* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
+    m_device = MTL::CreateSystemDefaultDevice();
+    if (!m_device) return false;
+
+    m_commandQueue = m_device-&gt;newCommandQueue();
+    if (!m_commandQueue) {
+        Shutdown();
+        return false;
+    }
+
+    m_metalView = SDL_Metal_CreateView(window);
+    if (!m_metalView) {
+        Shutdown();
+        return false;
+    }
+
+    // SDL_MetalView owns this layer. Borrow it—do not retain or release it.
+    m_layer = static_cast&lt;CA::MetalLayer*&gt;(
+        SDL_Metal_GetLayer(m_metalView));
+    if (!m_layer) {
+        Shutdown();
+        return false;
+    }
+
+    m_layer-&gt;setDevice(m_device);
+    m_layer-&gt;setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    m_layer-&gt;setFramebufferOnly(true);
+    m_layer-&gt;setDisplaySyncEnabled(vsync);
+
+    int pixelWidth = 0;
+    int pixelHeight = 0;
+    if (!SDL_GetWindowSizeInPixels(window, &amp;pixelWidth, &amp;pixelHeight)) {
+        Shutdown();
+        return false;
+    }
+    Resize(pixelWidth, pixelHeight);
+    return true;
+}
+
+void MetalRenderer::Resize(int width, int height) {
+    if (!m_layer || width &lt;= 0 || height &lt;= 0) return;
+
+    // SDL3 automatically updates its Metal layer's drawable size.
+    // Later, rebuild Metal depth targets and viewport state here.
+}
+
+void MetalRenderer::Shutdown() {
+    if (m_framePool) {
+        m_framePool-&gt;release();
+        m_framePool = nullptr;
+    }
+    m_encoder = nullptr;
+    m_commands = nullptr;
+    m_drawable = nullptr;
+    m_frameReady = false;
+
+    // The layer becomes invalid when its owning SDL_MetalView is destroyed.
+    m_layer = nullptr;
+    if (m_metalView) {
+        SDL_Metal_DestroyView(m_metalView);
+        m_metalView = nullptr;
+    }
+
+    if (m_commandQueue) {
+        m_commandQueue-&gt;release();
+        m_commandQueue = nullptr;
+    }
+    if (m_device) {
+        m_device-&gt;release();
+        m_device = nullptr;
+    }
+}</code></pre>
+
+        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">Do not release the borrowed layer</div><p><code>SDL_Metal_CreateView</code> owns the view and its <code>CAMetalLayer</code>. Store the layer only while that view exists. Call <code>SDL_Metal_DestroyView</code> exactly once during renderer shutdown and always before <code>SDL_DestroyWindow</code>.</p></div></div>
+
+        <h3>Encode the same frame lifecycle</h3>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">void MetalRenderer::BeginFrame(
+    const std::array&lt;float, 4&gt;&amp; color) {
+    // A failed frame must not reuse pointers from the previous frame.
+    m_frameReady = false;
+    m_encoder = nullptr;
+    m_commands = nullptr;
+    m_drawable = nullptr;
+    if (m_framePool) {
+        m_framePool-&gt;release();
+        m_framePool = nullptr;
+    }
+
+    if (!m_layer || !m_commandQueue) return;
+
+    m_framePool = NS::AutoreleasePool::alloc()-&gt;init();
+    m_drawable = m_layer-&gt;nextDrawable();
+    m_commands = m_commandQueue-&gt;commandBuffer();
+    if (!m_drawable || !m_commands) {
+        m_drawable = nullptr;
+        m_commands = nullptr;
+        m_framePool-&gt;release();
+        m_framePool = nullptr;
+        return; // normal while minimized or temporarily unavailable
+    }
+
+    auto* pass = MTL::RenderPassDescriptor::renderPassDescriptor();
     auto* target = pass-&gt;colorAttachments()-&gt;object(0);
     target-&gt;setTexture(m_drawable-&gt;texture());
     target-&gt;setLoadAction(MTL::LoadActionClear);
     target-&gt;setStoreAction(MTL::StoreActionStore);
-    target-&gt;setClearColor(MTL::ClearColor(color[0], color[1], color[2], color[3]));
+    target-&gt;setClearColor(MTL::ClearColor(
+        color[0], color[1], color[2], color[3]));
+
     m_encoder = m_commands-&gt;renderCommandEncoder(pass);
+    if (!m_encoder) {
+        m_commands = nullptr;
+        m_drawable = nullptr;
+        m_framePool-&gt;release();
+        m_framePool = nullptr;
+        return;
+    }
+    m_frameReady = true;
 }
 
 void MetalRenderer::EndFrame() {
-    m_encoder-&gt;endEncoding();
-    m_commands-&gt;presentDrawable(m_drawable);
-    m_commands-&gt;commit();
+    if (m_frameReady) {
+        m_encoder-&gt;endEncoding();
+        m_commands-&gt;presentDrawable(m_drawable);
+        m_commands-&gt;commit();
+    }
+
+    m_frameReady = false;
+    m_encoder = nullptr;
+    m_commands = nullptr;
+    m_drawable = nullptr;
+    if (m_framePool) {
+        m_framePool-&gt;release();
+        m_framePool = nullptr;
+    }
 }</code></pre>
 
+        <p>A missing drawable is normal while the window is minimized or temporarily unavailable. <code>BeginFrame</code> clears every per-frame pointer first and leaves <code>m_frameReady</code> false; <code>EndFrame</code> then becomes a safe no-op instead of presenting a drawable left over from an earlier frame.</p>
+
+        <p>The implementation macros for metal-cpp remain in the single <code>MetalCpp.cpp</code> translation unit created in Lesson 39. Do not define <code>NS_PRIVATE_IMPLEMENTATION</code>, <code>CA_PRIVATE_IMPLEMENTATION</code>, or <code>MTL_PRIVATE_IMPLEMENTATION</code> again in <code>MetalRenderer.cpp</code>. SDL supplies the Metal view, so this path needs no Objective-C++ or hand-written Cocoa bridge.</p>
+
+        <h2>Select the backend in one factory</h2>
+        <p>A small factory is the only shared source file with a platform branch. It constructs the backend CMake compiled and returns the common base type.</p>
+
+        <pre><code class="language-cpp" data-file="RendererFactory.h">#pragma once
+#include &lt;memory&gt;
+
+class Renderer;
+std::unique_ptr&lt;Renderer&gt; CreateRenderer();</code></pre>
+
+        <pre><code class="language-cpp" data-file="RendererFactory.cpp">#include "RendererFactory.h"
+
+#if defined(_WIN32)
+    #include "D3D11Renderer.h"
+#elif defined(__APPLE__)
+    #include "MetalRenderer.h"
+#endif
+
+std::unique_ptr&lt;Renderer&gt; CreateRenderer() {
+#if defined(_WIN32)
+    return std::make_unique&lt;D3D11Renderer&gt;();
+#elif defined(__APPLE__)
+    return std::make_unique&lt;MetalRenderer&gt;();
+#else
+    return nullptr;
+#endif
+}</code></pre>
+
+        <h2>Use either backend from the same Application</h2>
+        <p>The application hooks from the previous lesson now contain neither a graphics API nor an operating-system branch. They also receive the same validated YAML configuration on both platforms, so shared render settings do not need backend-specific files.</p>
+
+        <pre><code class="language-cpp" data-file="Game.cpp">#include "Core/Application.h"
+#include "Renderer/Renderer.h"
+#include "Renderer/RendererFactory.h"
+#include &lt;memory&gt;
+#include &lt;utility&gt;
+
+class Game final : public Application {
+public:
+    explicit Game(EngineConfig config)
+        : Application(std::move(config)) {}
+
+protected:
+    bool OnInitialize() override {
+        m_renderer = CreateRenderer();
+        const bool vsync = GetConfig().renderer.vsync;
+        return m_renderer &amp;&amp;
+               m_renderer-&gt;Initialize(GetWindow().NativeHandle(), vsync);
+    }
+
+    void OnResize(int pixelWidth, int pixelHeight) override {
+        if (m_renderer) m_renderer-&gt;Resize(pixelWidth, pixelHeight);
+    }
+
+    void OnRender() override {
+        m_renderer-&gt;BeginFrame(GetConfig().renderer.clearColor);
+        // Later: submit visible meshes here.
+        m_renderer-&gt;EndFrame();
+    }
+
+    void OnShutdown() override {
+        // Metal destroys SDL_MetalView here, before Window's destructor.
+        m_renderer.reset();
+    }
+
+private:
+    std::unique_ptr&lt;Renderer&gt; m_renderer;
+};</code></pre>
+
+        <p>Both renderer settings now have an effect: the clear color feeds <code>BeginFrame</code>, while VSync chooses DXGI's presentation interval and Metal's display-synchronization behavior. YAML itself never enters either backend.</p>
+
         <div class="table-wrap"><table><thead><tr><th>Engine action</th><th>Windows backend</th><th>macOS backend</th></tr></thead><tbody>
+          <tr><td>Presentation bridge</td><td>SDL window property → <code>HWND</code></td><td><code>SDL_MetalView</code> → borrowed layer</td></tr>
           <tr><td>Own GPU</td><td><code>ID3D11Device</code></td><td><code>MTL::Device</code></td></tr>
           <tr><td>Record work</td><td>device context</td><td>command buffer + encoder</td></tr>
-          <tr><td>Display</td><td>DXGI swap chain</td><td><code>CAMetalLayer</code> drawable</td></tr>
-          <tr><td>Clear</td><td><code>ClearRenderTargetView</code></td><td>render-pass load action</td></tr>
-          <tr><td>Resize</td><td>recreate swap-chain views</td><td>update layer drawable size and depth texture</td></tr>
+          <tr><td>Display</td><td>DXGI swap chain</td><td>Metal drawable</td></tr>
+          <tr><td>Resize</td><td>rebuild swap-chain views</td><td>SDL updates its layer; rebuild size-dependent Metal targets</td></tr>
         </tbody></table></div>
 
-        <pre><code class="language-cmake" data-file="Engine/CMakeLists.txt">if(WIN32)
-  target_sources(Engine PRIVATE Renderer/D3D11Renderer.cpp)
+        <h2>CMake still chooses one backend</h2>
+        <pre><code class="language-cmake" data-file="Engine/CMakeLists.txt"># SDL3::SDL3 was added in the project-setup lesson.
+target_link_libraries(Engine PUBLIC SDL3::SDL3)
+
+if(WIN32)
+  target_sources(Engine PRIVATE src/Renderer/D3D11Renderer.cpp)
   target_link_libraries(Engine PRIVATE d3d11 dxgi d3dcompiler)
 elseif(APPLE)
-  target_sources(Engine PRIVATE Renderer/MetalRenderer.mm)
-  target_link_libraries(Engine PRIVATE "-framework Metal" "-framework QuartzCore")
+  target_sources(Engine PRIVATE
+    src/Renderer/MetalRenderer.cpp
+    src/Renderer/MetalCpp.cpp)
+  target_link_libraries(Engine PRIVATE
+    "-framework Foundation"
+    "-framework Metal"
+    "-framework QuartzCore")
 endif()</code></pre>
 
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>A shared <code>Renderer</code> contract keeps D3D11 and Metal types out of game code.</li>
-            <li>The Windows backend owns the device, context, swap chain, RTV, and DSV behind that surface.</li>
-            <li>The macOS backend owns the Metal device, command queue, layer, drawable, and render encoder.</li>
-            <li><code>Microsoft::WRL::ComPtr</code> releases every GPU resource automatically, so the class needs no destructor.</li>
-            <li><code>Initialize</code> does one-time setup; <code>CreateRenderTargets</code> is shared with <code>Resize</code>.</li>
-            <li><code>BeginFrame</code> binds and clears the targets; <code>EndFrame</code> presents the swap chain.</li>
-            <li>CMake selects exactly one backend with <code>WIN32</code> or <code>APPLE</code>.</li>
+            <li>SDL3 unifies the window, event, input, and pixel-size layer; Direct3D 11 and Metal remain separate backends.</li>
+            <li>The shared renderer initializes from <code>SDL_Window*</code> plus typed VSync settings and exposes one frame lifecycle.</li>
+            <li>Windows obtains a borrowed <code>HWND</code> from SDL window properties, then owns its DXGI swap chain with <code>ComPtr</code>.</li>
+            <li>macOS owns an <code>SDL_MetalView</code> and borrows its layer; it never retains or releases that layer.</li>
+            <li>Pixel-size events call <code>Resize</code>, using physical dimensions on both normal and Retina displays.</li>
+            <li>Destroy the renderer—and therefore the Metal view or swap chain—before the SDL window.</li>
           </ul>
         </div>
 

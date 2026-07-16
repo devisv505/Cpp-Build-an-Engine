@@ -232,14 +232,13 @@ float4 main(VSInput vin) : SV_POSITION
         <h2>The Metal camera path on macOS</h2>
         <p>The Camera component remains shared C++. The macOS backend converts the engine's view-projection matrix to <code>simd_float4x4</code> and uploads it to an <code>MTLBuffer</code>. Metal Shading Language normally multiplies a column vector as <code>mvp * position</code>, so perform any row/column conversion once during upload.</p>
 
-        <pre><code class="language-cpp" data-file="MetalRenderer.mm">struct FrameConstants {
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">struct FrameConstants {
     simd_float4x4 mvp;
 };
 
 FrameConstants constants{ ToMetalMatrix(world * viewProjection) };
-[encoder setVertexBytes:&amp;constants
-                  length:sizeof(constants)
-                 atIndex:0];</code></pre>
+encoder-&gt;setVertexBytes(
+    &amp;constants, sizeof(constants), 0);</code></pre>
 
         <pre><code class="language-shader" data-file="Camera.metal">struct FrameConstants { float4x4 mvp; };
 

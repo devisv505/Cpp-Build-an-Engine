@@ -10,17 +10,17 @@ Course progress and build-task completion are stored in the browser's local stor
 
 ## Learning path
 
-The course contains 100 lessons in 12 modules:
+The course contains 101 lessons in 12 modules:
 
 1. **Getting Started** — CLion, CMake, the compiler/linker pipeline, first program, and debugging.
 2. **C++ Fundamentals** — variables, control flow, functions, scope, and lifetime.
 3. **Data & Memory** — arrays, strings, pointers, references, allocation, and multiple files.
 4. **Object-Oriented C++** — classes, RAII, polymorphism, templates, smart pointers, and the STL.
 5. **Math for Graphics** — coordinate systems, vectors, matrices, DirectXMath, and Apple `simd`.
-6. **Platform & the Game Loop** — GLFW windows, events, input, delta time, Windows, and macOS.
+6. **Platform & the Game Loop** — SDL3 windows, events, input, delta time, Windows, and macOS.
 7. **Graphics Foundations** — the shared GPU pipeline, Direct3D 11, Metal, shaders, buffers, textures, depth, and cameras.
 8. **Engine Architecture** — subsystems, GameObjects, Actors, ECS, scene graphs, resources, input, and time.
-9. **Build Your Engine** — portable CMake targets, renderer backends, components, scripting, materials, and the complete loop.
+9. **Build Your Engine** — portable CMake targets, YAML configuration, renderer backends, components, scripting, materials, and the complete loop.
 10. **Multiplayer & Networking** — portable sockets, TCP/UDP, serialization, client-server design, and replication.
 11. **Shaders & Post-Processing** — texture filtering and atlases/arrays, render targets, fullscreen passes, HDR and tone mapping, separable Gaussian blur, and a full bloom pipeline.
 12. **Build Minecraft: A Voxel Engine** — chunked worlds, hidden-face and greedy meshing, voxel texturing and ambient occlusion, noise terrain, trees and foliage decoration, flood-fill lighting, chunk streaming, a threaded job system, DDA raycasting, frustum culling, and a playable sandbox capstone.
@@ -29,10 +29,10 @@ The course contains 100 lessons in 12 modules:
 
 | Platform | IDE | Compiler/toolchain | Windowing | Graphics |
 |---|---|---|---|---|
-| Windows | CLion | Bundled MinGW | GLFW | Direct3D 11 + HLSL |
-| macOS | CLion | Apple Clang | GLFW/Cocoa | Metal + Metal Shading Language |
+| Windows | CLion | Bundled MinGW | SDL3/Win32 | Direct3D 11 + HLSL |
+| macOS | CLion | Apple Clang | SDL3/Cocoa | Metal + Metal Shading Language |
 
-Platform-specific implementation stays behind CMake's `WIN32` and `APPLE` branches. Public engine interfaces use standard C++ and GLFW types where appropriate.
+SDL3 provides the shared window, event, keyboard, mouse, and gamepad layer. Direct3D 11 and Metal remain native renderer backends selected behind CMake's `WIN32` and `APPLE` branches. Public gameplay interfaces use standard C++ engine types; SDL and native graphics types stay at the platform and renderer boundaries.
 
 ## Project structure
 
@@ -41,7 +41,7 @@ Platform-specific implementation stays behind CMake's `WIN32` and `APPLE` branch
 - `js/curriculum.js` — the source of truth for ordering, paths, and navigation.
 - `js/tasks.js` — the course build tasks.
 - `js/main.js` — shared page chrome, navigation, progress, search, and code blocks.
-- `lessons/` — the 100 lesson pages.
+- `lessons/` — the 101 lesson pages.
 - `css/styles.css` — shared presentation.
 
 ## Adding or reordering lessons

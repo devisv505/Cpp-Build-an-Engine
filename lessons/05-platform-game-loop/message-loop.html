@@ -3,152 +3,182 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Events &amp; Input with GLFW — Learn C++ Engine Development</title>
-  <meta name="description" content="Process window events and keyboard, mouse, resize, and close input with GLFW in the same CLion project on Windows and macOS.">
+  <title>Events &amp; Input with SDL3 — Learn C++ Engine Development</title>
+  <meta name="description" content="Process SDL3 window, keyboard, mouse, resize, and close events in the same C++ code on Windows and macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
   <div id="app">
     <main class="content">
       <article class="lesson">
-        <h1>Events &amp; Input with GLFW</h1>
+        <h1>Events &amp; Input with SDL3</h1>
 
-        <p class="lead">A game window must react to keys, mouse movement, resizing, focus changes, and closing. Windows and macOS deliver those events differently, but GLFW translates both native event systems into one set of callbacks and query functions. Our engine can therefore keep input state in ordinary C++.</p>
+        <p class="lead">Windows and macOS deliver input and window notifications through different native systems. SDL3 translates both into one event queue, so the engine can process keyboard, mouse, resize, and close events in ordinary cross-platform C++.</p>
 
         <div class="objectives">
-          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>How <code>glfwPollEvents</code> pumps Win32 or Cocoa events without blocking</li>
-            <li>When to query key state and when to install a callback</li>
-            <li>How to handle keyboard, mouse, framebuffer resize, and close events</li>
-            <li>How a window user pointer routes C callbacks into a C++ object</li>
+            <li>How <code>SDL_PollEvent</code> drains queued operating-system events without blocking</li>
+            <li>When to consume an event and when to query current keyboard state</li>
+            <li>How to handle close, key, mouse, and drawable-pixel resize events</li>
+            <li>How to forward SDL events into engine-owned window and input systems</li>
           </ul>
         </div>
 
         <h2>One event pump, two operating systems</h2>
-        <p>GUI systems are event-driven. The OS queues hardware and window events; the application must regularly process them. GLFW's non-blocking event pump performs the native work for the current system:</p>
+        <p><code>SDL_PollEvent</code> returns one queued event at a time. Call it repeatedly until the queue is empty, then update and render the frame:</p>
 
-        <pre><code class="language-cpp">while (!glfwWindowShouldClose(window))
+        <pre><code class="language-cpp">bool running = true;
+
+while (running)
 {
-    glfwPollEvents(); // pumps Windows messages or Cocoa events
+    SDL_Event event;
+    while (SDL_PollEvent(&amp;event))
+    {
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            running = false;
+        }
+    }
+
+    if (!running)
+        break;
 
     Update();
     Render();
 }</code></pre>
 
-        <p><code>glfwPollEvents</code> returns after processing currently queued events, so the game continues updating even when the player does nothing. <code>glfwWaitEvents</code> blocks until something happens and is better suited to paused tools than a real-time game.</p>
+        <p>Polling is non-blocking: after the current events are drained, the game continues even if the player does nothing. SDL translates Win32 messages on Windows and Cocoa events on macOS before your code sees them.</p>
 
-        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Poll on the main thread</div><p>Window event processing must stay on the main thread on macOS, and doing the same on Windows keeps the platform layer consistent. Worker threads can load assets or prepare commands, but the window pump belongs in the main loop.</p></div></div>
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Drain events on the main thread</div><p>SDL video and event functions must stay on the main thread. Worker threads can load assets or prepare jobs; the window event pump remains part of the main loop on both platforms.</p></div></div>
 
-        <h2>Polling held keys</h2>
-        <p>For continuous actions such as movement, query whether a key is down during each update:</p>
+        <h2>Events for transitions</h2>
+        <p>Use events when the transition itself matters: a key went down, a key came up, the mouse moved, or drawable pixels changed. <code>SDL_Event</code> is a tagged union, so first check <code>event.type</code> and then read the matching member.</p>
 
-        <pre><code class="language-cpp">void UpdateInput(GLFWwindow* window)
+        <pre><code class="language-cpp" data-file="main.cpp">while (SDL_PollEvent(&amp;event))
 {
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        MoveForward();
+    switch (event.type)
+    {
+    case SDL_EVENT_QUIT:
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        running = false;
+        break;
 
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    case SDL_EVENT_KEY_DOWN:
+        // Ignore operating-system key repeat for one-shot actions.
+        if (!event.key.repeat &amp;&amp;
+            event.key.scancode == SDL_SCANCODE_ESCAPE)
+        {
+            running = false;
+        }
+        break;
+
+    case SDL_EVENT_MOUSE_MOTION:
+        camera.AddLookDelta(event.motion.xrel, event.motion.yrel);
+        break;
+
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        renderer.Resize(event.window.data1, event.window.data2);
+        break;
+
+    default:
+        break;
+    }
 }</code></pre>
 
-        <p>This code is unchanged between Windows and macOS. GLFW key constants describe physical keyboard keys; later, the engine's input service will translate them into actions such as <code>MoveForward</code>.</p>
-
-        <h2>Callbacks for discrete events</h2>
-        <p>Callbacks are better for transitions such as one press, one release, text entry, or a resize. GLFW invokes the callback while <code>glfwPollEvents</code> is running.</p>
-
-        <pre><code class="language-cpp" data-file="main.cpp">void OnKey(GLFWwindow* window, int key, int scancode,
-           int action, int mods)
-{
-    if (key == GLFW_KEY_ESCAPE &amp;&amp; action == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, GLFW_TRUE);
-}
-
-void OnMouseMove(GLFWwindow* window, double x, double y)
-{
-    // Store the latest cursor position for the input system.
-}
-
-void OnFramebufferResize(GLFWwindow* window, int width, int height)
-{
-    // Mark the Direct3D back buffer or Metal drawable for recreation.
-    // Do not recreate while width or height is zero.
-}
-
-// After creating the window:
-glfwSetKeyCallback(window, OnKey);
-glfwSetCursorPosCallback(window, OnMouseMove);
-glfwSetFramebufferSizeCallback(window, OnFramebufferResize);</code></pre>
-
         <div class="table-wrap"><table>
-          <thead><tr><th>Need</th><th>GLFW API</th><th>Use</th></tr></thead>
+          <thead><tr><th>Need</th><th>SDL3 source</th><th>Typical use</th></tr></thead>
           <tbody>
-            <tr><td>Key currently held</td><td><code>glfwGetKey</code></td><td>Movement and continuous controls</td></tr>
-            <tr><td>Press/release transition</td><td>Key callback</td><td>Toggles, menus, one-shot actions</td></tr>
-            <tr><td>Typed Unicode text</td><td>Character callback</td><td>Console and UI text fields</td></tr>
-            <tr><td>Mouse position</td><td>Cursor-position callback</td><td>Camera look and pointer UI</td></tr>
-            <tr><td>Drawable resized</td><td>Framebuffer-size callback</td><td>Recreate graphics targets</td></tr>
+            <tr><td>Key press/release</td><td><code>SDL_EVENT_KEY_DOWN</code> / <code>UP</code></td><td>Jump, toggles, menus</td></tr>
+            <tr><td>Key currently held</td><td><code>SDL_GetKeyboardState</code></td><td>Movement and continuous controls</td></tr>
+            <tr><td>Typed Unicode text</td><td><code>SDL_EVENT_TEXT_INPUT</code></td><td>Console and UI text fields</td></tr>
+            <tr><td>Mouse movement</td><td><code>SDL_EVENT_MOUSE_MOTION</code></td><td>Camera look and pointer UI</td></tr>
+            <tr><td>Drawable resized</td><td><code>SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED</code></td><td>Recreate graphics targets</td></tr>
           </tbody>
         </table></div>
 
-        <h2>Routing callbacks into a C++ class</h2>
-        <p>GLFW callbacks are plain function pointers, so a non-static member function cannot be registered directly. Store <code>this</code> in the window's user pointer and forward through a captureless callback:</p>
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Text input is opt-in</div><p>SDL3 does not emit <code>SDL_EVENT_TEXT_INPUT</code> by default. Call <code>SDL_StartTextInput(window)</code> when a console or text field gains focus, consume its UTF-8 text events, then call <code>SDL_StopTextInput(window)</code> when editing ends. Keyboard controls based on scancodes do not need text-input mode.</p></div></div>
 
-        <pre><code class="language-cpp" data-file="Window.cpp">class Window
+        <h2>Query held keys after polling</h2>
+        <p>For continuous movement, ask SDL for its current keyboard snapshot after processing the event queue. Scancodes describe physical key positions, which is usually what a game control needs:</p>
+
+        <pre><code class="language-cpp">const bool* keys = SDL_GetKeyboardState(nullptr);
+
+if (keys[SDL_SCANCODE_W])
+    MoveForward();
+
+if (keys[SDL_SCANCODE_S])
+    MoveBackward();</code></pre>
+
+        <p>An event tells you that a state <em>changed</em>; the keyboard snapshot tells you the state <em>now</em>. A robust engine combines both rather than trying to use repeated key-down events for movement.</p>
+
+        <h2>Forward events into engine objects</h2>
+        <p>SDL3's queue removes the need to register a separate C callback for every operation. The application owns the loop and forwards each event to the systems that care about it:</p>
+
+        <pre><code class="language-cpp" data-file="Application.cpp">void Application::PollEvents()
 {
-public:
-    explicit Window(GLFWwindow* handle) : m_handle(handle)
+    SDL_Event event;
+    while (SDL_PollEvent(&amp;event))
     {
-        glfwSetWindowUserPointer(m_handle, this);
+        m_input.ProcessEvent(event);
 
-        glfwSetFramebufferSizeCallback(
-            m_handle,
-            [](GLFWwindow* raw, int width, int height)
-            {
-                auto* self = static_cast&lt;Window*&gt;(
-                    glfwGetWindowUserPointer(raw));
-                self-&gt;OnFramebufferResize(width, height);
-            });
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            m_running = false;
+        }
+
+        if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+        {
+            m_pendingWidth = event.window.data1;
+            m_pendingHeight = event.window.data2;
+            m_windowResized = true;
+        }
     }
+}</code></pre>
 
-private:
-    void OnFramebufferResize(int width, int height)
+        <p>With more than one window, compare <code>event.window.windowID</code> with <code>SDL_GetWindowID(window)</code> before applying a window event. A single-window game can keep the simpler version above.</p>
+
+        <h2>Pressed, held, and released</h2>
+        <p>Gameplay usually needs three answers for every engine key: <strong>pressed this frame</strong>, <strong>held</strong>, and <strong>released this frame</strong>. Clear the one-frame transition flags before polling, then let key events update the input service:</p>
+
+        <pre><code class="language-cpp">input.BeginFrame(); // clears pressed/released flags
+
+SDL_Event event;
+while (SDL_PollEvent(&amp;event))
+{
+    input.ProcessEvent(event);
+
+    if (event.type == SDL_EVENT_QUIT ||
+        event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
     {
-        m_framebufferWidth = width;
-        m_framebufferHeight = height;
-        m_resized = width &gt; 0 &amp;&amp; height &gt; 0;
+        running = false;
     }
+}
 
-    GLFWwindow* m_handle = nullptr;
-    int m_framebufferWidth = 0;
-    int m_framebufferHeight = 0;
-    bool m_resized = false;
-};</code></pre>
+if (!running)
+    break;
 
-        <p>This pattern keeps GLFW at the boundary while the rest of the engine works with a normal class.</p>
-
-        <h2>macOS command-key note</h2>
-        <p>GLFW exposes modifier flags such as <code>GLFW_MOD_CONTROL</code> and <code>GLFW_MOD_SUPER</code>. On macOS, Command maps to <code>GLFW_MOD_SUPER</code>; on Windows, the Windows key does. Bind editor-style shortcuts through an engine action map so each platform can use its conventional modifier without changing gameplay code.</p>
-
-        <h2>Input state for an engine</h2>
-        <p>A useful input system records three states per key: <strong>pressed this frame</strong>, <strong>held</strong>, and <strong>released this frame</strong>. At the start of each frame, clear the transition flags; callbacks set transitions while polling; queries read the stable state during updates.</p>
-
-        <pre><code class="language-cpp">input.BeginFrame();
-glfwPollEvents();       // callbacks update the input object
-
-if (input.WasPressed(Key::Jump))
+if (input.IsKeyPressed(Key::Space))
     player.Jump();
 
-input.EndFrame();</code></pre>
+if (input.IsKeyDown(Key::W))
+    player.MoveForward(dt);</code></pre>
+
+        <p>Only the input implementation maps <code>SDL_SCANCODE_W</code> to <code>Key::W</code>. A later action map can translate that engine key into an action such as <code>MoveForward</code>. Gameplay never depends on SDL, Win32, or macOS key constants.</p>
+
+        <h2>Platform shortcut note</h2>
+        <p>SDL reports modifier state in <code>event.key.mod</code>. Control is <code>SDL_KMOD_CTRL</code>; the Windows key or macOS Command key is <code>SDL_KMOD_GUI</code>. Editor-style shortcuts should use an action map so Windows can prefer Control while macOS prefers Command without changing the tool's behavior.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li><code>glfwPollEvents</code> processes queued native events without blocking the game loop.</li>
-            <li>Poll key state for continuous controls; use callbacks for transitions, text, mouse, and resize events.</li>
-            <li>The framebuffer-size callback is the correct place to mark render targets for recreation.</li>
-            <li>A GLFW user pointer forwards C callbacks into a C++ <code>Window</code> or <code>Input</code> object.</li>
-            <li>The same event and input code runs in CLion on Windows and macOS.</li>
+            <li>Drain <code>SDL_PollEvent</code> every frame on the main thread.</li>
+            <li>Events are best for transitions; <code>SDL_GetKeyboardState</code> is best for held controls.</li>
+            <li>Use <code>SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED</code> dimensions for graphics targets.</li>
+            <li>The application forwards SDL events into engine-owned <code>Window</code> and <code>Input</code> objects.</li>
+            <li>Gameplay reads engine keys and actions, so its logic is the same on Windows and macOS.</li>
           </ul>
         </div>
       </article>

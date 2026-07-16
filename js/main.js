@@ -387,7 +387,8 @@
   var LANG_LABEL = {
     cpp: "C++", "c++": "C++", c: "C", hlsl: "HLSL", shader: "GPU Shader",
     bash: "Shell", sh: "Shell", powershell: "PowerShell", ps: "PowerShell",
-    console: "Console", text: "Text", cmake: "CMake", ini: "Config", xml: "XML"
+    console: "Console", text: "Text", cmake: "CMake", ini: "Config", xml: "XML",
+    yaml: "YAML", yml: "YAML"
   };
 
   function enhanceCode(scope) {

@@ -172,8 +172,13 @@ private:
           player state, and it fills in the four lifecycle hooks from module 08.
         </p>
 
-        <pre><code class="language-cpp" data-file="VoxelApp.h">class VoxelApp : public Application {
+        <pre><code class="language-cpp" data-file="VoxelApp.h">#include &lt;utility&gt;
+
+class VoxelApp : public Application {
 public:
+    explicit VoxelApp(EngineConfig config)
+        : Application(std::move(config)) {}
+
     bool OnInitialize() override;
     void OnUpdate(float deltaTime) override;
     void OnRender() override;
@@ -193,6 +198,8 @@ private:
     RaycastHit target_{};                    // block under the crosshair this frame
     bool       hasTarget_ = false;
 };</code></pre>
+
+        <p>Construct the capstone exactly like the earlier Sandbox: <code>VoxelApp app{LoadStartupConfig()};</code>. The same validated YAML settings still control its window and renderer.</p>
 
         <p>
           <code>OnUpdate</code> is the simulation half of a frame. Notice how little happens here directly — the

@@ -438,15 +438,23 @@ float4 main(float2 uv : TEXCOORD0) : SV_Target
           change at all.
         </p>
 
-        <pre><code class="language-cpp" data-file="Renderer.cpp">// --- new members in Renderer.h ---
+        <pre><code class="language-cpp" data-file="Renderer.cpp">#include &lt;SDL3/SDL.h&gt;
+
+// --- new members in Renderer.h ---
 //   RenderTarget      m_sceneHDR;    // the scene renders here, in float HDR
 //   RenderTarget      m_backBuffer;  // wraps the swap chain's back buffer (LDR)
 //   PostProcessStack  m_post;
+//   bool              m_vsync = true;
 
-bool Renderer::Initialize(GLFWwindow* window) {
+bool Renderer::Initialize(SDL_Window* window, bool vsync) {
     // ... create device, swap chain, wrap m_backBuffer as before ...
-    int w, h;
-    glfwGetFramebufferSize(window, &amp;w, &amp;h);
+    m_vsync = vsync;
+    int w = 0;
+    int h = 0;
+    if (!SDL_GetWindowSizeInPixels(window, &amp;w, &amp;h) ||
+        w &lt;= 0 || h &lt;= 0) {
+        return false;
+    }
 
     m_sceneHDR.Recreate(this, w, h, TextureFormat::RGBA16F);  // HDR + a depth buffer
     m_post.Initialize(this, w, h);
@@ -469,7 +477,7 @@ void Renderer::BeginFrame(const std::array&lt;float, 4&gt;&amp; clear) {
 void Renderer::EndFrame() {
     // Hand the finished HDR scene to the stack; it writes the back buffer.
     m_post.Process(m_sceneHDR.AsShaderResource(), &amp;m_backBuffer);
-    m_swapChain-&gt;Present(1, 0);
+    m_swapChain-&gt;Present(m_vsync ? 1 : 0, 0);
 }
 
 void Renderer::Resize(int w, int h) {
@@ -480,6 +488,8 @@ void Renderer::Resize(int w, int h) {
     m_sceneHDR.Recreate(this, w, h, TextureFormat::RGBA16F);  // HDR scene target
     m_post.Resize(w, h);                                      // both ping-pong targets
 }</code></pre>
+
+        <p><code>SDL_GetWindowSizeInPixels</code> continues the same high-DPI rule established by the Window and Renderer lessons. The post-processing targets, depth target, viewport, and swap-chain back buffer must all use the same physical pixel dimensions.</p>
 
         <div class="callout warn">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>

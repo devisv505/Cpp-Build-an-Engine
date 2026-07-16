@@ -4,27 +4,28 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>The Application &amp; Window Classes — Learn C++ Engine Development</title>
-  <meta name="description" content="Build portable Window and Application classes with GLFW, CMake, and a frame loop that works on Windows and macOS.">
+  <meta name="description" content="Build portable Window and Application classes with SDL3, CMake, RAII, high-DPI resize handling, and one frame loop for Windows and macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
   <div id="app"><main class="content"><article class="lesson">
     <h1>The Application &amp; Window Classes</h1>
-    <p class="lead">Now we turn the GLFW code from the platform chapter into reusable engine classes. <code>Window</code> owns the native desktop window on both Windows and macOS, while <code>Application</code> owns the frame loop and gives the game clean update and render hooks.</p>
+    <p class="lead">Now we turn the SDL3 code from the platform chapter into reusable engine classes. <code>Window</code> owns the <code>SDL_Window</code> and SDL's lifetime, while <code>Application</code> owns the validated <code>EngineConfig</code>, running state, and frame loop. This code is identical on Windows and macOS; only the renderer behind it changes.</p>
 
     <div class="objectives"><div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div><ul>
-      <li>Use RAII to own a <code>GLFWwindow*</code>.</li>
-      <li>Expose logical and framebuffer sizes correctly on Retina displays.</li>
-      <li>Build a portable <code>Application</code> lifecycle with <code>std::chrono</code>.</li>
-      <li>Keep the native graphics surface inside the renderer backend.</li>
+      <li>Use RAII to own an <code>SDL_Window*</code> and the SDL video subsystem.</li>
+      <li>Keep the application's running state in one place.</li>
+      <li>Handle close and high-DPI resize events through one SDL3 event loop.</li>
+      <li>Expose drawable pixel size correctly on Retina and scaled displays.</li>
+      <li>Load YAML once at startup and pass typed settings into the application.</li>
+      <li>Keep native graphics surfaces inside renderer backends.</li>
     </ul></div>
 
-    <h2>A portable Window interface</h2>
+    <h2>A small Window owner</h2>
     <pre><code class="language-cpp" data-file="Window.h">#pragma once
-#include &lt;cstdint&gt;
 #include &lt;string&gt;
 
-struct GLFWwindow;
+struct SDL_Window; // forward declaration keeps SDL headers out of this file
 
 class Window {
 public:
@@ -34,93 +35,135 @@ public:
     Window(const Window&amp;) = delete;
     Window&amp; operator=(const Window&amp;) = delete;
 
-    bool Create(const std::string&amp; title, int width, int height);
-    void PollEvents() const;
-    bool ShouldClose() const;
-    void GetFramebufferSize(int&amp; width, int&amp; height) const;
-    GLFWwindow* NativeHandle() const { return m_handle; }
+    bool Create(const std::string&amp; title, int width, int height,
+                bool resizable);
+    bool GetFramebufferSize(int&amp; width, int&amp; height) const;
+
+    // Renderer initialization may use this opaque SDL handle.
+    SDL_Window* NativeHandle() const { return m_handle; }
 
 private:
-    GLFWwindow* m_handle = nullptr;
+    SDL_Window* m_handle = nullptr;
+    bool m_sdlInitialized = false;
 };</code></pre>
 
-    <p>The forward declaration keeps GLFW out of most headers. Only the platform implementation includes <code>&lt;GLFW/glfw3.h&gt;</code>.</p>
+    <p>The public header knows only that <code>SDL_Window</code> is a type. Window creation, error reporting, and destruction stay in the implementation file that includes SDL3.</p>
 
-    <h2>Implementing Window with GLFW</h2>
-    <pre><code class="language-cpp" data-file="GLFWWindow.cpp">#include "Window.h"
-#include &lt;GLFW/glfw3.h&gt;
+    <h2>Implementing Window with SDL3</h2>
+    <pre><code class="language-cpp" data-file="SDLWindow.cpp">#include "Window.h"
+#include &lt;SDL3/SDL.h&gt;
 #include &lt;iostream&gt;
 
 Window::~Window() {
-    if (m_handle) glfwDestroyWindow(m_handle);
-    glfwTerminate();
+    // The renderer must release its swap chain or SDL_MetalView first.
+    if (m_handle) {
+        SDL_DestroyWindow(m_handle);
+        m_handle = nullptr;
+    }
+    if (m_sdlInitialized) {
+        SDL_Quit();
+        m_sdlInitialized = false;
+    }
 }
 
-bool Window::Create(const std::string&amp; title, int width, int height) {
-    if (!glfwInit()) {
-        std::cerr &lt;&lt; "GLFW initialization failed\n";
+bool Window::Create(const std::string&amp; title, int width, int height,
+                    bool resizable) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        std::cerr &lt;&lt; "SDL initialization failed: "
+                  &lt;&lt; SDL_GetError() &lt;&lt; '\n';
         return false;
     }
+    m_sdlInitialized = true;
 
-    // The renderer creates a Direct3D swap chain or Metal layer later.
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    m_handle = glfwCreateWindow(width, height, title.c_str(), nullptr, nullptr);
-    return m_handle != nullptr;
+    SDL_WindowFlags flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (resizable) flags |= SDL_WINDOW_RESIZABLE;
+
+#if defined(__APPLE__)
+    // The Metal backend will create an SDL_MetalView in the next lesson.
+    flags |= SDL_WINDOW_METAL;
+#endif
+
+    m_handle = SDL_CreateWindow(title.c_str(), width, height, flags);
+    if (!m_handle) {
+        std::cerr &lt;&lt; "Window creation failed: "
+                  &lt;&lt; SDL_GetError() &lt;&lt; '\n';
+        return false;
+    }
+    return true;
 }
 
-void Window::PollEvents() const { glfwPollEvents(); }
-
-bool Window::ShouldClose() const {
-    return !m_handle || glfwWindowShouldClose(m_handle);
-}
-
-void Window::GetFramebufferSize(int&amp; width, int&amp; height) const {
-    glfwGetFramebufferSize(m_handle, &amp;width, &amp;height);
+bool Window::GetFramebufferSize(int&amp; width, int&amp; height) const {
+    return m_handle &amp;&amp;
+           SDL_GetWindowSizeInPixels(m_handle, &amp;width, &amp;height);
 }</code></pre>
 
-    <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Framebuffer size matters on macOS</div><p>A 1280×720 window can have a 2560×1440 framebuffer on a Retina display. Give the renderer the framebuffer size, not the logical window size, when creating or resizing render targets.</p></div></div>
+    <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">SDL3 returns bool</div><p>In SDL3, <code>SDL_Init</code> and <code>SDL_GetWindowSizeInPixels</code> return <code>true</code> on success. Older SDL2 examples often compare initialization with <code>0</code>; do not copy that convention into this project.</p></div></div>
 
-    <h2>The Application lifecycle</h2>
+    <h2>The Application owns the loop</h2>
+    <p>The window owns the operating-system resource, but the application decides whether the game is still running. It also keeps the typed configuration loaded in the previous lesson. A close request changes <code>m_running</code>; game code never needs a Win32 message, Cocoa event, or YAML node.</p>
+
     <pre><code class="language-cpp" data-file="Application.h">#pragma once
-#include "Window.h"
-#include &lt;string&gt;
+#include "EngineConfig.h"
+#include "Platform/Window.h"
 
 class Application {
 public:
-    Application(std::string title, int width, int height);
+    explicit Application(EngineConfig config);
     virtual ~Application() = default;
     int Run();
 
 protected:
     virtual bool OnInitialize() { return true; }
+    virtual void OnResize(int pixelWidth, int pixelHeight) {}
     virtual void OnUpdate(float deltaTime) {}
     virtual void OnRender() {}
     virtual void OnShutdown() {}
 
+    void Quit() { m_running = false; }
     Window&amp; GetWindow() { return m_window; }
+    const EngineConfig&amp; GetConfig() const { return m_config; }
 
 private:
-    Window m_window;
-    std::string m_title;
-    int m_width;
-    int m_height;
+    EngineConfig m_config;
+    Window m_window;           // destroyed after OnShutdown returns
+    bool m_running = false;    // one owner for application lifetime
 };</code></pre>
 
     <pre><code class="language-cpp" data-file="Application.cpp">#include "Application.h"
+#include &lt;SDL3/SDL.h&gt;
 #include &lt;chrono&gt;
+#include &lt;utility&gt;
 
-Application::Application(std::string title, int width, int height)
-    : m_title(std::move(title)), m_width(width), m_height(height) {}
+Application::Application(EngineConfig config)
+    : m_config(std::move(config)) {}
 
 int Application::Run() {
-    if (!m_window.Create(m_title, m_width, m_height)) return 1;
-    if (!OnInitialize()) return 1;
+    const WindowConfig&amp; window = m_config.window;
+    if (!m_window.Create(window.title, window.width, window.height,
+                         window.resizable)) return 1;
+    if (!OnInitialize()) {
+        OnShutdown();
+        return 1;
+    }
 
     using Clock = std::chrono::steady_clock;
     auto previous = Clock::now();
+    m_running = true;
 
-    while (!m_window.ShouldClose()) {
-        m_window.PollEvents();
+    while (m_running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&amp;event)) {
+            if (event.type == SDL_EVENT_QUIT ||
+                event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+                m_running = false;
+            }
+
+            if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+                OnResize(event.window.data1, event.window.data2);
+            }
+        }
+
+        if (!m_running) break;
 
         const auto now = Clock::now();
         const float dt = std::chrono::duration&lt;float&gt;(now - previous).count();
@@ -130,16 +173,28 @@ int Application::Run() {
         OnRender();
     }
 
+    // GPU presentation objects are released here. Window's destructor runs
+    // afterward, so no renderer can outlive its SDL surface.
     OnShutdown();
     return 0;
 }</code></pre>
 
+    <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Use pixel-size events for renderer resize</div><p><code>SDL_EVENT_WINDOW_RESIZED</code> reports window coordinates. Render targets need physical pixels, so use the shared, guaranteed <code>SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED</code> path on both platforms. Skip target recreation when either dimension is zero.</p></div></div>
+
     <h2>Using the framework</h2>
-    <pre><code class="language-cpp" data-file="main.cpp">#include "Application.h"
+    <p>The source file containing <code>main</code> includes <code>SDL_main.h</code> exactly once. It loads configuration before creating the application, reports a bad YAML file cleanly, and passes only typed C++ into the engine.</p>
+
+    <pre><code class="language-cpp" data-file="main.cpp">#include &lt;SDL3/SDL.h&gt;
+#include &lt;SDL3/SDL_main.h&gt;
+#include "Core/Application.h"
+#include &lt;exception&gt;
+#include &lt;iostream&gt;
+#include &lt;utility&gt;
 
 class Game : public Application {
 public:
-    Game() : Application("My Engine", 1280, 720) {}
+    explicit Game(EngineConfig config)
+        : Application(std::move(config)) {}
 
 protected:
     bool OnInitialize() override { return true; }
@@ -150,24 +205,31 @@ private:
     float m_time = 0.0f;
 };
 
-int main() {
-    Game game;
-    return game.Run();
+int main(int argc, char* argv[]) {
+    try {
+        Game game{LoadStartupConfig()};
+        return game.Run();
+    } catch (const std::exception&amp; error) {
+        std::cerr &lt;&lt; "Startup failed: " &lt;&lt; error.what() &lt;&lt; '\n';
+        return 1;
+    }
 }</code></pre>
 
     <h2>Where the native APIs live</h2>
     <div class="table-wrap"><table><thead><tr><th>Layer</th><th>Windows</th><th>macOS</th></tr></thead><tbody>
-      <tr><td>Window/events</td><td colspan="2">GLFW public API</td></tr>
-      <tr><td>Native window</td><td><code>HWND</code> via <code>glfwGetWin32Window</code></td><td><code>NSWindow*</code> via <code>glfwGetCocoaWindow</code></td></tr>
-      <tr><td>Renderer surface</td><td>DXGI swap chain</td><td><code>CAMetalLayer</code></td></tr>
+      <tr><td>Window/events</td><td colspan="2">SDL3 public API</td></tr>
+      <tr><td>Presentation bridge</td><td><code>HWND</code> from SDL window properties</td><td><code>SDL_MetalView</code> and its borrowed <code>CAMetalLayer</code></td></tr>
+      <tr><td>Renderer surface</td><td>DXGI swap chain</td><td>Metal drawable</td></tr>
     </tbody></table></div>
-    <p>Only the selected renderer backend should include <code>glfw3native.h</code>. Game code continues to see the same <code>Window</code> and <code>Application</code> classes.</p>
+    <p>Only <code>D3D11Renderer.cpp</code> asks SDL for the Win32 <code>HWND</code>. Only <code>MetalRenderer.cpp</code> includes <code>&lt;SDL3/SDL_metal.h&gt;</code>. Scene and gameplay code continue to see the same <code>Window</code> and <code>Application</code> classes.</p>
 
     <div class="recap"><div class="r-title">Recap</div><ul>
-      <li><code>Window</code> owns GLFW with RAII and works on Windows and macOS.</li>
-      <li><code>Application</code> owns the lifecycle and calls portable update/render hooks.</li>
+      <li><code>Window</code> owns <code>SDL_Window</code> and balances <code>SDL_Init</code> with <code>SDL_Quit</code>.</li>
+      <li><code>main</code> loads YAML once; <code>Application</code> and <code>Window</code> consume validated typed settings.</li>
+      <li><code>Application</code> owns <code>m_running</code>, drains SDL events, and calls portable update/render hooks.</li>
+      <li><code>SDL_WINDOW_HIGH_PIXEL_DENSITY</code> plus pixel-size events keeps render targets sharp on Retina displays.</li>
       <li><code>std::chrono::steady_clock</code> produces frame-rate-independent delta time.</li>
-      <li>The renderer uses framebuffer pixels and keeps native window APIs in backend files.</li>
+      <li>Renderer shutdown happens before Window destruction, which is required by both DXGI and SDL's Metal view.</li>
     </ul></div>
   </article></main></div>
   <script src="../../js/curriculum.js"></script>

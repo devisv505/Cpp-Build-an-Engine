@@ -391,7 +391,7 @@ fragment float4 fragmentMain(
     return colorMap.sample(linearSampler, in.uv) * material.baseColor;
 }</code></pre>
 
-        <pre><code class="language-cpp" data-file="MetalMaterial.mm">encoder-&gt;setRenderPipelineState(m_pipeline);
+        <pre><code class="language-cpp" data-file="MetalMaterial.cpp">encoder-&gt;setRenderPipelineState(m_pipeline);
 encoder-&gt;setFragmentBytes(&amp;m_constants, sizeof(m_constants), 1);
 encoder-&gt;setFragmentTexture(m_texture ? m_texture : m_whiteTexture, 0);
 encoder-&gt;setFragmentSamplerState(m_sampler, 0);</code></pre>

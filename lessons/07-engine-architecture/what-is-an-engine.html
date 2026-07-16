@@ -74,7 +74,7 @@
               <text x="300" y="115" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Engine systems — render, input, time, resources, world</text>
 
               <rect x="120" y="156" width="360" height="44" rx="6" fill="none" stroke="currentColor" stroke-width="2"/>
-              <text x="300" y="183" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Platform — GLFW window, graphics backend, files</text>
+              <text x="300" y="183" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Platform — SDL3, graphics backends, files</text>
 
               <path d="M300 88 L300 64" stroke="currentColor" stroke-width="2" marker-end="url(#a)"/>
               <path d="M300 156 L300 132" stroke="currentColor" stroke-width="2" marker-end="url(#a)"/>
@@ -87,7 +87,7 @@
         </figure>
 
         <ul>
-          <li><strong>Platform layer.</strong> GLFW, Direct3D 11 or Metal, the filesystem, and the clock. This is where Windows/macOS differences live.</li>
+          <li><strong>Platform layer.</strong> SDL3 provides shared windows, events, and input; Direct3D 11 or Metal provides native rendering. The filesystem and clock also live at this boundary, where Windows/macOS differences are contained.</li>
           <li><strong>Engine systems layer.</strong> Your reusable code that wraps the platform in friendlier, game-facing tools: a renderer instead of raw device calls, an input manager instead of scattered key reads. This is what you are building.</li>
           <li><strong>Game layer.</strong> The specific thing you are shipping — its rules, its levels, its characters. It leans entirely on the layer below and never talks to Direct3D directly.</li>
         </ul>

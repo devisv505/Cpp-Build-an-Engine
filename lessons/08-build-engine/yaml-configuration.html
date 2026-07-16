@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reading &amp; Writing YAML Configuration — Learn C++ Engine Development</title>
+  <meta name="description" content="Add yaml-cpp to MiniEngine, load typed and validated YAML settings, save user settings, and use portable Windows and macOS file locations.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app"><main class="content"><article class="lesson">
+    <h1>Reading &amp; Writing YAML Configuration</h1>
+    <p class="lead">Window size, clear color, and VSync should not require recompiling the engine. In this lesson we replace those early <code>constexpr</code> experiments with a typed <code>EngineConfig</code>, load it from a human-readable YAML file, validate every value, and save user settings to the correct writable location on Windows and macOS.</p>
+
+    <div class="objectives">
+      <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+      <ul>
+        <li>Choose YAML for small, human-edited engine settings—not every kind of serialization.</li>
+        <li>Add a pinned <code>yaml-cpp</code> dependency with CMake <code>FetchContent</code>.</li>
+        <li>Read maps, sequences, scalars, optional values, and useful parse errors.</li>
+        <li>Convert untrusted YAML into ordinary C++ structs and validate the result.</li>
+        <li>Find shipped and writable files portably with SDL3 on Windows and macOS.</li>
+        <li>Write YAML and verify a load → save → reload round trip.</li>
+      </ul>
+    </div>
+
+    <h2>Where YAML belongs</h2>
+    <p>YAML is good when a developer or player may open the file and understand it. It is deliberately more verbose than a binary format. Use the format that matches the job:</p>
+
+    <div class="table-wrap"><table><thead><tr><th>Data</th><th>Good format</th><th>Why</th></tr></thead><tbody>
+      <tr><td>Engine and user settings</td><td>YAML</td><td>Small, named, readable, and easy to edit.</td></tr>
+      <tr><td>Future scenes or component prototypes</td><td>YAML or JSON</td><td>Editor-friendly structured data; add an explicit schema.</td></tr>
+      <tr><td>Per-frame network packets</td><td>Compact binary protocol</td><td>Bandwidth, deterministic layout, and strict bounds matter.</td></tr>
+      <tr><td>Large voxel regions or production save data</td><td>Versioned binary format</td><td>Size and loading speed matter more than hand editing.</td></tr>
+    </tbody></table></div>
+
+    <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Configuration is runtime data</div><p>The constants from Module 01 were useful C++ practice. Keep genuine compile-time facts as <code>constexpr</code>, but move values a user may change—title, resolution, VSync, colors, and asset roots—into runtime configuration.</p></div></div>
+
+    <h2>Write the shipped defaults</h2>
+    <p>Create <code>config/default-engine.yaml</code> at the project root. YAML has <strong>maps</strong> of named keys, <strong>sequences</strong> such as the four color values, and scalar strings, numbers, and booleans.</p>
+
+    <pre><code class="language-yaml" data-file="config/default-engine.yaml"># This file ships with the engine. User changes are saved separately.
+schema_version: 1
+
+window:
+  title: MiniEngine
+  width: 1280
+  height: 720
+  resizable: true
+
+renderer:
+  vsync: true
+  clear_color: [0.04, 0.08, 0.16, 1.0]</code></pre>
+
+    <ul>
+      <li>Indent with spaces, never tabs. Every child under <code>window</code> uses the same indentation.</li>
+      <li>Text usually needs no quotes, but quote a value containing YAML punctuation such as <code>:</code> or <code>#</code>.</li>
+      <li><code>schema_version</code> is required. If the layout changes later, increment it and migrate or reject old files deliberately.</li>
+      <li>A missing optional key uses a safe C++ default; a present but malformed value is an error.</li>
+    </ul>
+
+    <h2>Add yaml-cpp to CMake</h2>
+    <p><code>yaml-cpp</code> is a C++ YAML parser and emitter. Extend <code>Engine/CMakeLists.txt</code> with the pinned 0.9.0 release so Windows and macOS build the same tested source. Put this dependency block after the existing <code>include(FetchContent)</code> and before <code>add_library(Engine ...)</code>:</p>
+
+    <pre><code class="language-cmake" data-file="Engine/CMakeLists.txt"># Build yaml-cpp as part of MiniEngine. Pinning makes builds reproducible.
+set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+  yaml-cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG yaml-cpp-0.9.0
+  GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(yaml-cpp)</code></pre>
+
+    <p>Then keep the existing <code>add_library(Engine ...)</code> and add these lines <em>after</em> that target has been created:</p>
+
+    <pre><code class="language-cmake" data-file="Engine/CMakeLists.txt (after add_library)">target_sources(Engine PRIVATE src/Core/EngineConfig.cpp)
+target_link_libraries(Engine PRIVATE yaml-cpp::yaml-cpp)</code></pre>
+
+    <p>The link is <code>PRIVATE</code> because no public engine header will expose a <code>YAML::Node</code>. That keeps most of the project independent of the library and reduces recompilation.</p>
+
+    <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Reload CMake in CLion</div><p>Choose <strong>Tools → CMake → Reload CMake Project</strong>. The first configure downloads and builds yaml-cpp. Include <code>&lt;yaml-cpp/yaml.h&gt;</code> in C++; do not add a header path or library file manually in CLion.</p></div></div>
+
+    <h2>Copy defaults beside the executable</h2>
+    <p>A relative path such as <code>config/default-engine.yaml</code> depends on CLion's working-directory setting. Avoid that hidden dependency. Replace the current two-line <code>Sandbox/CMakeLists.txt</code> with this version: it copies the default beside <code>Sandbox</code> after every build, then the engine finds it from the executable's base path.</p>
+
+    <pre><code class="language-cmake" data-file="Sandbox/CMakeLists.txt">add_executable(Sandbox src/main.cpp)
+target_link_libraries(Sandbox PRIVATE Engine)
+
+# Custom targets run even when Sandbox itself does not need relinking.
+# copy_if_different avoids touching the destination unnecessarily.
+add_custom_target(CopyEngineConfig ALL
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$&lt;TARGET_FILE_DIR:Sandbox&gt;/config"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${PROJECT_SOURCE_DIR}/config/default-engine.yaml"
+          "$&lt;TARGET_FILE_DIR:Sandbox&gt;/config/default-engine.yaml"
+  DEPENDS "${PROJECT_SOURCE_DIR}/config/default-engine.yaml"
+  VERBATIM)</code></pre>
+
+    <pre><code class="language-cmake" data-file="Sandbox/CMakeLists.txt (continued)">add_dependencies(Sandbox CopyEngineConfig)</code></pre>
+
+    <p>This works for CLion's <code>cmake-build-debug</code>, another build folder, and a Release build. If you later create a real macOS <code>.app</code> bundle, install this file as a bundle resource instead; the configuration API below does not otherwise change.</p>
+
+    <h2>Expose typed C++, not YAML nodes</h2>
+    <p>The rest of the engine should receive validated C++ values. Give every field a useful default so older files may omit new optional settings.</p>
+
+    <pre><code class="language-cpp" data-file="Engine/src/Core/EngineConfig.h">#pragma once
+#include &lt;array&gt;
+#include &lt;filesystem&gt;
+#include &lt;string&gt;
+
+struct WindowConfig {
+    std::string title{"MiniEngine"};
+    int width = 1280;
+    int height = 720;
+    bool resizable = true;
+    bool operator==(const WindowConfig&amp;) const = default;
+};
+
+struct RendererConfig {
+    bool vsync = true;
+    std::array&lt;float, 4&gt; clearColor{0.04f, 0.08f, 0.16f, 1.0f};
+    bool operator==(const RendererConfig&amp;) const = default;
+};
+
+struct EngineConfig {
+    int schemaVersion = 1;
+    WindowConfig window;
+    RendererConfig renderer;
+    bool operator==(const EngineConfig&amp;) const = default;
+};
+
+EngineConfig LoadEngineConfig(const std::filesystem::path&amp; path);
+void SaveEngineConfig(const EngineConfig&amp; config,
+                      const std::filesystem::path&amp; path);
+
+std::filesystem::path DefaultEngineConfigPath();
+std::filesystem::path UserEngineConfigPath();
+EngineConfig LoadStartupConfig();</code></pre>
+
+    <p>The naming boundary is intentional: YAML uses <code>snake_case</code>, while C++ members use the project's <code>camelCase</code> convention. The loader is where the two representations meet.</p>
+
+    <h2>Read optional values without hiding mistakes</h2>
+    <p><code>yaml-cpp</code> can convert a node with <code>node.as&lt;T&gt;()</code>. Its <code>as&lt;T&gt;(fallback)</code> overload also returns the fallback for some bad conversions, which could silently turn <code>width: banana</code> into 1280. We want a default only when the key is absent:</p>
+
+    <pre><code class="language-cpp" data-file="Engine/src/Core/EngineConfig.cpp (helpers)">#include "EngineConfig.h"
+#include &lt;SDL3/SDL.h&gt;
+#include &lt;yaml-cpp/yaml.h&gt;
+#include &lt;cmath&gt;
+#include &lt;fstream&gt;
+#include &lt;memory&gt;
+#include &lt;stdexcept&gt;
+#include &lt;string_view&gt;
+#include &lt;utility&gt;
+
+namespace {
+std::filesystem::path PathFromUtf8(std::string_view text) {
+    // SDL returns UTF-8. A u8string lets std::filesystem convert it to
+    // UTF-16 on Windows while preserving UTF-8 bytes on macOS.
+    std::u8string utf8;
+    utf8.reserve(text.size());
+    for (unsigned char byte : text) {
+        utf8.push_back(static_cast&lt;char8_t&gt;(byte));
+    }
+    return std::filesystem::path{utf8};
+}
+
+std::string PathForDisplay(const std::filesystem::path&amp; path) {
+    const std::u8string utf8 = path.generic_u8string();
+    std::string text;
+    text.reserve(utf8.size());
+    for (char8_t byte : utf8) {
+        text.push_back(static_cast&lt;char&gt;(byte));
+    }
+    return text;
+}
+
+template &lt;typename T&gt;
+T ReadOptional(const YAML::Node&amp; map, const char* key, T fallback) {
+    const YAML::Node value = map[key];
+    return value ? value.as&lt;T&gt;() : std::move(fallback);
+}
+
+void RequireMap(const YAML::Node&amp; node, const char* name) {
+    if (node &amp;&amp; !node.IsMap()) {
+        throw std::runtime_error(std::string{"'"} + name +
+                                 "' must be a map of named values");
+    }
+}
+
+void Validate(const EngineConfig&amp; config) {
+    if (config.schemaVersion != 1) {
+        throw std::runtime_error("Unsupported config schema_version: " +
+                                 std::to_string(config.schemaVersion));
+    }
+    if (config.window.title.empty()) {
+        throw std::runtime_error("window.title cannot be empty");
+    }
+    if (config.window.width &lt; 320 || config.window.width &gt; 16384 ||
+        config.window.height &lt; 200 || config.window.height &gt; 16384) {
+        throw std::runtime_error("window dimensions are outside a sensible range");
+    }
+    for (float channel : config.renderer.clearColor) {
+        if (!std::isfinite(channel) || channel &lt; 0.0f || channel &gt; 1.0f) {
+            throw std::runtime_error("renderer.clear_color values must be in [0, 1]");
+        }
+    }
+}
+} // namespace</code></pre>
+
+    <h2>Load and validate the document</h2>
+    <p>Use <code>std::ifstream</code> with a <code>std::filesystem::path</code>. That preserves native path handling on Windows instead of forcing the path through a narrow string merely to call <code>YAML::LoadFile</code>.</p>
+
+    <pre><code class="language-cpp" data-file="Engine/src/Core/EngineConfig.cpp (loader)">EngineConfig LoadEngineConfig(const std::filesystem::path&amp; path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Cannot open engine config: " +
+                                 PathForDisplay(path));
+    }
+
+    try {
+        const YAML::Node root = YAML::Load(input);
+        if (!root.IsMap()) {
+            throw std::runtime_error("The YAML document root must be a map");
+        }
+
+        EngineConfig config;
+        const YAML::Node schema = root["schema_version"];
+        if (!schema) {
+            throw std::runtime_error("schema_version is required");
+        }
+        config.schemaVersion = schema.as&lt;int&gt;();
+
+        const YAML::Node window = root["window"];
+        RequireMap(window, "window");
+        if (window) {
+            config.window.title =
+                ReadOptional(window, "title", config.window.title);
+            config.window.width =
+                ReadOptional(window, "width", config.window.width);
+            config.window.height =
+                ReadOptional(window, "height", config.window.height);
+            config.window.resizable =
+                ReadOptional(window, "resizable", config.window.resizable);
+        }
+
+        const YAML::Node renderer = root["renderer"];
+        RequireMap(renderer, "renderer");
+        if (renderer) {
+            config.renderer.vsync =
+                ReadOptional(renderer, "vsync", config.renderer.vsync);
+
+            const YAML::Node color = renderer["clear_color"];
+            if (color) {
+                if (!color.IsSequence() || color.size() != 4) {
+                    throw std::runtime_error(
+                        "renderer.clear_color must contain exactly 4 numbers");
+                }
+                for (std::size_t i = 0; i &lt; 4; ++i) {
+                    config.renderer.clearColor[i] = color[i].as&lt;float&gt;();
+                }
+            }
+        }
+
+        Validate(config);
+        return config;
+    } catch (const YAML::Exception&amp; error) {
+        // Parser and conversion errors normally include line and column.
+        throw std::runtime_error("Invalid YAML in " + PathForDisplay(path) +
+                                 ": " + error.what());
+    }
+}</code></pre>
+
+    <p>There are three distinct policies here:</p>
+    <ol>
+      <li>A missing optional key keeps its typed default.</li>
+      <li>A present value of the wrong type produces a location-aware YAML error.</li>
+      <li>A value with the right type but an unsafe range produces a clear validation error.</li>
+    </ol>
+
+    <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Do not silently recover from a broken file</div><p>Defaults are for absent optional keys, not typos. If a user writes <code>width: wide</code>, stop with a useful message. Silently booting with another value makes configuration bugs much harder to find.</p></div></div>
+
+    <h2>Use the correct path on each operating system</h2>
+    <p>MiniEngine has two configuration locations:</p>
+    <ul>
+      <li><strong>Shipped default:</strong> read-only, copied beside the executable, and found with <code>SDL_GetBasePath()</code>.</li>
+      <li><strong>User settings:</strong> a complete writable configuration stored in the operating system's per-user application-data location from <code>SDL_GetPrefPath()</code>.</li>
+    </ul>
+
+    <pre><code class="language-cpp" data-file="Engine/src/Core/EngineConfig.cpp (paths)">std::filesystem::path DefaultEngineConfigPath() {
+    const char* base = SDL_GetBasePath(); // cached pointer: do not free it
+    if (!base) {
+        throw std::runtime_error(std::string{"SDL_GetBasePath failed: "} +
+                                 SDL_GetError());
+    }
+    return PathFromUtf8(base) / "config" / "default-engine.yaml";
+}
+
+std::filesystem::path UserEngineConfigPath() {
+    std::unique_ptr&lt;char, decltype(&amp;SDL_free)&gt; raw{
+        SDL_GetPrefPath("DevisV", "MiniEngine"), &amp;SDL_free};
+    if (!raw) {
+        throw std::runtime_error(std::string{"SDL_GetPrefPath failed: "} +
+                                 SDL_GetError());
+    }
+
+    // The custom deleter balances SDL's allocation even if path conversion throws.
+    std::filesystem::path directory = PathFromUtf8(raw.get());
+    return directory / "settings.yaml";
+}
+
+EngineConfig LoadStartupConfig() {
+    const std::filesystem::path user = UserEngineConfigPath();
+    if (std::filesystem::exists(user)) {
+        return LoadEngineConfig(user);
+    }
+    return LoadEngineConfig(DefaultEngineConfigPath());
+}</code></pre>
+
+    <p>On Windows the user file normally lands under the user's application-data folder; on macOS it normally lands under <code>~/Library/Application Support</code>. SDL chooses the platform convention and creates the application directory. SDL returns UTF-8 paths, so <code>PathFromUtf8</code> also keeps non-ASCII user and folder names valid on Windows. Change <code>DevisV</code> and <code>MiniEngine</code> to the stable organization and application identifiers for your project.</p>
+
+    <h2>Write validated YAML</h2>
+    <p>Build a fresh <code>YAML::Node</code>, emit it, create the destination directory, and check both the emitter and file stream. Saving a new document preserves values—not the comments, key ordering, quoting, or exact formatting of the file that was loaded. That is why the commented shipped default remains separate.</p>
+
+    <pre><code class="language-cpp" data-file="Engine/src/Core/EngineConfig.cpp (writer)">void SaveEngineConfig(const EngineConfig&amp; config,
+                      const std::filesystem::path&amp; path) {
+    Validate(config);
+
+    YAML::Node root;
+    root["schema_version"] = config.schemaVersion;
+
+    root["window"]["title"] = config.window.title;
+    root["window"]["width"] = config.window.width;
+    root["window"]["height"] = config.window.height;
+    root["window"]["resizable"] = config.window.resizable;
+
+    root["renderer"]["vsync"] = config.renderer.vsync;
+    YAML::Node color;
+    for (float channel : config.renderer.clearColor) {
+        color.push_back(channel);
+    }
+    root["renderer"]["clear_color"] = color;
+
+    YAML::Emitter emitter;
+    if (!emitter.SetIndent(2)) {
+        throw std::runtime_error("Could not configure YAML indentation");
+    }
+    emitter &lt;&lt; root;
+    if (!emitter.good()) {
+        throw std::runtime_error(std::string{"Could not emit YAML: "} +
+                                 emitter.GetLastError());
+    }
+
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output) {
+        throw std::runtime_error("Cannot write engine config: " +
+                                 PathForDisplay(path));
+    }
+
+    output &lt;&lt; emitter.c_str() &lt;&lt; '\n';
+    output.flush();
+    if (!output) {
+        throw std::runtime_error("Writing engine config failed: " +
+                                 PathForDisplay(path));
+    }
+}</code></pre>
+
+    <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Save only when settings change</div><p>The checkpoint below writes once to prove the round trip. In the finished engine, save after the user applies settings or during a clean shutdown—not in the frame loop and not unconditionally on every startup. For crash-safe production saves, write and flush a temporary file, then replace the old settings file; the exact atomic replacement call differs between Windows and macOS.</p></div></div>
+
+    <h2>Prove the round trip</h2>
+    <p>Temporarily use Sandbox as a small test. It loads the complete user settings file when present, otherwise the shipped default; writes the typed result to the user path; reloads it; and checks that the meaningful data survived.</p>
+
+    <pre><code class="language-cpp" data-file="Sandbox/src/main.cpp">#include &lt;SDL3/SDL.h&gt;
+#include &lt;SDL3/SDL_main.h&gt;
+#include "Core/EngineConfig.h"
+#include &lt;exception&gt;
+#include &lt;iostream&gt;
+
+int main(int argc, char* argv[]) {
+    try {
+        const EngineConfig config = LoadStartupConfig();
+        const std::filesystem::path userPath = UserEngineConfigPath();
+
+        SaveEngineConfig(config, userPath);
+        const EngineConfig reloaded = LoadEngineConfig(userPath);
+        if (reloaded != config) {
+            std::cerr &lt;&lt; "YAML round-trip changed a setting\n";
+            return 1;
+        }
+
+        std::cout &lt;&lt; "Loaded " &lt;&lt; config.window.title &lt;&lt; ' '
+                  &lt;&lt; config.window.width &lt;&lt; 'x'
+                  &lt;&lt; config.window.height &lt;&lt; "\nSaved "
+                  &lt;&lt; userPath &lt;&lt; '\n';
+        return 0;
+    } catch (const std::exception&amp; error) {
+        std::cerr &lt;&lt; "Configuration error: " &lt;&lt; error.what() &lt;&lt; '\n';
+        return 1;
+    }
+}</code></pre>
+
+    <pre><code class="language-console">Loaded MiniEngine 1280x720
+Saved "/the/platform-specific/user/folder/settings.yaml"
+
+Process finished with exit code 0</code></pre>
+
+    <p>After this passes, remove the unconditional <code>SaveEngineConfig</code> call. The next lesson will load once in <code>main</code>, pass the resulting <code>EngineConfig</code> into <code>Application</code>, and use it to create the SDL window.</p>
+
+    <h2>Common errors and what they mean</h2>
+    <div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead><tbody>
+      <tr><td><code>yaml-cpp/yaml.h file not found</code></td><td>CMake has not reconfigured or the Engine target is not linked.</td><td>Reload CMake and link <code>yaml-cpp::yaml-cpp</code> to Engine.</td></tr>
+      <tr><td><code>Cannot open engine config</code></td><td>The config copy target did not run, or the source file is missing.</td><td>Create the root <code>config</code> file, rebuild Sandbox, and inspect the printed absolute path.</td></tr>
+      <tr><td>Parser error with a line and column</td><td>Usually inconsistent indentation, a tab, or unquoted punctuation.</td><td>Use spaces and inspect the reported line.</td></tr>
+      <tr><td>Bad conversion for <code>width</code></td><td>The key exists but is not an integer.</td><td>Correct the YAML value; do not hide the error with a fallback.</td></tr>
+      <tr><td><code>clear_color must contain exactly 4 numbers</code></td><td>RGBA needs four channels.</td><td>Use a sequence such as <code>[0.1, 0.2, 0.3, 1.0]</code>.</td></tr>
+      <tr><td>Editing the default changes nothing</td><td>A previously saved complete user settings file takes priority.</td><td>Edit or remove the printed user <code>settings.yaml</code>.</td></tr>
+      <tr><td>Works only from one CLion configuration</td><td>Code uses a relative path and depends on the working directory.</td><td>Use the SDL base/preference path functions shown above.</td></tr>
+    </tbody></table></div>
+
+    <div class="recap"><div class="r-title">Recap</div><ul>
+      <li>YAML is appropriate for small human-readable settings; networking and large save data still need purpose-built formats.</li>
+      <li><code>yaml-cpp</code> stays private to <code>EngineConfig.cpp</code>; the public API contains ordinary typed C++.</li>
+      <li>Missing optional keys use defaults, malformed values fail visibly, and typed values are range-checked.</li>
+      <li>CMake copies shipped defaults beside Sandbox; SDL3 finds that file and a separate writable user folder on both operating systems.</li>
+      <li>Writing constructs a new document, so values round-trip but original comments and formatting do not.</li>
+      <li>Load configuration once at startup and pass it to systems—never parse YAML inside the frame loop.</li>
+    </ul></div>
+  </article></main></div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

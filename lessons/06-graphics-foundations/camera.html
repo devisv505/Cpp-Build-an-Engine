@@ -295,7 +295,7 @@ VSOut main(VSIn input)
 #elif defined(__APPLE__)
     backend.UploadCamera(ToSimdMatrix(camera.ViewProjection()));
 #endif</code></pre>
-        <p>Keep input and camera movement shared through GLFW. Only matrix layout, clip-space convention, and the final upload type belong to the renderer backend.</p>
+        <p>Keep camera movement shared through the engine's <code>Input</code> layer, whose platform implementation consumes SDL3 events and state. Only matrix layout, clip-space convention, and the final upload type belong to the renderer backend.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>
