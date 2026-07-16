@@ -3,205 +3,408 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Initializing Direct3D 11 &amp; Metal — Learn C++ Engine Development</title>
-  <meta name="description" content="Create a D3D11 device, context and swap chain with D3D11CreateDeviceAndSwapChain, then build a render target view from the back buffer.">
+  <title>Initializing the Graphics Backend: Direct3D 11 &amp; Metal — Learn C++ Engine Development</title>
+  <meta name="description" content="Connect a GLFW window to Direct3D 11 on Windows or Metal on macOS, then create the GPU, command-submission and presentation objects used by the renderer.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
   <div id="app">
     <main class="content">
       <article class="lesson">
-        <h1>Initializing Direct3D 11 &amp; Metal</h1>
+        <h1>Initializing the Graphics Backend: Direct3D 11 &amp; Metal</h1>
 
-        <p class="lead">Last lesson we walked the graphics pipeline conceptually: vertices in, pixels out. Now we make it real. In this lesson you will create the three core objects every Direct3D 11 program owns — the <strong>device</strong>, the <strong>device context</strong>, and the <strong>swap chain</strong> — and connect them to the window you built earlier. This is the boot sequence of our engine's renderer, and every future lesson builds directly on the objects you create here.</p>
+        <p class="lead">The window from Module 5 is only an empty operating-system surface. This lesson connects it to the GPU. Follow the <strong>Direct3D 11 path on Windows</strong> or the <strong>Metal path on macOS</strong>; both create the same engine concepts even though the API names and presentation models differ.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>What the device, device context and swap chain each do, and why you need all three</li>
-            <li>How to fill in a <code>DXGI_SWAP_CHAIN_DESC</code> field by field</li>
-            <li>How to call <code>D3D11CreateDeviceAndSwapChain</code> and request feature levels</li>
-            <li>How to get the back buffer and wrap it in a render target view</li>
-            <li>How to keep everything alive safely with <code>Microsoft::WRL::ComPtr</code></li>
+            <li>Which GPU, command-submission, presentation and color-target objects a renderer needs</li>
+            <li>How GLFW exposes an <code>HWND</code> on Windows and an <code>NSView</code> on macOS</li>
+            <li>How to initialize a complete Direct3D 11 backend on Windows</li>
+            <li>How to initialize a Metal device, command queue and <code>CAMetalLayer</code> on macOS</li>
+            <li>Why macOS bridge code uses Objective-C++ and how metal-cpp objects are released</li>
           </ul>
         </div>
 
-        <h2>The three objects you always create</h2>
-        <p>Direct3D 11 splits its work across a few COM objects. When you are starting out, three of them matter:</p>
-        <div class="table-wrap"><table><thead><tr><th>Object</th><th>Interface</th><th>What it is for</th></tr></thead><tbody>
-          <tr><td>Device</td><td><code>ID3D11Device</code></td><td>Creates resources — textures, buffers, shaders, views. Think of it as the factory.</td></tr>
-          <tr><td>Device context</td><td><code>ID3D11DeviceContext</code></td><td>Issues commands — binds resources and draws. Think of it as the worker that uses what the factory made.</td></tr>
-          <tr><td>Swap chain</td><td><code>IDXGISwapChain</code></td><td>Owns the images ("buffers") shown on screen and flips them so the window updates.</td></tr>
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Choose one platform path</div><p>Windows students build the Direct3D 11 sections. macOS students build the Metal sections. Read the shared concepts and checkpoint on either platform; you do not need a Windows machine to complete the Metal version.</p></div></div>
+
+        <h2>One renderer, two API vocabularies</h2>
+        <p>The engine needs the same four jobs on both platforms. Direct3D exposes a swap chain and a persistent render-target view. Metal exposes a display layer that lends the renderer a drawable texture for each frame.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Engine job</th><th>Direct3D 11 (Windows)</th><th>Metal (macOS)</th></tr></thead><tbody>
+          <tr><td>Create GPU resources</td><td><code>ID3D11Device</code></td><td><code>MTL::Device</code></td></tr>
+          <tr><td>Submit commands</td><td><code>ID3D11DeviceContext</code></td><td><code>MTL::CommandQueue</code>, then one command buffer per frame</td></tr>
+          <tr><td>Present to the window</td><td><code>IDXGISwapChain</code></td><td><code>CA::MetalLayer</code> and <code>CA::MetalDrawable</code></td></tr>
+          <tr><td>Receive rendered pixels</td><td><code>ID3D11RenderTargetView</code></td><td>The current drawable's <code>MTL::Texture</code></td></tr>
+          <tr><td>Manage lifetime</td><td><code>Microsoft::WRL::ComPtr</code></td><td>metal-cpp <code>retain()</code>/<code>release()</code></td></tr>
         </tbody></table></div>
 
-        <p>A <strong>swap chain</strong> holds two (or more) images. You draw into the hidden <strong>back buffer</strong> while the monitor displays the <strong>front buffer</strong>; calling <code>Present</code> swaps them. That double buffering is what stops the viewer from seeing a half-drawn frame.</p>
+        <p>There is no one-to-one Metal equivalent of an immediate D3D11 context or DXGI swap chain. The <em>responsibilities</em> map across, not necessarily the individual classes. Keep that distinction in mind when you later hide both backends behind one renderer interface.</p>
 
-        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">DXGI vs D3D</div><p>Notice the swap chain interface starts with <code>IDXGI</code>, not <code>ID3D11</code>. DXGI (DirectX Graphics Infrastructure) is the lower layer that manages adapters, outputs and presentation. Direct3D handles the actual rendering. The two cooperate, which is why one function call can create objects from both.</p></div></div>
+        <h2>Project files and CMake</h2>
+        <p>Keep the platform bridge out of <code>main.cpp</code>. The common program includes one platform renderer, while CMake compiles only the files needed by the current operating system.</p>
 
-        <h2>Linking and headers</h2>
-        <p>Before any of this compiles, the linker needs the Direct3D import library. Add <code>d3d11.lib</code> to your linker inputs, or drop a pragma near the top of your file. We also lean on <code>Microsoft::WRL::ComPtr</code>, a smart pointer for COM objects that calls <code>Release()</code> automatically when it goes out of scope — the same idea as <code>std::unique_ptr</code>, but for reference-counted COM interfaces.</p>
+        <pre><code data-file="Project layout">MiniEngine/
+├── CMakeLists.txt
+├── src/
+│   ├── main.cpp
+│   ├── RendererD3D11.h
+│   ├── RendererD3D11.cpp
+│   ├── MetalRenderer.h
+│   ├── MetalRenderer.mm
+│   └── MetalCpp.cpp
+└── external/
+    └── metal-cpp/
+        ├── Foundation/
+        ├── Metal/
+        └── QuartzCore/</code></pre>
 
-        <pre><code class="language-cpp" data-file="Renderer.h">#include &lt;d3d11.h&gt;
-#include &lt;dxgi.h&gt;
-#include &lt;wrl/client.h&gt;   // Microsoft::WRL::ComPtr
+        <p>On macOS, download or clone Apple's <a href="https://github.com/apple/metal-cpp">official metal-cpp repository</a> and place its three header folders under <code>external/metal-cpp</code>. The <code>.mm</code> extension tells Clang to compile the Cocoa bridge as <strong>Objective-C++</strong>: a file that can use both C++ and AppKit types such as <code>NSView</code>.</p>
 
-#pragma comment(lib, "d3d11.lib")   // or add d3d11.lib to the linker settings
+        <pre><code class="language-cmake" data-file="CMakeLists.txt">cmake_minimum_required(VERSION 3.24)
+project(MiniEngine LANGUAGES CXX)
 
-// A short alias keeps the code readable.
-using Microsoft::WRL::ComPtr;</code></pre>
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Let ComPtr own lifetimes</div><p>Every raw <code>ID3D11*</code> pointer must eventually be released exactly once. Managing that by hand is a classic source of leaks and crashes. Store these objects in <code>ComPtr</code> members of your renderer class and you never call <code>Release()</code> yourself — destruction is automatic and in the right order.</p></div></div>
+if (APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
 
-        <h2>Describing the swap chain</h2>
-        <p>Instead of a dozen function arguments, Direct3D takes a filled-in description struct. <code>DXGI_SWAP_CHAIN_DESC</code> nests two smaller structs: <code>BufferDesc</code> (the back buffer's size and pixel format) and <code>SampleDesc</code> (multisampling). Let's fill it in for a plain, windowed setup.</p>
+include(FetchContent)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(glfw
+    GIT_REPOSITORY https://github.com/glfw/glfw.git
+    GIT_TAG 3.4)
+FetchContent_MakeAvailable(glfw)
 
-        <pre><code class="language-cpp" data-file="Renderer.cpp">// hwnd is the window handle you created in the Win32 lesson.
-DXGI_SWAP_CHAIN_DESC scd = {};                     // zero everything first
+add_executable(MiniEngine src/main.cpp)
+target_link_libraries(MiniEngine PRIVATE glfw)
 
-// --- The back buffer image ---
-scd.BufferDesc.Width  = 0;                          // 0 = match the window's client area
-scd.BufferDesc.Height = 0;
-scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // 8 bits each for R,G,B,A
-scd.BufferDesc.RefreshRate.Numerator   = 0;         // 0/0 = let DXGI pick the refresh rate
-scd.BufferDesc.RefreshRate.Denominator = 0;
-
-// --- Multisampling (anti-aliasing). 1 sample = off. ---
-scd.SampleDesc.Count   = 1;
-scd.SampleDesc.Quality = 0;
-
-// --- How the buffer is used and how many there are ---
-scd.BufferUsage  = DXGI_USAGE_RENDER_TARGET_OUTPUT; // we render into it
-scd.BufferCount  = 2;                               // front + back = double buffering
-scd.OutputWindow = hwnd;                            // the window to present into
-scd.Windowed     = TRUE;                            // start windowed, never exclusive fullscreen here
-scd.SwapEffect   = DXGI_SWAP_EFFECT_DISCARD;        // simplest present model</code></pre>
-
-        <p>A few of these deserve a note. Setting <code>Width</code> and <code>Height</code> to <code>0</code> tells DXGI to look up the window's client size for you — handy so the numbers can never disagree with the window. <code>BufferCount = 2</code> gives us one front and one back buffer. And <code>OutputWindow = hwnd</code> is the crucial link between Direct3D and the actual window on screen.</p>
-
-        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Always zero-initialize the struct</div><p>The <code>= {}</code> that value-initializes <code>scd</code> is not optional. These descriptors have fields we are not touching (<code>Flags</code>, <code>ScanlineOrdering</code>, and so on). Leave them holding garbage stack values and creation may fail with a cryptic <code>E_INVALIDARG</code>, or behave unpredictably. Zero first, then set what you care about.</p></div></div>
-
-        <h2>Feature levels</h2>
-        <p>A <strong>feature level</strong> is Direct3D's way of naming a fixed set of GPU capabilities, independent of the driver version. You hand in an array ordered from most to least desired, and creation picks the highest one the GPU actually supports, reporting it back to you.</p>
-
-        <pre><code class="language-cpp" data-file="Renderer.cpp">// Ordered best-first. Creation returns the highest one this GPU supports.
-const D3D_FEATURE_LEVEL requested[] = {
-    D3D_FEATURE_LEVEL_11_1,
-    D3D_FEATURE_LEVEL_11_0,
-    D3D_FEATURE_LEVEL_10_1,
-    D3D_FEATURE_LEVEL_10_0,
-};
-D3D_FEATURE_LEVEL obtained = {};   // filled in by the create call</code></pre>
-
-        <h2>Creating everything at once</h2>
-        <p>With the descriptor and feature levels ready, one call builds the device, the context and the swap chain together. We store each result in a <code>ComPtr</code>, and pass their addresses with <code>&amp;</code> (ComPtr exposes the raw double-pointer these out-parameters need).</p>
-
-        <pre><code class="language-cpp" data-file="Renderer.cpp">ComPtr&lt;ID3D11Device&gt;        device;
-ComPtr&lt;ID3D11DeviceContext&gt; context;
-ComPtr&lt;IDXGISwapChain&gt;      swapChain;
-
-UINT flags = 0;
-#if defined(_DEBUG)
-flags |= D3D11_CREATE_DEVICE_DEBUG;   // extra validation messages while developing
-#endif
-
-HRESULT hr = D3D11CreateDeviceAndSwapChain(
-    nullptr,                      // default adapter (the primary GPU)
-    D3D_DRIVER_TYPE_HARDWARE,     // use the real GPU, not a software renderer
-    nullptr,                      // no software module (only for D3D_DRIVER_TYPE_SOFTWARE)
-    flags,                        // creation flags (debug layer in debug builds)
-    requested,                    // our feature-level wish list
-    ARRAYSIZE(requested),         // how many entries it has
-    D3D11_SDK_VERSION,            // always this constant
-    &amp;scd,                         // the swap chain descriptor from above
-    &amp;swapChain,                   // out: IDXGISwapChain
-    &amp;device,                      // out: ID3D11Device
-    &amp;obtained,                    // out: the feature level we actually got
-    &amp;context);                    // out: ID3D11DeviceContext
-
-if (FAILED(hr)) {
-    // In a real engine, log hr and bail out cleanly.
-    return false;
-}</code></pre>
-
-        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Check every HRESULT</div><p>Almost every Direct3D function returns an <code>HRESULT</code>. Use the <code>SUCCEEDED(hr)</code> and <code>FAILED(hr)</code> macros — a negative code means failure. The debug layer, enabled by <code>D3D11_CREATE_DEVICE_DEBUG</code>, sends detailed reasons to the Windows debug stream; view them while debugging in CLion or with a debug-output viewer. It requires the Graphics Tools optional feature on Windows.</p></div></div>
-
-        <h2>From back buffer to render target view</h2>
-        <p>The swap chain owns the back buffer texture, but you cannot draw into a raw texture directly. Direct3D wants a <strong>view</strong> — a small object that says "treat this resource as a render target." So we ask the swap chain for buffer index <code>0</code> (the back buffer), then create an <code>ID3D11RenderTargetView</code> from it.</p>
-
-        <pre><code class="language-cpp" data-file="Renderer.cpp">ComPtr&lt;ID3D11Texture2D&gt;        backBuffer;
-ComPtr&lt;ID3D11RenderTargetView&gt; renderTargetView;
-
-// GetBuffer(0, ...) hands us the back buffer as a texture.
-hr = swapChain-&gt;GetBuffer(0, IID_PPV_ARGS(&amp;backBuffer));
-if (FAILED(hr)) return false;
-
-// Wrap it in a view we can bind as an output.
-hr = device-&gt;CreateRenderTargetView(
-    backBuffer.Get(),   // the resource
-    nullptr,            // nullptr = describe the view like the resource itself
-    &amp;renderTargetView);
-if (FAILED(hr)) return false;
-
-// backBuffer's ComPtr can go out of scope now; the view keeps the
-// texture alive through COM reference counting.</code></pre>
-
-        <p><code>IID_PPV_ARGS</code> is a small helper that fills in both the interface ID and the output pointer for you, so the requested type and the pointer can never get out of sync. The <code>.Get()</code> method returns the raw pointer that the C-style API expects, without transferring ownership.</p>
-
-        <figure><div class="figure-box"><svg viewBox="0 0 600 170" fill="none" stroke="#4aa8ff" stroke-width="2">
-          <rect x="20" y="60" width="120" height="50" rx="6"/>
-          <text x="80" y="90" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">IDXGISwapChain</text>
-          <rect x="240" y="60" width="120" height="50" rx="6"/>
-          <text x="300" y="85" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">ID3D11Texture2D</text>
-          <text x="300" y="101" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">(back buffer)</text>
-          <rect x="460" y="60" width="120" height="50" rx="6"/>
-          <text x="520" y="85" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">RenderTarget</text>
-          <text x="520" y="101" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">View</text>
-          <path d="M140 85 H236" stroke-linecap="round"/>
-          <path d="M228 78 L240 85 L228 92" stroke-linecap="round"/>
-          <text x="188" y="50" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">GetBuffer(0)</text>
-          <path d="M360 85 H456" stroke-linecap="round"/>
-          <path d="M448 78 L460 85 L448 92" stroke-linecap="round"/>
-          <text x="408" y="50" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">CreateRTV</text>
-        </svg></div><figcaption>The swap chain owns the back buffer texture; the render target view lets the pipeline draw into it.</figcaption></figure>
-
-        <p>That render target view is the object we bind to the output-merger stage before drawing. In the next lesson we will hand it to the context and use it to clear the screen to a solid color — your first visible sign of life from the GPU.</p>
-
-        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Where this lives in the engine</div><p>Wrap these five members — device, context, swap chain, back buffer and render target view — in a <code>Renderer</code> class, and put this whole sequence in an <code>Initialize(HWND hwnd)</code> method. Because every member is a <code>ComPtr</code>, the destructor cleans up automatically. That class becomes the foundation the rest of our engine renders through.</p></div></div>
-
-        <h2>macOS — initialize Metal with metal-cpp</h2>
-        <p>Apple's metal-cpp headers expose Metal objects directly to C++. Download metal-cpp into <code>external/metal-cpp</code>, add that directory to the macOS target, and link the native frameworks:</p>
-        <pre><code class="language-cmake" data-file="CMakeLists.txt">if (APPLE)
+if (WIN32)
+    target_sources(MiniEngine PRIVATE
+        src/RendererD3D11.cpp)
+    target_link_libraries(MiniEngine PRIVATE d3d11 dxgi)
+elseif (APPLE)
+    target_sources(MiniEngine PRIVATE
+        src/MetalRenderer.mm
+        src/MetalCpp.cpp)
     target_include_directories(MiniEngine PRIVATE external/metal-cpp)
     target_link_libraries(MiniEngine PRIVATE
+        "-framework Cocoa"
         "-framework Foundation"
         "-framework Metal"
         "-framework QuartzCore")
+else()
+    message(FATAL_ERROR "This course currently implements Windows and macOS graphics backends")
 endif()</code></pre>
-        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">#define NS_PRIVATE_IMPLEMENTATION
+
+        <p>After changing CMake, use <strong>Tools → CMake → Reset Cache and Reload Project</strong> in CLion. This is especially important after adding the <code>OBJCXX</code> language or changing metal-cpp's include path.</p>
+
+        <h2>The common program</h2>
+        <p>Both platform headers define the same small <code>Renderer</code> class interface, so the application boot code stays identical.</p>
+
+        <pre><code class="language-cpp" data-file="src/main.cpp">#include &lt;GLFW/glfw3.h&gt;
+#include &lt;iostream&gt;
+
+#if defined(_WIN32)
+    #include "RendererD3D11.h"
+#elif defined(__APPLE__)
+    #include "MetalRenderer.h"
+#endif
+
+int main() {
+    if (!glfwInit()) {
+        std::cerr &lt;&lt; "GLFW initialization failed\n";
+        return 1;
+    }
+
+    // Direct3D and Metal create their own presentation surfaces.
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    GLFWwindow* window = glfwCreateWindow(1280, 720, "MiniEngine", nullptr, nullptr);
+    if (!window) {
+        glfwTerminate();
+        return 1;
+    }
+
+    Renderer renderer;
+    if (!renderer.Initialize(window)) {
+        std::cerr &lt;&lt; "Graphics backend initialization failed\n";
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+
+    std::cout &lt;&lt; "Graphics backend initialized\n";
+    while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+        renderer.Resize(window); // harmless when the size has not changed
+        // RenderFrame() arrives in Lesson 40.
+    }
+
+    renderer.Shutdown();        // release graphics objects before the window
+    glfwDestroyWindow(window);
+    glfwTerminate();
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">GLFW_NO_API is required</div><p>Without this hint, GLFW creates an OpenGL context. Direct3D 11 and Metal do not use that context; they connect their own presentation objects to the native window.</p></div></div>
+
+        <h2>Windows path — Direct3D 11</h2>
+        <p>On Windows, GLFW owns the Win32 window and gives us its <code>HWND</code>. Direct3D uses that handle as the output window for a swap chain.</p>
+
+        <pre><code class="language-cpp" data-file="src/RendererD3D11.h">#pragma once
+
+#include &lt;d3d11.h&gt;
+#include &lt;dxgi.h&gt;
+#include &lt;wrl/client.h&gt;
+
+struct GLFWwindow;
+
+class Renderer {
+public:
+    bool Initialize(GLFWwindow* window);
+    void Resize(GLFWwindow*) {} // implemented with swap-chain resizing later
+    void Shutdown();
+
+private:
+    Microsoft::WRL::ComPtr&lt;ID3D11Device&gt; device;
+    Microsoft::WRL::ComPtr&lt;ID3D11DeviceContext&gt; context;
+    Microsoft::WRL::ComPtr&lt;IDXGISwapChain&gt; swapChain;
+    Microsoft::WRL::ComPtr&lt;ID3D11RenderTargetView&gt; renderTargetView;
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="src/RendererD3D11.cpp">#include "RendererD3D11.h"
+
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include &lt;GLFW/glfw3.h&gt;
+#include &lt;GLFW/glfw3native.h&gt;
+
+bool Renderer::Initialize(GLFWwindow* window) {
+    HWND hwnd = glfwGetWin32Window(window);
+    if (!hwnd) return false;
+
+    DXGI_SWAP_CHAIN_DESC desc{}; // zero every unused field
+    desc.BufferDesc.Width = 0;   // match the window's client size
+    desc.BufferDesc.Height = 0;
+    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;   // no multisampling yet
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 2;
+    desc.OutputWindow = hwnd;
+    desc.Windowed = TRUE;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+    const D3D_FEATURE_LEVEL requested[] = {
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0
+    };
+    D3D_FEATURE_LEVEL obtained{};
+
+    UINT flags = 0;
+#if defined(_DEBUG)
+    flags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+        requested, ARRAYSIZE(requested), D3D11_SDK_VERSION,
+        &amp;desc, swapChain.GetAddressOf(), device.GetAddressOf(),
+        &amp;obtained, context.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    // The swap chain owns the image; the view lets D3D render into it.
+    Microsoft::WRL::ComPtr&lt;ID3D11Texture2D&gt; backBuffer;
+    hr = swapChain-&gt;GetBuffer(0, IID_PPV_ARGS(backBuffer.GetAddressOf()));
+    if (FAILED(hr)) return false;
+
+    hr = device-&gt;CreateRenderTargetView(
+        backBuffer.Get(), nullptr, renderTargetView.GetAddressOf());
+    return SUCCEEDED(hr);
+}
+
+void Renderer::Shutdown() {
+    renderTargetView.Reset();
+    swapChain.Reset();
+    context.Reset();
+    device.Reset();
+}</code></pre>
+
+        <p><code>ComPtr</code> calls the COM object's <code>Release()</code> method automatically. The back-buffer pointer can therefore leave scope after the render-target view is created; the swap chain and view keep the underlying texture alive.</p>
+
+        <h2>macOS path — Metal with metal-cpp</h2>
+        <p>Metal does not create a DXGI-style swap chain. Instead, a <code>CAMetalLayer</code> is attached to GLFW's Cocoa view. Each frame, the layer supplies a <strong>drawable</strong>: a texture that can be rendered and then presented.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 700 170" fill="none" stroke="#4aa8ff" stroke-width="2">
+          <rect x="20" y="58" width="130" height="54" rx="6"/><text x="85" y="82" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">GLFWwindow</text><text x="85" y="99" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">portable window</text>
+          <rect x="205" y="58" width="130" height="54" rx="6"/><text x="270" y="82" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">NSView</text><text x="270" y="99" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">Cocoa view</text>
+          <rect x="390" y="58" width="130" height="54" rx="6"/><text x="455" y="82" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">CAMetalLayer</text><text x="455" y="99" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">presents textures</text>
+          <rect x="575" y="58" width="105" height="54" rx="6"/><text x="627" y="82" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Drawable</text><text x="627" y="99" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">one frame</text>
+          <path d="M150 85 H201M335 85 H386M520 85 H571"/><path d="M193 78 L205 85 L193 92M378 78 L390 85 L378 92M563 78 L575 85 L563 92"/>
+          <text x="177" y="47" fill="currentColor" stroke="none" font-size="10" text-anchor="middle">native bridge</text><text x="362" y="47" fill="currentColor" stroke="none" font-size="10" text-anchor="middle">view.layer</text><text x="547" y="47" fill="currentColor" stroke="none" font-size="10" text-anchor="middle">nextDrawable()</text>
+        </svg></div><figcaption>GLFW remains the portable window layer; only the small NSView-to-CAMetalLayer bridge is macOS-specific.</figcaption></figure>
+
+        <h3>1. Define the metal-cpp implementation once</h3>
+        <p>metal-cpp is header-only, but one translation unit must generate its private implementation symbols. Put the three macros in this file and nowhere else.</p>
+
+        <pre><code class="language-cpp" data-file="src/MetalCpp.cpp">#define NS_PRIVATE_IMPLEMENTATION
 #define CA_PRIVATE_IMPLEMENTATION
 #define MTL_PRIVATE_IMPLEMENTATION
+
 #include &lt;Foundation/Foundation.hpp&gt;
+#include &lt;Metal/Metal.hpp&gt;
+#include &lt;QuartzCore/QuartzCore.hpp&gt;</code></pre>
+
+        <h3>2. Store the long-lived Metal objects</h3>
+        <pre><code class="language-cpp" data-file="src/MetalRenderer.h">#pragma once
+
+struct GLFWwindow;
+namespace MTL { class Device; class CommandQueue; }
+namespace CA { class MetalLayer; }
+
+class Renderer {
+public:
+    bool Initialize(GLFWwindow* window);
+    void Resize(GLFWwindow* window);
+    void Shutdown();
+
+private:
+    MTL::Device* device = nullptr;
+    MTL::CommandQueue* commandQueue = nullptr;
+    CA::MetalLayer* layer = nullptr;
+};</code></pre>
+
+        <p>These names are deliberate. In Lesson 40, <code>RenderFrame()</code> will use the same <code>layer</code> and <code>commandQueue</code> members to acquire, encode and present a frame.</p>
+
+        <h3>3. Bridge GLFW to Cocoa and attach the Metal layer</h3>
+        <pre><code class="language-objectivec" data-file="src/MetalRenderer.mm">#include "MetalRenderer.h"
+
+#define GLFW_EXPOSE_NATIVE_COCOA
+#include &lt;GLFW/glfw3.h&gt;
+#include &lt;GLFW/glfw3native.h&gt;
+
+#import &lt;Cocoa/Cocoa.h&gt;
+#import &lt;QuartzCore/CAMetalLayer.h&gt;
+
 #include &lt;Metal/Metal.hpp&gt;
 #include &lt;QuartzCore/QuartzCore.hpp&gt;
 
-MTL::Device* device = MTL::CreateSystemDefaultDevice();
-if (device == nullptr)
-    throw std::runtime_error("Metal is unavailable");
+bool Renderer::Initialize(GLFWwindow* window) {
+    // Create selects the system's default GPU and returns an owned object.
+    device = MTL::CreateSystemDefaultDevice();
+    if (!device) return false;
 
-MTL::CommandQueue* commandQueue = device-&gt;newCommandQueue();
-if (commandQueue == nullptr)
-    throw std::runtime_error("Could not create Metal command queue");</code></pre>
-        <p>The Direct3D device maps to <code>MTL::Device</code>; the immediate context's submission role maps to a command queue plus per-frame command buffers. Attach a <code>CA::MetalLayer</code> to the Cocoa window from GLFW so each frame can request a drawable.</p>
-        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Define implementation macros once</div><p>The three metal-cpp <code>*_PRIVATE_IMPLEMENTATION</code> macros belong in exactly one <code>.cpp</code> file. Other files include the headers without defining them.</p></div></div>
+    // The queue creates the command buffers submitted in future frames.
+    commandQueue = device-&gt;newCommandQueue();
+    if (!commandQueue) {
+        Shutdown();
+        return false;
+    }
+
+    // GLFW 3.4 exposes the NSView inside its Cocoa window.
+    NSView* view = glfwGetCocoaView(window);
+    if (!view) {
+        Shutdown();
+        return false;
+    }
+
+    // alloc/init gives Renderer one owned reference to the displayed layer.
+    CAMetalLayer* cocoaLayer = [[CAMetalLayer alloc] init];
+    if (!cocoaLayer) {
+        Shutdown();
+        return false;
+    }
+    layer = reinterpret_cast&lt;CA::MetalLayer*&gt;(cocoaLayer);
+    layer-&gt;setDevice(device);
+    layer-&gt;setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    layer-&gt;setFramebufferOnly(true);
+
+    cocoaLayer.opaque = YES;
+    view.wantsLayer = YES;
+    view.layer = cocoaLayer;
+
+    Resize(window);
+    return true;
+}
+
+void Renderer::Resize(GLFWwindow* window) {
+    if (!layer) return;
+
+    NSView* view = glfwGetCocoaView(window);
+    if (!view) return;
+
+    // Keep the Core Animation layer over the complete Cocoa view.
+    CAMetalLayer* cocoaLayer = reinterpret_cast&lt;CAMetalLayer*&gt;(layer);
+    cocoaLayer.frame = view.bounds;
+
+    // A Metal texture is sized in physical pixels, not logical window points.
+    int pixelWidth = 0;
+    int pixelHeight = 0;
+    glfwGetFramebufferSize(window, &amp;pixelWidth, &amp;pixelHeight);
+    layer-&gt;setDrawableSize(CGSizeMake(pixelWidth, pixelHeight));
+}
+
+void Renderer::Shutdown() {
+    // Release in reverse order of creation. Null checks make this safe after
+    // a partially failed Initialize(). Call Shutdown() before destroying GLFW.
+    if (layer) {
+        layer-&gt;release();
+        layer = nullptr;
+    }
+    if (commandQueue) {
+        commandQueue-&gt;release();
+        commandQueue = nullptr;
+    }
+    if (device) {
+        device-&gt;release();
+        device = nullptr;
+    }
+}</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Why framebuffer size matters on a Retina display</div><p>A 1280 × 720 GLFW window may occupy 2560 × 1440 physical pixels on a Retina screen. <code>glfwGetWindowSize</code> reports logical screen coordinates; <code>glfwGetFramebufferSize</code> reports the pixel dimensions required by <code>CAMetalLayer.drawableSize</code>. Using the wrong one makes the image soft, incorrectly scaled or only partially filled.</p></div></div>
+
+        <h3>4. Understand metal-cpp ownership</h3>
+        <p>metal-cpp follows Cocoa's ownership rules; it is not managed by C++ smart pointers or Objective-C ARC here.</p>
+        <ul>
+          <li><code>MTL::CreateSystemDefaultDevice()</code> returns an object the renderer owns.</li>
+          <li><code>newCommandQueue()</code> contains <code>new</code>, so the renderer owns the returned queue.</li>
+          <li><code>[[CAMetalLayer alloc] init]</code> contains <code>alloc</code>, so the renderer owns the returned layer.</li>
+          <li>Every owned object receives one matching <code>release()</code> in <code>Shutdown()</code>.</li>
+        </ul>
+
+        <p>Beginning in Lesson 40, Metal also creates short-lived objects every frame. Put an autorelease pool around that frame's Metal work so those temporary objects are reclaimed promptly:</p>
+
+        <pre><code class="language-cpp" data-file="Metal frame pattern">NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()-&gt;init();
+
+// Acquire the drawable, encode commands and present it here.
+
+pool-&gt;release();</code></pre>
+
+        <h2>What success looks like</h2>
+        <p>Build and run from CLion. The console should print <code>Graphics backend initialized</code>, and the window should remain open until you close it. Its contents may still be blank, black or unchanged — that is expected. Initialization gives the renderer somewhere to draw; Lesson 40 sends the first clear command.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Problem</th><th>Likely cause and fix</th></tr></thead><tbody>
+          <tr><td><code>Metal/Metal.hpp file not found</code></td><td>Make sure <code>external/metal-cpp/Metal/Metal.hpp</code> exists, then reload CMake. Point <code>target_include_directories</code> at the directory that contains the <code>Metal</code>, <code>Foundation</code> and <code>QuartzCore</code> folders.</td></tr>
+          <tr><td>Undefined metal-cpp private symbols</td><td>Add <code>MetalCpp.cpp</code> to the target and define each <code>*_PRIVATE_IMPLEMENTATION</code> macro exactly once.</td></tr>
+          <tr><td><code>NSView</code> or Objective-C syntax errors</td><td>The bridge file must be named <code>MetalRenderer.mm</code>, and CMake must enable <code>OBJCXX</code>.</td></tr>
+          <tr><td><code>glfwGetCocoaView</code> is missing</td><td>Use GLFW 3.4 and define <code>GLFW_EXPOSE_NATIVE_COCOA</code> before including <code>glfw3native.h</code>.</td></tr>
+          <tr><td>Metal drawable is later <code>nullptr</code></td><td>Check that the layer is attached, the window is visible and <code>drawableSize</code> is not zero. A minimized window can legitimately have no drawable.</td></tr>
+          <tr><td>D3D creation fails only in Debug</td><td>Install the Windows <em>Graphics Tools</em> optional feature, or temporarily remove <code>D3D11_CREATE_DEVICE_DEBUG</code>.</td></tr>
+        </tbody></table></div>
 
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>Every D3D11 app owns a <strong>device</strong> (creates resources), a <strong>device context</strong> (issues commands) and a <strong>swap chain</strong> (presents to the window).</li>
-            <li>Fill a zero-initialized <code>DXGI_SWAP_CHAIN_DESC</code>: set the format, sample count, <code>DXGI_USAGE_RENDER_TARGET_OUTPUT</code>, <code>BufferCount</code>, <code>OutputWindow = hwnd</code> and <code>Windowed = TRUE</code>.</li>
-            <li><code>D3D11CreateDeviceAndSwapChain</code> builds all three at once and reports the feature level you actually got; always check the returned <code>HRESULT</code>.</li>
-            <li>Call <code>GetBuffer(0, ...)</code> for the back buffer, then <code>CreateRenderTargetView</code> to get a view you can render into.</li>
-            <li>Link <code>d3d11.lib</code> and store every object in a <code>Microsoft::WRL::ComPtr</code> so lifetimes are managed for you.</li>
+            <li>Both backends need GPU-resource creation, command submission, window presentation and a writable color texture.</li>
+            <li>Windows connects GLFW's <code>HWND</code> to an <code>IDXGISwapChain</code>, then creates a render-target view for its back buffer.</li>
+            <li>macOS connects GLFW's <code>NSView</code> to a <code>CAMetalLayer</code>, which provides a drawable texture for each frame.</li>
+            <li>The Cocoa bridge is Objective-C++ (<code>.mm</code>); the rest of the Metal API is used through Apple's metal-cpp C++ headers.</li>
+            <li>Use framebuffer pixels for <code>drawableSize</code>, especially on Retina displays.</li>
+            <li><code>ComPtr</code> manages D3D objects; metal-cpp objects follow retain/release ownership rules.</li>
           </ul>
         </div>
       </article>

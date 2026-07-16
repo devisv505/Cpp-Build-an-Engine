@@ -103,7 +103,7 @@ window.CURRICULUM = [
     dir: "lessons/06-graphics-foundations",
     lessons: [
       { slug: "graphics-pipeline",   title: "The Graphics Pipeline Explained" },
-      { slug: "graphics-init",        title: "Initializing Direct3D 11 & Metal" },
+      { slug: "graphics-init",        title: "Initializing the Graphics Backend: Direct3D 11 & Metal" },
       { slug: "clear-screen",        title: "Render Targets: Clearing the Screen" },
       { slug: "first-triangle",      title: "Your First Triangle" },
       { slug: "shaders",             title: "Shaders: HLSL & Metal Shading Language" },
