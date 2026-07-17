@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Events &amp; Input with SDL3 — Learn C++ Engine Development</title>
+  <meta name="description" content="Process SDL3 window, keyboard, mouse, resize, and close events in the same C++ code on Windows and macOS.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Events &amp; Input with SDL3</h1>
+
+        <p class="lead">Windows and macOS deliver input and window notifications through different native systems. SDL3 translates both into one event queue, so the engine can process keyboard, mouse, resize, and close events in ordinary cross-platform C++.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How <code>SDL_PollEvent</code> drains queued operating-system events without blocking</li>
+            <li>When to consume an event and when to query current keyboard state</li>
+            <li>How to handle close, key, mouse, and drawable-pixel resize events</li>
+            <li>How to forward SDL events into engine-owned window and input systems</li>
+          </ul>
+        </div>
+
+        <h2>One event pump, two operating systems</h2>
+        <p><code>SDL_PollEvent</code> returns one queued event at a time. Call it repeatedly until the queue is empty, then update and render the frame:</p>
+
+        <pre><code class="language-cpp">bool running = true;
+
+while (running)
+{
+    SDL_Event event;
+    while (SDL_PollEvent(&amp;event))
+    {
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            running = false;
+        }
+    }
+
+    if (!running)
+        break;
+
+    Update();
+    Render();
+}</code></pre>
+
+        <p>Polling is non-blocking: after the current events are drained, the game continues even if the player does nothing. SDL translates Win32 messages on Windows and Cocoa events on macOS before your code sees them.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Drain events on the main thread</div><p>SDL video and event functions must stay on the main thread. Worker threads can load assets or prepare jobs; the window event pump remains part of the main loop on both platforms.</p></div></div>
+
+        <h2>Events for transitions</h2>
+        <p>Use events when the transition itself matters: a key went down, a key came up, the mouse moved, or drawable pixels changed. <code>SDL_Event</code> is a tagged union, so first check <code>event.type</code> and then read the matching member.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">while (SDL_PollEvent(&amp;event))
+{
+    switch (event.type)
+    {
+    case SDL_EVENT_QUIT:
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        running = false;
+        break;
+
+    case SDL_EVENT_KEY_DOWN:
+        // Ignore operating-system key repeat for one-shot actions.
+        if (!event.key.repeat &amp;&amp;
+            event.key.scancode == SDL_SCANCODE_ESCAPE)
+        {
+            running = false;
+        }
+        break;
+
+    case SDL_EVENT_MOUSE_MOTION:
+        camera.AddLookDelta(event.motion.xrel, event.motion.yrel);
+        break;
+
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        renderer.Resize(event.window.data1, event.window.data2);
+        break;
+
+    default:
+        break;
+    }
+}</code></pre>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Need</th><th>SDL3 source</th><th>Typical use</th></tr></thead>
+          <tbody>
+            <tr><td>Key press/release</td><td><code>SDL_EVENT_KEY_DOWN</code> / <code>UP</code></td><td>Jump, toggles, menus</td></tr>
+            <tr><td>Key currently held</td><td><code>SDL_GetKeyboardState</code></td><td>Movement and continuous controls</td></tr>
+            <tr><td>Typed Unicode text</td><td><code>SDL_EVENT_TEXT_INPUT</code></td><td>Console and UI text fields</td></tr>
+            <tr><td>Mouse movement</td><td><code>SDL_EVENT_MOUSE_MOTION</code></td><td>Camera look and pointer UI</td></tr>
+            <tr><td>Drawable resized</td><td><code>SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED</code></td><td>Recreate graphics targets</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Text input is opt-in</div><p>SDL3 does not emit <code>SDL_EVENT_TEXT_INPUT</code> by default. Call <code>SDL_StartTextInput(window)</code> when a console or text field gains focus, consume its UTF-8 text events, then call <code>SDL_StopTextInput(window)</code> when editing ends. Keyboard controls based on scancodes do not need text-input mode.</p></div></div>
+
+        <h2>Query held keys after polling</h2>
+        <p>For continuous movement, ask SDL for its current keyboard snapshot after processing the event queue. Scancodes describe physical key positions, which is usually what a game control needs:</p>
+
+        <pre><code class="language-cpp">const bool* keys = SDL_GetKeyboardState(nullptr);
+
+if (keys[SDL_SCANCODE_W])
+    MoveForward();
+
+if (keys[SDL_SCANCODE_S])
+    MoveBackward();</code></pre>
+
+        <p>An event tells you that a state <em>changed</em>; the keyboard snapshot tells you the state <em>now</em>. A robust engine combines both rather than trying to use repeated key-down events for movement.</p>
+
+        <h2>Forward events into engine objects</h2>
+        <p>SDL3's queue removes the need to register a separate C callback for every operation. The application owns the loop and forwards each event to the systems that care about it:</p>
+
+        <pre><code class="language-cpp" data-file="Application.cpp">void Application::PollEvents()
+{
+    SDL_Event event;
+    while (SDL_PollEvent(&amp;event))
+    {
+        m_input.ProcessEvent(event);
+
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            m_running = false;
+        }
+
+        if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+        {
+            m_pendingWidth = event.window.data1;
+            m_pendingHeight = event.window.data2;
+            m_windowResized = true;
+        }
+    }
+}</code></pre>
+
+        <p>With more than one window, compare <code>event.window.windowID</code> with <code>SDL_GetWindowID(window)</code> before applying a window event. A single-window game can keep the simpler version above.</p>
+
+        <h2>Pressed, held, and released</h2>
+        <p>Gameplay usually needs three answers for every engine key: <strong>pressed this frame</strong>, <strong>held</strong>, and <strong>released this frame</strong>. Clear the one-frame transition flags before polling, then let key events update the input service:</p>
+
+        <pre><code class="language-cpp">input.BeginFrame(); // clears pressed/released flags
+
+SDL_Event event;
+while (SDL_PollEvent(&amp;event))
+{
+    input.ProcessEvent(event);
+
+    if (event.type == SDL_EVENT_QUIT ||
+        event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+    {
+        running = false;
+    }
+}
+
+if (!running)
+    break;
+
+if (input.IsKeyPressed(Key::Space))
+    player.Jump();
+
+if (input.IsKeyDown(Key::W))
+    player.MoveForward(dt);</code></pre>
+
+        <p>Only the input implementation maps <code>SDL_SCANCODE_W</code> to <code>Key::W</code>. A later action map can translate that engine key into an action such as <code>MoveForward</code>. Gameplay never depends on SDL, Win32, or macOS key constants.</p>
+
+        <h2>Platform shortcut note</h2>
+        <p>SDL reports modifier state in <code>event.key.mod</code>. Control is <code>SDL_KMOD_CTRL</code>; the Windows key or macOS Command key is <code>SDL_KMOD_GUI</code>. Editor-style shortcuts should use an action map so Windows can prefer Control while macOS prefers Command without changing the tool's behavior.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Drain <code>SDL_PollEvent</code> every frame on the main thread.</li>
+            <li>Events are best for transitions; <code>SDL_GetKeyboardState</code> is best for held controls.</li>
+            <li>Use <code>SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED</code> dimensions for graphics targets.</li>
+            <li>The application forwards SDL events into engine-owned <code>Window</code> and <code>Input</code> objects.</li>
+            <li>Gameplay reads engine keys and actions, so its logic is the same on Windows and macOS.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

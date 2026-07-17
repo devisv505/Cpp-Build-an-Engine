@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Greedy Meshing — Learn C++ Engine Development</title>
+  <meta name="description" content="The classic voxel optimization: merge adjacent coplanar faces of the same block into large quads, cutting a flat 16×16 wall from 256 quads down to one.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Greedy Meshing</h1>
+
+        <p class="lead">
+          Hidden face removal already threw away every buried face, and our chunks render far fewer triangles
+          than the naïve mesher. But a flat surface still costs us one quad per block: a plain 16×16 stone wall
+          is 256 identical quads sitting edge to edge. In this lesson we implement <strong>greedy meshing</strong>,
+          Mikola Lysenko's classic algorithm, which fuses adjacent coplanar faces that share the same
+          attributes into a single large rectangle. That wall drops from 256 quads to exactly one, and MiniEngine's
+          chunks get dramatically cheaper to draw.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why hidden face removal still leaves flat terrain paying one quad per block.</li>
+            <li>How the greedy sweep walks the three axes and builds a 2D face mask per slice.</li>
+            <li>What belongs in the <strong>merge key</strong> — block id, texture layer, AO, light and face direction — and why leaving any of it out causes seams.</li>
+            <li>The exact greedy consume: grow width, then height, emit one quad, zero the rectangle.</li>
+            <li>How to compute a merged quad's corners, winding and tiling UVs, and why tiling needs a texture <em>array</em>, not an atlas.</li>
+          </ul>
+        </div>
+
+        <h2>One quad per block is too many</h2>
+
+        <p>
+          After the previous lesson, a chunk only emits faces that touch air — no buried geometry survives. That
+          is a huge saving over the naïve mesher, but it does nothing for large flat areas, which are exactly what
+          Minecraft-style worlds are made of: ground, walls, cliff faces, the ceiling of a cave. Every one of
+          those blocks still contributes its own little quad, even though its neighbours are identical.
+        </p>
+
+        <p>
+          The insight is simple. If two neighbouring faces lie in the same plane, point the same way, and look
+          <em>exactly</em> the same — same block, same texture, same lighting — then a player cannot tell whether
+          they are two quads or one. So we merge them. Do that across a whole flat region and thousands of tiny
+          faces collapse into a handful of big ones.
+        </p>
+
+        <figure><div class="figure-box">
+          <svg viewBox="0 0 520 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A grid of individual block faces on the left merging into a single large quad on the right">
+            <!-- left: 6x6 grid of unit faces -->
+            <g stroke="#4aa8ff" stroke-width="1.5">
+              <rect x="16" y="16" width="168" height="168" fill="#4aa8ff" fill-opacity="0.10"/>
+              <path d="M44 16V184 M72 16V184 M100 16V184 M128 16V184 M156 16V184"/>
+              <path d="M16 44H184 M16 72H184 M16 100H184 M16 128H184 M16 156H184"/>
+            </g>
+            <text x="100" y="198" fill="currentColor" font-size="13" text-anchor="middle" font-family="sans-serif">256 quads</text>
+            <!-- arrow -->
+            <path d="M212 100H300" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+            <path d="M292 93l10 7-10 7" stroke="#4aa8ff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <!-- right: one merged quad -->
+            <rect x="336" y="16" width="168" height="168" fill="#4aa8ff" fill-opacity="0.10" stroke="#4aa8ff" stroke-width="3"/>
+            <text x="420" y="198" fill="currentColor" font-size="13" text-anchor="middle" font-family="sans-serif">1 quad</text>
+          </svg>
+        </div><figcaption>A flat 16×16 wall of the same block: 256 coplanar faces become a single stretched quad.</figcaption></figure>
+
+        <h2>The idea: merge coplanar faces</h2>
+
+        <p>
+          Greedy meshing works one <strong>slice</strong> at a time. Pick an axis — say X — and imagine sweeping a
+          plane through the chunk perpendicular to it. At each position of that plane you have a flat 2D grid of
+          the faces that cross it. That grid is a <strong>mask</strong>: each cell either holds a face or is empty.
+          The whole trick is turning that 2D mask into as few rectangles as possible.
+        </p>
+
+        <p>
+          The greedy rule is: scan the mask cell by cell; at the first face you meet, extend a rectangle as far
+          right as the faces keep matching, then extend it downward as long as every cell of that full-width row
+          still matches; emit one quad for the rectangle and erase those cells so they are never reused. Repeat
+          until the mask is empty. A cell only merges with its neighbour when their <em>keys</em> are identical, so
+          a single odd block splits the sweep into more pieces — but flat regions collapse almost completely.
+        </p>
+
+        <figure><div class="figure-box">
+          <svg viewBox="0 0 560 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A slice mask of mostly one block type with one odd cell, and the four greedy rectangles it produces">
+            <!-- LEFT: mask, 6 cols x 4 rows, cell = 36px, origin (16,44) -->
+            <text x="124" y="30" fill="currentColor" font-size="13" text-anchor="middle" font-family="sans-serif">Slice mask</text>
+            <g>
+              <!-- all A cells -->
+              <rect x="16" y="44" width="216" height="144" fill="#4aa8ff" fill-opacity="0.12"/>
+              <!-- the one B cell (col 3, row 1) -->
+              <rect x="124" y="80" width="36" height="36" fill="#f0a020" fill-opacity="0.30"/>
+              <!-- grid -->
+              <g stroke="#4aa8ff" stroke-width="1" stroke-opacity="0.7" fill="none">
+                <path d="M52 44V188 M88 44V188 M124 44V188 M160 44V188 M196 44V188"/>
+                <path d="M16 80H232 M16 116H232 M16 152H232"/>
+                <rect x="16" y="44" width="216" height="144"/>
+              </g>
+              <text x="142" y="103" fill="currentColor" font-size="14" text-anchor="middle" font-family="sans-serif">B</text>
+              <text x="34"  y="67" fill="currentColor" font-size="12" text-anchor="middle" font-family="sans-serif" opacity="0.6">A</text>
+              <text x="34"  y="103" fill="currentColor" font-size="12" text-anchor="middle" font-family="sans-serif" opacity="0.6">A</text>
+            </g>
+            <!-- arrow -->
+            <path d="M256 116H304" stroke="#4aa8ff" stroke-width="2" fill="none"/>
+            <path d="M296 109l10 7-10 7" stroke="#4aa8ff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <!-- RIGHT: merged rectangles, origin (328,44) -->
+            <text x="436" y="30" fill="currentColor" font-size="13" text-anchor="middle" font-family="sans-serif">4 merged quads</text>
+            <g fill="none">
+              <rect x="328" y="44"  width="216" height="36"  stroke="#4aa8ff" stroke-width="3"/>
+              <rect x="328" y="80"  width="108" height="108" stroke="#4aa8ff" stroke-width="3"/>
+              <rect x="436" y="80"  width="36"  height="36"  stroke="#f0a020" stroke-width="3"/>
+              <rect x="472" y="80"  width="72"  height="108" stroke="#4aa8ff" stroke-width="3"/>
+            </g>
+          </svg>
+        </div><figcaption>A 6×4 mask: one different block (B) forces the greedy sweep into four rectangles instead of merging into one — but that is still four quads for 24 faces.</figcaption></figure>
+
+        <h2>The merge key: what has to match</h2>
+
+        <p>
+          Everything hinges on when two faces are allowed to merge. Get this wrong and the mesh is smaller but
+          <em>visibly broken</em> — textures on the wrong block, lighting that jumps across a seam. So we define a
+          <code>FaceKey</code> that captures every property that must be identical before two faces can fuse. Two
+          faces merge only when their keys are equal.
+        </p>
+
+        <pre><code class="language-cpp" data-file="FaceKey.h">// Everything that must match for two faces to merge into one quad.
+// Two adjacent faces fuse only when their FaceKeys are equal.
+struct FaceKey {
+    BlockId  block = BlockId::Air; // which block owns the face
+    uint16_t layer = 0;            // texture-array slice for THIS face
+    uint8_t  light = 0;            // baked light level (0..15)
+    uint8_t  ao    = 0;            // 4 corners packed, 2 bits each
+    int8_t   dir   = 0;            // +1 = face points along +axis, -1 = -axis, 0 = empty
+
+    bool empty() const { return dir == 0; }
+
+    bool operator==(const FaceKey&amp; o) const {
+        return block == o.block &amp;&amp; layer == o.layer &amp;&amp;
+               light == o.light &amp;&amp; ao == o.ao &amp;&amp; dir == o.dir;
+    }
+    bool operator!=(const FaceKey&amp; o) const { return !(*this == o); }
+};</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Never merge across different AO, light, or texture</div>
+          <p>It is tempting to key only on the block id. Don't. If you merge two faces with different ambient
+          occlusion, the darkening at a corner smears across the whole big quad and you get a lighting seam. Merge
+          across different light levels and a shadow boundary vanishes. Merge across different texture layers and
+          the wrong tile appears. Every one of those must sit in the key. This is precisely why the
+          <em>Voxel Ambient Occlusion</em> and <em>Flood-Fill Lighting</em> lessons feed their per-face values back
+          into this struct — the key is the contract that keeps the merged mesh looking identical to the unmerged
+          one.</p></div>
+        </div>
+
+        <p>
+          Building the key for one face reads the block's per-face texture layer from the registry we built in the
+          <em>block registry</em> lesson, plus the light and AO sampled from the empty neighbour on the other side
+          of the face. For now those baked values default to zero (fully lit, no occlusion); the lighting and AO
+          lessons replace the zeros with real samples. Because they already live in the key, no code here changes
+          when they do — faces with different values simply stop merging.
+        </p>
+
+        <pre><code class="language-cpp" data-file="FaceKey.cpp">// Build the merge key for the face of `block` at (x,y,z), on axis `d`
+// (0=X,1=Y,2=Z) facing direction `dir` (+1 or -1).
+FaceKey makeFaceKey(const Chunk&amp; chunk, int x, int y, int z, int d, int dir) {
+    BlockId block = chunk.blockAt(x, y, z);
+
+    FaceKey key;
+    key.block = block;
+    key.dir   = static_cast&lt;int8_t&gt;(dir);
+
+    // Face index: +X,-X,+Y,-Y,+Z,-Z -&gt; 0..5. The texture layer differs per
+    // face (grass top vs. dirt side vs. dirt bottom). See module 10.
+    int face  = d * 2 + (dir &gt; 0 ? 0 : 1);
+    key.layer = BlockRegistry::get(block).faceLayer[face];
+
+    // Baked in the AO / lighting lessons; zero = fully lit, no occlusion.
+    key.light = 0;
+    key.ao    = 0;
+    return key;
+}</code></pre>
+
+        <h2>Sweeping the three axes</h2>
+
+        <p>
+          A face can face along any of the three axes, so we run the sweep three times, once for each axis
+          <code>d ∈ {0, 1, 2}</code>. The other two axes become the in-plane directions <code>u = (d+1)%3</code>
+          and <code>v = (d+2)%3</code>. With that choice the unit vectors line up neatly: <code>e_u × e_v = e_d</code>,
+          which we will lean on later to get winding right without guesswork.
+        </p>
+
+        <p>
+          For a chunk of <code>SIZE</code> voxels along an axis there are <code>SIZE + 1</code> boundary planes,
+          so we sweep <code>x[d]</code> from <code>-1</code> to <code>SIZE - 1</code>. At each plane we compare the
+          voxel just below it (<code>a</code>, at <code>x[d]</code>) with the voxel just above it (<code>b</code>,
+          at <code>x[d]+1</code>). If exactly one is solid there is a visible face; if both are solid the face is
+          hidden; if both are empty there is nothing. The face's plane sits at coordinate <code>x[d] + 1</code>.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Why start at -1?</div>
+          <p>Starting the sweep at <code>x[d] = -1</code> puts the first plane <em>below</em> the chunk, so the
+          bottom faces of the lowest slice are captured, and ending at <code>SIZE - 1</code> captures the top faces
+          of the highest slice. Both facing directions fall out of one loop: when <code>a</code> is the solid one we
+          get a <code>+d</code> face; when <code>b</code> is, a <code>-d</code> face. Because <code>dir</code> is in
+          the key, the two directions never merge into each other even though they share the mask.</p></div>
+        </div>
+
+        <p>
+          One honest caveat: <code>chunk.blockAt</code> must return the correct neighbour block at the chunk
+          border, not air. If it returns air outside the chunk, two adjacent chunks each render the shared boundary
+          and you get a doubled, z-fighting wall between them. The <em>hidden face removal</em> lesson set this up
+          by sampling neighbouring chunks; greedy meshing relies on that same sampling.
+        </p>
+
+        <h2>Consuming the mask greedily</h2>
+
+        <p>
+          Here is the whole sweep. For each slice we first fill the mask, then greedily peel rectangles out of it.
+          The mask is a flat array indexed <code>n = i + j·SIZE</code>, with <code>i</code> running along
+          <code>u</code> (stride 1) and <code>j</code> along <code>v</code> (stride <code>SIZE</code>) — so
+          "extend right" is <code>n + w</code> and "the row below" is <code>n + h·SIZE</code>.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GreedyMesher.cpp">Mesh greedyMesh(const Chunk&amp; chunk) {
+    std::vector&lt;VoxelVertex&gt; verts;
+    std::vector&lt;uint32_t&gt;    indices;
+
+    const int S = Chunk::SIZE;
+    std::vector&lt;FaceKey&gt; mask(S * S);   // reused scratch, one key per slice cell
+
+    for (int d = 0; d &lt; 3; ++d) {
+        const int u = (d + 1) % 3;      // first in-plane axis
+        const int v = (d + 2) % 3;      // second in-plane axis
+
+        int x[3] = {0, 0, 0};           // the voxel on the -d side of the plane
+        int q[3] = {0, 0, 0};           // unit step along d
+        q[d] = 1;
+
+        // SIZE + 1 boundary planes: x[d] from -1 up to SIZE - 1.
+        for (x[d] = -1; x[d] &lt; S; ++x[d]) {
+
+            // ---- 1. Build the mask for this slice ----
+            int n = 0;
+            for (x[v] = 0; x[v] &lt; S; ++x[v]) {
+                for (x[u] = 0; x[u] &lt; S; ++x[u], ++n) {
+                    BlockId a = chunk.blockAt(x[0],        x[1],        x[2]);
+                    BlockId b = chunk.blockAt(x[0]+q[0],   x[1]+q[1],   x[2]+q[2]);
+                    bool aSolid = isOpaque(a);
+                    bool bSolid = isOpaque(b);
+
+                    if (aSolid == bSolid) {
+                        mask[n] = FaceKey{};                 // hidden or empty: no face
+                    } else if (aSolid) {
+                        // a solid, b air -&gt; +d face owned by a
+                        mask[n] = makeFaceKey(chunk, x[0], x[1], x[2], d, +1);
+                    } else {
+                        // b solid, a air -&gt; -d face owned by b
+                        mask[n] = makeFaceKey(chunk, x[0]+q[0], x[1]+q[1], x[2]+q[2], d, -1);
+                    }
+                }
+            }
+
+            // ---- 2. Greedily carve the mask into quads ----
+            n = 0;
+            for (int j = 0; j &lt; S; ++j) {
+                for (int i = 0; i &lt; S; /* i advances by w below */) {
+                    if (mask[n].empty()) { ++i; ++n; continue; }
+
+                    const FaceKey key = mask[n];
+
+                    // Grow width along +u while the key keeps matching.
+                    int w = 1;
+                    while (i + w &lt; S &amp;&amp; mask[n + w] == key) ++w;
+
+                    // Grow height along +v while an ENTIRE w-wide row matches.
+                    int h = 1;
+                    bool rowMatches = true;
+                    while (j + h &lt; S &amp;&amp; rowMatches) {
+                        for (int k = 0; k &lt; w; ++k) {
+                            if (mask[n + k + h * S] != key) { rowMatches = false; break; }
+                        }
+                        if (rowMatches) ++h;
+                    }
+
+                    // Emit one quad for the w x h rectangle.
+                    int base[3];
+                    base[d] = x[d] + 1;   // the plane's coordinate along d
+                    base[u] = i;
+                    base[v] = j;
+                    emitQuad(verts, indices, d, u, v, base, w, h, key);
+
+                    // Erase the consumed rectangle so it is never reused.
+                    for (int l = 0; l &lt; h; ++l)
+                        for (int k = 0; k &lt; w; ++k)
+                            mask[n + k + l * S] = FaceKey{};
+
+                    i += w;
+                    n += w;
+                }
+            }
+        }
+    }
+    return Mesh(std::move(verts), std::move(indices));
+}</code></pre>
+
+        <p>
+          Two details make this correct. First, <code>n</code> stays in lock-step with <code>i + j·SIZE</code>
+          because every row advances <code>n</code> by exactly <code>SIZE</code> — one per empty cell, <code>w</code>
+          per emitted quad. Second, we only ever look <em>right</em> and <em>down</em>, and we erase cells the
+          moment we consume them, so a cell that has already been claimed reads back as empty and can never join a
+          later rectangle. That erase step is what keeps the same face from being emitted twice.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Flat is where greedy shines</div>
+          <p>Greedy meshing pays off most exactly where naïve meshing hurts most: broad flat surfaces — floors,
+          walls, the tops of chunks, cliff faces. There it turns hundreds of quads into a handful. On jagged, noisy
+          geometry the win is smaller, but it never makes the mesh <em>worse</em> — a lone unmergeable face just
+          becomes a 1×1 quad, exactly what you had before.</p></div>
+        </div>
+
+        <h2>Emitting the quad: corners, winding and UVs</h2>
+
+        <p>
+          A rectangle in the mask is described by its base corner <code>(i, j)</code> on the slice plane, plus its
+          width <code>w</code> along <code>u</code> and height <code>h</code> along <code>v</code>. Turning that
+          into four 3D corners is just adding <code>w</code> along <code>u</code> and <code>h</code> along
+          <code>v</code> to the base. The four corners are <code>base</code>, <code>base + w·e_u</code>,
+          <code>base + w·e_u + h·e_v</code>, and <code>base + h·e_v</code>.
+        </p>
+
+        <p>
+          Winding decides which side is the front face, and it must match the convention MiniEngine's cube factory
+          uses: order the corners so that <code>cross(c1 - c0, c2 - c0)</code> points <em>outward</em>. Because we
+          chose <code>u</code> and <code>v</code> so that <code>e_u × e_v = e_d</code>, the order
+          <code>[base, +u, +u+v, +v]</code> gives an outward normal of <code>+d</code>. For a <code>-d</code> face
+          we simply reverse the middle two, <code>[base, +v, +u+v, +u]</code>, flipping the normal to
+          <code>-d</code>. No trial and error.
+        </p>
+
+        <p>
+          The UVs are what make merging pay off visually. Instead of the usual 0..1 range, a merged quad's UVs run
+          <code>0..w</code> across the width and <code>0..h</code> across the height. With a wrapping sampler that
+          tiles the block's texture <code>w</code> times one way and <code>h</code> times the other, so a
+          16-wide merged floor shows sixteen tiles, not one stretched one.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GreedyMesher.cpp">struct VoxelVertex {
+    DirectX::XMFLOAT3 pos;
+    DirectX::XMFLOAT3 normal;
+    DirectX::XMFLOAT2 uv;    // runs 0..w and 0..h across the merged quad
+    uint32_t          layer; // texture-array slice for this face
+};
+
+void emitQuad(std::vector&lt;VoxelVertex&gt;&amp; verts, std::vector&lt;uint32_t&gt;&amp; indices,
+              int d, int u, int v, const int base[3], int w, int h,
+              const FaceKey&amp; key) {
+    // Base corner and the two in-plane edge vectors.
+    float p[3]  = { (float)base[0], (float)base[1], (float)base[2] };
+    float du[3] = {0, 0, 0}; du[u] = (float)w;   // edge along u
+    float dv[3] = {0, 0, 0}; dv[v] = (float)h;   // edge along v
+
+    DirectX::XMFLOAT3 c00 = { p[0],                 p[1],                 p[2]                 };
+    DirectX::XMFLOAT3 cW0 = { p[0]+du[0],           p[1]+du[1],           p[2]+du[2]           };
+    DirectX::XMFLOAT3 cWH = { p[0]+du[0]+dv[0],     p[1]+du[1]+dv[1],     p[2]+du[2]+dv[2]     };
+    DirectX::XMFLOAT3 c0H = { p[0]+dv[0],           p[1]+dv[1],           p[2]+dv[2]           };
+
+    DirectX::XMFLOAT3 nrm = {0, 0, 0};
+    if      (d == 0) nrm.x = (float)key.dir;
+    else if (d == 1) nrm.y = (float)key.dir;
+    else             nrm.z = (float)key.dir;
+
+    const float fw = (float)w, fh = (float)h;
+    uint32_t start = (uint32_t)verts.size();
+
+    if (key.dir &gt; 0) {
+        // +d face: cross(c1-c0, c2-c0) points +d (front). UVs 0..w, 0..h.
+        verts.push_back({ c00, nrm, {0.f, 0.f}, key.layer });
+        verts.push_back({ cW0, nrm, {fw,  0.f}, key.layer });
+        verts.push_back({ cWH, nrm, {fw,  fh }, key.layer });
+        verts.push_back({ c0H, nrm, {0.f, fh }, key.layer });
+    } else {
+        // -d face: reverse winding so the front points -d.
+        verts.push_back({ c00, nrm, {0.f, 0.f}, key.layer });
+        verts.push_back({ c0H, nrm, {0.f, fh }, key.layer });
+        verts.push_back({ cWH, nrm, {fw,  fh }, key.layer });
+        verts.push_back({ cW0, nrm, {fw,  0.f}, key.layer });
+    }
+
+    // Two triangles, same 0,1,2 / 0,2,3 pattern as our cube factory.
+    indices.insert(indices.end(), {
+        start + 0, start + 1, start + 2,
+        start + 0, start + 2, start + 3
+    });
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">An atlas cannot tile — use a texture array</div>
+          <p>UVs of <code>0..w</code> only tile correctly if the sampler can wrap a single tile. A texture
+          <em>atlas</em> packs many tiles into one image, so a UV of <code>1.3</code> lands on the neighbouring
+          tile, not a repeat of the same one — the merged quad shows a smear of other blocks. The fix is the
+          texture <strong>array</strong> from module 10: each block face is its own full-image layer, and a wrap
+          sampler tiles <em>that layer</em> cleanly. Greedy meshing is the reason we built texture arrays there.</p></div>
+        </div>
+
+        <h2>Sampling a merged quad in the shader</h2>
+
+        <p>
+          The pixel shader samples a <code>Texture2DArray</code> with the per-vertex <code>layer</code> selecting
+          the slice and the tiling UVs selecting the point within it. The layer is a flat integer, so it must not
+          be interpolated across the triangle — mark it <code>nointerpolation</code>. The wrap sampler does the
+          tiling for free; no <code>frac()</code> is needed.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="VoxelChunk.hlsl">Texture2DArray gBlocks : register(t0);
+SamplerState   gWrap   : register(s0); // AddressU = AddressV = WRAP
+
+struct PSIn {
+    float4 pos   : SV_POSITION;
+    float3 nrm   : NORMAL;
+    float2 uv    : TEXCOORD0;              // runs 0..w and 0..h
+    nointerpolation uint layer : TEXCOORD1; // texture-array slice
+};
+
+float4 main(PSIn i) : SV_Target {
+    // A WRAP sampler tiles the layer automatically across the merged quad.
+    float3 albedo = gBlocks.Sample(gWrap, float3(i.uv, (float)i.layer)).rgb;
+    return float4(albedo, 1.0);
+}</code></pre>
+
+        <p>
+          The Metal backend is the same idea in Metal Shading Language: declare a
+          <code>texture2d_array&lt;float&gt;</code>, create the sampler with <code>s_address::repeat</code> and
+          <code>t_address::repeat</code>, and sample with the slice as the third argument —
+          <code>gBlocks.sample(gWrap, in.uv, in.layer)</code>. The wrap addressing is what tiles the merged UVs on
+          both platforms; make sure your module 10 sampler was created with wrap, not clamp, addressing.
+        </p>
+
+        <h2>How much does it save?</h2>
+
+        <p>
+          Consider a 16×16×16 chunk whose bottom eight layers are solid stone and the top eight are air — a flat
+          filled floor, the most common shape in a voxel world. Here is the quad count at each stage of the module,
+          assuming the exposed surfaces share a uniform texture and lighting:
+        </p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Stage</th><th>Quads</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td>Naïve meshing</td><td>12,288</td><td>Every block emits all 6 faces (2,048 blocks × 6).</td></tr>
+            <tr><td>Hidden face removal</td><td>1,024</td><td>Only the box's surface faces survive: top + bottom + four sides.</td></tr>
+            <tr><td>Greedy meshing</td><td>6</td><td>Each flat face of the box merges into a single quad.</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>
+          Real terrain never merges quite this perfectly — varied blocks, and the per-corner ambient occlusion we
+          add in the next lessons, both split the mask into more rectangles. But the shape of the win holds: greedy
+          meshing routinely cuts a chunk's quad count by a large factor, which means fewer vertices to transform,
+          less bandwidth, and more headroom for draw distance. It is the single highest-leverage optimisation in a
+          voxel renderer, and every property that could break it is safely encoded in the merge key.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Hidden face removal still costs one quad per block on flat surfaces; greedy meshing merges coplanar same-attribute faces into large rectangles.</li>
+            <li>The sweep runs once per axis <code>d</code>, building a 2D <strong>mask</strong> for each slice from <code>x[d] = -1</code> to <code>SIZE - 1</code> so both facing directions are captured.</li>
+            <li>A <code>FaceKey</code> — block, texture layer, AO, light and direction — decides when faces may merge; leaving any field out causes texture or lighting seams, which is why the AO and lighting lessons feed back into it.</li>
+            <li>Greedy consume: grow width along <code>u</code>, grow height along <code>v</code> while whole rows match, emit one quad, then erase the rectangle so it is never reused.</li>
+            <li>Merged UVs run <code>0..w</code> and <code>0..h</code> and tile with a wrap sampler, which requires a texture <strong>array</strong> (module 10), never an atlas; winding follows <code>e_u × e_v = e_d</code>, reversed for <code>-d</code> faces.</li>
+            <li>On flat terrain the savings are enormous — a 16³ half-filled chunk drops from 12,288 quads to 6.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

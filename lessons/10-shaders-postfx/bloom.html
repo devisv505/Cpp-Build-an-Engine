@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bloom: Making Bright Things Glow — Learn C++ Engine Development</title>
+  <meta name="description" content="Combine HDR, downsampling and Gaussian blur into a full bloom pipeline: extract bright pixels, blur them across a mip chain, then add the glow back over the scene.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Bloom: Making Bright Things Glow</h1>
+
+        <p class="lead">Look at a bright light through a real camera, or squint at the sun, and its edges bleed a soft halo into everything nearby. That scatter — in the lens, in your eye — is what tells your brain "this is <em>really</em> bright," brighter than a screen can actually display. Bloom fakes that halo. In this lesson we assemble the flagship post effect of our engine: extract the bright parts of the HDR scene, blur them across a chain of shrinking render targets, then add that glow back on top — all before tone mapping. Get this right and glowing lava will pour light across your voxel world in Module 11.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why bloom only works on <strong>linear HDR</strong> color and must run <strong>before</strong> tone mapping.</li>
+            <li>How a <strong>bright pass</strong> keeps only the energy above a luminance threshold, with an optional soft knee.</li>
+            <li>How a <strong>downsample chain</strong> of mip targets reaches a huge blur radius for almost no cost.</li>
+            <li>The modern <strong>progressive upsample-and-add</strong> combine (a 9-tap tent filter) that yields a smooth, band-free glow.</li>
+            <li>The full C++ orchestration: build the mip chain, loop down then up, and composite the result.</li>
+          </ul>
+        </div>
+
+        <h2>What bloom actually simulates</h2>
+
+        <p>A monitor tops out at white — value <code>(1, 1, 1)</code>. But the HDR scene we built in the tone-mapping lesson stores light with no such ceiling: a lamp filament or a patch of lava can sit at <code>(20, 14, 3)</code>, far outside displayable range. Tone mapping later squeezes that back into <code>0..1</code>, but on the way there we have a brief window where "very bright" is still an honest number. Bloom exploits that window. We copy out the pixels whose light exceeds a threshold, smear them wide, and blend the smear back over the scene. The eye reads the resulting halo as intensity the display could never show directly.</p>
+
+        <p>The whole effect is one pipeline with four stages. We <strong>threshold</strong> the scene, <strong>downsample</strong> it several times into progressively smaller targets, <strong>upsample</strong> back up while adding each level to the next, and finally <strong>composite</strong> the glow onto the original scene right before the tone map. Here is the shape of it:</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bloom pipeline: HDR scene into a bright pass, down a mip chain and back up with additive tent filtering, then composite and tone map to an LDR output">
+          <!-- top row -->
+          <rect x="30" y="24" width="110" height="40" rx="4" fill="none" stroke="#4aa8ff"/>
+          <text x="85" y="48" fill="currentColor" font-size="12" text-anchor="middle">HDR scene</text>
+          <line x1="140" y1="44" x2="196" y2="44" stroke="#4aa8ff" stroke-width="2"/>
+          <polygon points="196,44 188,40 188,48" fill="#4aa8ff" stroke="none"/>
+          <rect x="200" y="24" width="140" height="40" rx="4" fill="none" stroke="#4aa8ff"/>
+          <text x="270" y="41" fill="currentColor" font-size="12" text-anchor="middle">Bright pass</text>
+          <text x="270" y="55" fill="currentColor" font-size="11" text-anchor="middle">(threshold)</text>
+          <line x1="270" y1="64" x2="270" y2="84" stroke="#4aa8ff" stroke-width="2"/>
+          <polygon points="270,86 266,78 274,78" fill="#4aa8ff" stroke="none"/>
+          <!-- mip stack -->
+          <rect x="185" y="88"  width="170" height="24" rx="3" fill="none" stroke="#4aa8ff"/>
+          <text x="270" y="104" fill="currentColor" font-size="11" text-anchor="middle">mip 0  (1/2 res)</text>
+          <rect x="202" y="118" width="136" height="22" rx="3" fill="none" stroke="#4aa8ff"/>
+          <text x="270" y="133" fill="currentColor" font-size="11" text-anchor="middle">mip 1 (1/4)</text>
+          <rect x="219" y="146" width="102" height="20" rx="3" fill="none" stroke="#4aa8ff"/>
+          <text x="270" y="160" fill="currentColor" font-size="10" text-anchor="middle">mip 2 (1/8)</text>
+          <rect x="234" y="172" width="72" height="18" rx="3" fill="none" stroke="#4aa8ff"/>
+          <text x="270" y="185" fill="currentColor" font-size="10" text-anchor="middle">mip 3</text>
+          <rect x="244" y="196" width="52" height="16" rx="3" fill="none" stroke="#4aa8ff"/>
+          <text x="270" y="208" fill="currentColor" font-size="9" text-anchor="middle">mip 4</text>
+          <!-- down arrow (left) -->
+          <line x1="150" y1="92" x2="150" y2="202" stroke="#4aa8ff" stroke-width="2"/>
+          <polygon points="150,206 146,198 154,198" fill="#4aa8ff" stroke="none"/>
+          <text x="66" y="150" fill="currentColor" font-size="11" text-anchor="middle" transform="rotate(-90 66 150)">downsample · 13-tap</text>
+          <!-- up arrow (right) -->
+          <line x1="392" y1="206" x2="392" y2="96" stroke="#4aa8ff" stroke-width="2"/>
+          <polygon points="392,92 388,100 396,100" fill="#4aa8ff" stroke="none"/>
+          <text x="408" y="150" fill="currentColor" font-size="11" text-anchor="middle" transform="rotate(90 408 150)">upsample + add · 9-tap tent</text>
+          <!-- to composite -->
+          <line x1="356" y1="100" x2="466" y2="100" stroke="#4aa8ff" stroke-width="2"/>
+          <polygon points="466,100 458,96 458,104" fill="#4aa8ff" stroke="none"/>
+          <rect x="470" y="82" width="150" height="40" rx="4" fill="none" stroke="#4aa8ff"/>
+          <text x="545" y="99" fill="currentColor" font-size="12" text-anchor="middle">Composite</text>
+          <text x="545" y="113" fill="currentColor" font-size="10" text-anchor="middle">(before tone map)</text>
+          <line x1="545" y1="122" x2="545" y2="148" stroke="#4aa8ff" stroke-width="2"/>
+          <polygon points="545,150 541,142 549,142" fill="#4aa8ff" stroke="none"/>
+          <rect x="470" y="150" width="150" height="36" rx="4" fill="none" stroke="#4aa8ff"/>
+          <text x="545" y="172" fill="currentColor" font-size="12" text-anchor="middle">Tone map</text>
+          <line x1="545" y1="186" x2="545" y2="210" stroke="#4aa8ff" stroke-width="2"/>
+          <polygon points="545,212 541,204 549,204" fill="#4aa8ff" stroke="none"/>
+          <rect x="470" y="212" width="150" height="36" rx="4" fill="none" stroke="#4aa8ff"/>
+          <text x="545" y="234" fill="currentColor" font-size="12" text-anchor="middle">LDR output</text>
+        </svg></div><figcaption>The bloom pipeline. One mip chain is traversed twice: down to gather a wide blur, then up while adding each level onto the larger one. The composite pass also samples the original HDR scene.</figcaption></figure>
+
+        <p>Everything here runs as fullscreen passes — the same "draw one big triangle and sample a texture" technique from the fullscreen-pass lesson — and every target uses the <code>DXGI_FORMAT_R16G16B16A16_FLOAT</code> HDR format we chose for the scene. Nothing is clamped until the very end.</p>
+
+        <h2>Stage 1 — the bright pass</h2>
+
+        <p>The first pass reads the HDR scene and throws away everything that is not bright. "Bright" means high <strong>luminance</strong> — the perceptual weighting of the three channels, using the Rec. 709 coefficients. We subtract the threshold from the luminance and rescale the color to match, which keeps the pixel's <em>hue</em> intact while dimming it by a fixed amount. Anything at or below the threshold falls to black and contributes no glow.</p>
+
+        <pre><code class="language-hlsl" data-file="BloomBrightPass.hlsl">Texture2D    SceneHDR   : register(t0);
+SamplerState LinearClamp : register(s0);
+
+cbuffer BloomParams : register(b0)
+{
+    float  threshold; // luminance above which pixels bloom (HDR, e.g. 1.0)
+    float  knee;      // soft-knee width; 0 = a hard cut
+    float2 _pad;
+};
+
+float Luminance(float3 c)
+{
+    return dot(c, float3(0.2126, 0.7152, 0.0722)); // Rec. 709 luma
+}
+
+float4 PSBrightPass(float2 uv : TEXCOORD0) : SV_TARGET
+{
+    float3 c = SceneHDR.Sample(LinearClamp, uv).rgb;
+    float  l = Luminance(c);
+
+    // Hard threshold: keep only the energy above 'threshold'.
+    float contribution = max(l - threshold, 0.0);
+
+    // Optional soft knee: fade bloom in over a small band so a pixel just
+    // past the threshold does not pop in abruptly between frames.
+    float soft = clamp(l - threshold + knee, 0.0, 2.0 * knee);
+    soft = (soft * soft) / (4.0 * knee + 1e-4);
+    contribution = max(contribution, soft);
+
+    // Rescale the colour so its new luminance equals 'contribution',
+    // preserving hue. 1e-4 guards the divide when the pixel is black.
+    c *= contribution / max(l, 1e-4);
+    return float4(c, 1.0);
+}</code></pre>
+
+        <p>The soft knee is worth a moment. With <code>knee = 0</code> the two <code>soft</code> lines collapse to zero and you get a hard cutoff: a pixel is either in or out. That produces a visible flickering edge as objects drift across the threshold. The quadratic knee ramps the contribution up smoothly across a band of width <code>2 * knee</code> around the threshold, so the transition is gentle. This is the same soft-threshold curve Unity's post stack and Jorge Jimenez's Call of Duty presentation use.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">The bright pass must read HDR</div><p>If you feed this shader an already tone-mapped, <code>0..1</code> image, almost nothing will be above a threshold of <code>1.0</code> and your bloom will be empty — or, if you drop the threshold to compensate, you will bloom the entire picture into a washed-out fog. The bright pass reads the <em>linear HDR scene</em>, before the tone map. That is the whole reason bloom lives in this stage of the frame.</p></div></div>
+
+        <h2>Stage 2 — downsampling into a mip chain</h2>
+
+        <p>A wide, soft glow needs a wide blur. Blurring at full resolution with a radius of 100 pixels would mean hundreds of taps per pixel — far too slow. The trick is that halving the resolution doubles the effective reach of any small filter, essentially for free. So instead of one enormous blur we build a <strong>chain of shrinking targets</strong>: mip 0 at half the screen resolution, mip 1 at a quarter, and so on for five or six levels. Each downsample step also blurs, so by the time we reach the smallest target its content has been smeared across the equivalent of a very large radius on the original image.</p>
+
+        <p>Each step uses a 13-tap filter — a set of overlapping 2&times;2 boxes sampled around the destination texel. The taps and weights are arranged so the total is energy-preserving (they sum to exactly <code>1.0</code>) and so the filter is wide enough to avoid missing detail as the image shrinks. This is the downsample from Jimenez's "Next Generation Post Processing in Call of Duty: Advanced Warfare," and it has become the industry-standard kernel.</p>
+
+        <pre><code class="language-hlsl" data-file="BloomDownsample.hlsl">Texture2D    SrcTex      : register(t0);
+SamplerState LinearClamp : register(s0);
+
+cbuffer DownParams : register(b0)
+{
+    float2 srcTexelSize; // 1.0 / source resolution
+    float2 _pad;
+};
+
+float4 PSDownsample(float2 uv : TEXCOORD0) : SV_TARGET
+{
+    float dx = srcTexelSize.x;
+    float dy = srcTexelSize.y;
+
+    // 13 taps: a 4x4 neighbourhood of the source, as overlapping boxes.
+    //   a . b . c
+    //   . j . k .
+    //   d . e . f      e = the centre texel
+    //   . l . m .
+    //   g . h . i
+    float3 a = SrcTex.Sample(LinearClamp, uv + float2(-2*dx,  2*dy)).rgb;
+    float3 b = SrcTex.Sample(LinearClamp, uv + float2(  0.0,  2*dy)).rgb;
+    float3 c = SrcTex.Sample(LinearClamp, uv + float2( 2*dx,  2*dy)).rgb;
+
+    float3 d = SrcTex.Sample(LinearClamp, uv + float2(-2*dx,  0.0)).rgb;
+    float3 e = SrcTex.Sample(LinearClamp, uv                      ).rgb;
+    float3 f = SrcTex.Sample(LinearClamp, uv + float2( 2*dx,  0.0)).rgb;
+
+    float3 g = SrcTex.Sample(LinearClamp, uv + float2(-2*dx, -2*dy)).rgb;
+    float3 h = SrcTex.Sample(LinearClamp, uv + float2(  0.0, -2*dy)).rgb;
+    float3 i = SrcTex.Sample(LinearClamp, uv + float2( 2*dx, -2*dy)).rgb;
+
+    float3 j = SrcTex.Sample(LinearClamp, uv + float2(-dx,  dy)).rgb;
+    float3 k = SrcTex.Sample(LinearClamp, uv + float2( dx,  dy)).rgb;
+    float3 l = SrcTex.Sample(LinearClamp, uv + float2(-dx, -dy)).rgb;
+    float3 m = SrcTex.Sample(LinearClamp, uv + float2( dx, -dy)).rgb;
+
+    // Weights sum to 1.0:  0.125 + 4*0.03125 + 4*0.0625 + 4*0.125 = 1.0
+    float3 colour  = e * 0.125;
+    colour += (a + c + g + i) * 0.03125;
+    colour += (b + d + f + h) * 0.0625;
+    colour += (j + k + l + m) * 0.125;
+    return float4(colour, 1.0);
+}</code></pre>
+
+        <p>The <code>srcTexelSize</code> constant is <code>1.0 / sourceResolution</code> — the texel size of the texture we are reading, not the one we are writing. We update it before each downsample step because every level of the chain is a different size. A linear-filtering, clamp-addressed sampler is exactly what you want here: clamp keeps edge taps from wrapping garbage in from the far side of the image.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Kill fireflies on the first downsample</div><p>A single pixel at value <code>200</code> next to neighbours at <code>2</code> will dominate any average and flicker wildly as the camera moves — a "firefly." For the <em>first</em> downsample only (bright pass into mip 0, or mip 0 into mip 1), weight each tap by <code>1 / (1 + luma)</code> — the "Karis average." It computes a luminance-weighted mean that tames outliers before they enter the chain, at the cost of one extra dot product per tap. The remaining levels use the plain weights above.</p></div></div>
+
+        <h2>Stage 3 — the upsample-and-add combine</h2>
+
+        <p>Now we walk back <em>up</em> the chain. Starting at the smallest mip, we upsample it and <strong>add</strong> it onto the next-larger mip — which still holds its own downsampled content from stage 2. Then we take that combined level, upsample, and add it onto the one above, and so on until we are back at mip 0. Because each level contributes its own blur radius and they accumulate, the final image is a sum of many blur scales at once. That superposition is what makes the modern glow so smooth and free of the concentric "banding" rings that a single fixed blur produces.</p>
+
+        <p>The upsample uses a small 9-tap <strong>tent filter</strong> (a 3&times;3 kernel weighted <code>[1 2 1; 2 4 2; 1 2 1] / 16</code>). Its samples are spread by a small radius in <em>UV space</em>, so the spread of the glow stays constant on screen regardless of each mip's pixel size.</p>
+
+        <pre><code class="language-hlsl" data-file="BloomUpsample.hlsl">Texture2D    SrcTex      : register(t0);
+SamplerState LinearClamp : register(s0);
+
+cbuffer UpParams : register(b0)
+{
+    float  filterRadius; // small UV-space offset, e.g. 0.005
+    float3 _pad;
+};
+
+float4 PSUpsample(float2 uv : TEXCOORD0) : SV_TARGET
+{
+    float x = filterRadius;
+    float y = filterRadius;
+
+    //   a b c
+    //   d e f      e = the centre texel
+    //   g h i
+    float3 a = SrcTex.Sample(LinearClamp, uv + float2(-x,  y)).rgb;
+    float3 b = SrcTex.Sample(LinearClamp, uv + float2( 0,  y)).rgb;
+    float3 c = SrcTex.Sample(LinearClamp, uv + float2( x,  y)).rgb;
+
+    float3 d = SrcTex.Sample(LinearClamp, uv + float2(-x,  0)).rgb;
+    float3 e = SrcTex.Sample(LinearClamp, uv                 ).rgb;
+    float3 f = SrcTex.Sample(LinearClamp, uv + float2( x,  0)).rgb;
+
+    float3 g = SrcTex.Sample(LinearClamp, uv + float2(-x, -y)).rgb;
+    float3 h = SrcTex.Sample(LinearClamp, uv + float2( 0, -y)).rgb;
+    float3 i = SrcTex.Sample(LinearClamp, uv + float2( x, -y)).rgb;
+
+    // 3x3 tent filter, weights sum to 16.
+    float3 colour  = e * 4.0;
+    colour += (b + d + f + h) * 2.0;
+    colour += (a + c + g + i) * 1.0;
+    colour *= 1.0 / 16.0;
+    return float4(colour, 1.0);
+}</code></pre>
+
+        <p>Notice this shader does <em>not</em> read the destination and add — the addition happens through the blend hardware. We render each upsample pass with an <strong>additive blend state</strong> (source and destination factors both <code>ONE</code>), so the tent-filtered result is summed onto whatever is already in the target. That is the whole "add" in "upsample-and-add."</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">One chain, traversed twice</div><p>There is no second set of "upsample" textures. The down pass and the up pass reuse the <em>same</em> mip targets. During the up loop, when we additively render into mip <code>i-1</code>, that target still contains the blur it received on the way down — and we blend the upsampled mip <code>i</code> on top. After the loop finishes, mip 0 holds the complete, multi-scale glow. That is why the diagram shows a single stack with a down arrow and an up arrow, not two columns.</p></div></div>
+
+        <p>If you prefer, you can swap this combine for the <strong>separable Gaussian</strong> from the previous lesson: blur each mip horizontally then vertically before adding it up the chain. It is a few more passes and needs a ping-pong buffer per level, but it is a valid, slightly softer alternative. The tent upsample is cheaper and, in practice, indistinguishable once composited.</p>
+
+        <h2>Stage 4 — orchestrating it in C++</h2>
+
+        <p>The engine side owns the mip chain and drives the two loops. First, at init we allocate the targets. Each is an HDR texture with both render-target and shader-resource bind flags, halving in size down the chain.</p>
+
+        <pre><code class="language-cpp" data-file="BloomPass.cpp">struct BloomMip
+{
+    ComPtr&lt;ID3D11Texture2D&gt;          tex;
+    ComPtr&lt;ID3D11RenderTargetView&gt;   rtv;
+    ComPtr&lt;ID3D11ShaderResourceView&gt; srv;
+    UINT width  = 0;
+    UINT height = 0;
+};
+
+void BloomPass::Init(ID3D11Device* device, UINT screenW, UINT screenH, int mipCount)
+{
+    mips_.clear();
+    UINT w = screenW / 2;   // bloom lives at half resolution — plenty for a glow
+    UINT h = screenH / 2;
+
+    for (int i = 0; i &lt; mipCount; ++i)
+    {
+        BloomMip mip;
+        mip.width  = (w &gt; 1) ? w : 1;
+        mip.height = (h &gt; 1) ? h : 1;
+
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width            = mip.width;
+        td.Height           = mip.height;
+        td.MipLevels        = 1;
+        td.ArraySize        = 1;
+        td.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT; // HDR, like the scene
+        td.SampleDesc.Count = 1;
+        td.Usage            = D3D11_USAGE_DEFAULT;
+        td.BindFlags        = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        device-&gt;CreateTexture2D(&amp;td, nullptr, &amp;mip.tex);
+
+        device-&gt;CreateRenderTargetView  (mip.tex.Get(), nullptr, &amp;mip.rtv);
+        device-&gt;CreateShaderResourceView(mip.tex.Get(), nullptr, &amp;mip.srv);
+
+        mips_.push_back(mip);
+        w = (w &gt; 1) ? w / 2 : 1;
+        h = (h &gt; 1) ? h / 2 : 1;
+    }
+}</code></pre>
+
+        <p>The additive blend state we need for the up loop is created once at startup:</p>
+
+        <pre><code class="language-cpp" data-file="BloomPass.cpp">// dst = src * ONE + dst * ONE   (the "add" in upsample-and-add)
+D3D11_BLEND_DESC bd = {};
+bd.RenderTarget[0].BlendEnable    = TRUE;
+bd.RenderTarget[0].SrcBlend       = D3D11_BLEND_ONE;
+bd.RenderTarget[0].DestBlend      = D3D11_BLEND_ONE;
+bd.RenderTarget[0].BlendOp        = D3D11_BLEND_OP_ADD;
+bd.RenderTarget[0].SrcBlendAlpha  = D3D11_BLEND_ONE;
+bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+bd.RenderTarget[0].BlendOpAlpha   = D3D11_BLEND_OP_ADD;
+bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+device-&gt;CreateBlendState(&amp;bd, &amp;additiveBlend_);</code></pre>
+
+        <p>The render method is the heart of the effect. It threshold-copies the scene into mip 0, walks down the chain with opaque blending, then walks back up with additive blending. Because a texture can never be bound as a shader input and a render target at the same time, we release slot 0 after every pass with a tiny helper.</p>
+
+        <pre><code class="language-cpp" data-file="BloomPass.cpp">static void UnbindSRV(ID3D11DeviceContext* ctx)
+{
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    ctx-&gt;PSSetShaderResources(0, 1, &amp;nullSRV);
+}
+
+void BloomPass::Render(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* hdrScene)
+{
+    ctx-&gt;IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx-&gt;VSSetShader(fullscreenVS_.Get(), nullptr, 0);
+    ctx-&gt;PSSetSamplers(0, 1, linearClamp_.GetAddressOf());
+
+    // --- 1. Bright pass: threshold the HDR scene into the largest mip ---
+    ctx-&gt;OMSetBlendState(opaqueBlend_.Get(), nullptr, 0xffffffff);
+    SetViewport(ctx, mips_[0].width, mips_[0].height);
+    ctx-&gt;OMSetRenderTargets(1, mips_[0].rtv.GetAddressOf(), nullptr);
+    ctx-&gt;PSSetShader(brightPassPS_.Get(), nullptr, 0);
+    ctx-&gt;PSSetShaderResources(0, 1, &amp;hdrScene);
+    DrawFullscreen(ctx);
+    UnbindSRV(ctx);
+
+    // --- 2. Downsample: mip0 -&gt; mip1 -&gt; ... -&gt; mip(N-1) ---
+    ctx-&gt;PSSetShader(downsamplePS_.Get(), nullptr, 0);
+    for (size_t i = 1; i &lt; mips_.size(); ++i)
+    {
+        const BloomMip&amp; src = mips_[i - 1];
+        const BloomMip&amp; dst = mips_[i];
+
+        UpdateTexelSize(ctx, src.width, src.height); // cb0: 1 / src resolution
+        SetViewport(ctx, dst.width, dst.height);
+        ctx-&gt;OMSetRenderTargets(1, dst.rtv.GetAddressOf(), nullptr);
+        ctx-&gt;PSSetShaderResources(0, 1, src.srv.GetAddressOf());
+        DrawFullscreen(ctx);
+        UnbindSRV(ctx);
+    }
+
+    // --- 3. Upsample + add: mip(N-1) -&gt; ... -&gt; mip0, additively ---
+    ctx-&gt;OMSetBlendState(additiveBlend_.Get(), nullptr, 0xffffffff);
+    ctx-&gt;PSSetShader(upsamplePS_.Get(), nullptr, 0);
+    for (size_t i = mips_.size() - 1; i &gt; 0; --i)
+    {
+        const BloomMip&amp; src = mips_[i];       // smaller, already blurred
+        const BloomMip&amp; dst = mips_[i - 1];   // larger, keeps its own content
+
+        UpdateFilterRadius(ctx, filterRadius_); // cb0: UV-space tent radius
+        SetViewport(ctx, dst.width, dst.height);
+        ctx-&gt;OMSetRenderTargets(1, dst.rtv.GetAddressOf(), nullptr);
+        ctx-&gt;PSSetShaderResources(0, 1, src.srv.GetAddressOf());
+        DrawFullscreen(ctx);                 // blend ADDs onto dst
+        UnbindSRV(ctx);
+    }
+
+    ctx-&gt;OMSetBlendState(opaqueBlend_.Get(), nullptr, 0xffffffff);
+}
+// The finished glow now lives in mips_[0].srv.</code></pre>
+
+        <p>After <code>Render</code> returns, <code>mips_[0].srv</code> is the bloom texture. Note that no ping-pong buffer is needed anywhere: the down loop always reads mip <code>i-1</code> and writes a <em>different</em> mip <code>i</code>, and the up loop reads mip <code>i</code> and writes a different mip <code>i-1</code>. The mip chain <em>is</em> the scratch storage. (The separable-Gaussian variant is the one that needs a same-size ping-pong pair per level.)</p>
+
+        <h2>Stage 5 — compositing before the tone map</h2>
+
+        <p>The last step folds the glow back into the frame. We sample the original HDR scene and the half-res bloom texture (a linear sampler upscales it smoothly), add them with a small <code>bloomStrength</code> weight, and only <em>then</em> run the tone map from the HDR lesson. Adding in linear HDR is what makes the glow bleed into shadows physically instead of looking like a flat overlay.</p>
+
+        <pre><code class="language-hlsl" data-file="Composite.hlsl">Texture2D    SceneHDR   : register(t0);
+Texture2D    BloomTex   : register(t1);
+SamplerState LinearClamp : register(s0);
+
+cbuffer Composite : register(b0)
+{
+    float  bloomStrength; // ~0.04 - 0.1
+    float3 _pad;
+};
+
+float3 ACESFilm(float3 x)  // the operator from the HDR lesson
+{
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return saturate((x * (a * x + b)) / (x * (c * x + d) + e));
+}
+
+float4 PSComposite(float2 uv : TEXCOORD0) : SV_TARGET
+{
+    float3 hdr   = SceneHDR.Sample(LinearClamp, uv).rgb;
+    float3 bloom = BloomTex.Sample(LinearClamp, uv).rgb;
+
+    hdr += bloomStrength * bloom;   // add the glow in LINEAR HDR
+
+    float3 mapped = ACESFilm(hdr);  // now squeeze into displayable range
+    // ... apply the sRGB / gamma encode here, as in the HDR lesson ...
+    return float4(mapped, 1.0);
+}</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Do bloom in linear, composite before tone mapping</div><p>Every stage here operates on linear HDR values, and the glow is added <em>before</em> <code>ACESFilm</code> runs. That ordering is the difference between light that looks like it belongs in the scene and a fake white smudge on top of your image. If you bloom after the tone map, the values are already clamped to <code>0..1</code>, the halo double-brightens midtones, and the whole thing reads as a cheap filter.</p></div></div>
+
+        <h2>Tuning the look</h2>
+
+        <p>Four knobs shape the final effect. Set them per scene — a moody night level wants a tight, subtle glow; a neon arcade wants it loud.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Typical value</th><th>Visual effect</th></tr></thead><tbody>
+          <tr><td><code>threshold</code></td><td><code>1.0</code> (HDR)</td><td>Which pixels glow. Higher = only the very brightest bloom; too low blooms the whole image into fog.</td></tr>
+          <tr><td><code>knee</code></td><td><code>0.5</code></td><td>Softness of the threshold. Fades bloom in over a band so objects near the cutoff don't flicker.</td></tr>
+          <tr><td>mip count</td><td><code>5</code>–<code>6</code></td><td>Blur reach. Each extra level roughly doubles the glow radius; more levels = wider, softer halo.</td></tr>
+          <tr><td><code>bloomStrength</code></td><td><code>0.04</code>–<code>0.1</code></td><td>How visible the glow is at composite. Turn up for stylized neon, down for grounded realism.</td></tr>
+          <tr><td><code>filterRadius</code></td><td><code>0.005</code> (UV)</td><td>Spread of the tent upsample. Larger = softer and more spread; too large starts to look smeary.</td></tr>
+        </tbody></table></div>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Two mistakes that ruin bloom</div><p><strong>A threshold that is too low</strong> blooms ordinary midtones, not just highlights — the entire image hazes over and loses contrast. Keep the threshold at or above your "white" reference and let genuinely bright things poke through. <strong>Never bloom after the tone map.</strong> Once color is clamped to <code>0..1</code> there is no HDR energy left to extract; you will bloom everything equally and get a washed-out overlay. Bloom belongs strictly in linear HDR, before the tone curve.</p></div></div>
+
+        <h2>macOS — the same pipeline in Metal</h2>
+
+        <p>The structure ports directly. Allocate the mip chain as <code>MTL::Texture</code> objects with <code>MTL::PixelFormatRGBA16Float</code> and usage <code>ShaderRead | RenderTarget</code>. Each pass is its own <code>MTLRenderCommandEncoder</code> with a single color attachment set to the destination mip; the down passes use <code>storeAction = Store</code> and no blending, while the up passes enable additive blending on the attachment:</p>
+
+        <pre><code class="language-cpp" data-file="BloomMetal.cpp">// Additive blend for the upsample passes, set on the pipeline descriptor.
+auto* att = pipelineDesc-&gt;colorAttachments()-&gt;object(0);
+att-&gt;setPixelFormat(MTL::PixelFormatRGBA16Float);
+att-&gt;setBlendingEnabled(true);
+att-&gt;setSourceRGBBlendFactor(MTL::BlendFactorOne);
+att-&gt;setDestinationRGBBlendFactor(MTL::BlendFactorOne);
+att-&gt;setRgbBlendOperation(MTL::BlendOperationAdd);</code></pre>
+
+        <p>The three fragment functions are line-for-line equivalents of the HLSL: an HLSL <code>Texture2D</code>/<code>SamplerState</code> pair becomes an MSL <code>texture2d&lt;float&gt;</code>/<code>sampler</code>, <code>Sample</code> becomes <code>.sample</code>, and the threshold, 13-tap and tent math are identical. If you author in GLSL for a Vulkan backend, the same kernels translate with <code>texture()</code> lookups and a <code>vec3</code> accumulator. All of the orchestration — mip sizes, loop order, parameters — stays in shared engine C++; only resource creation and encoder setup live in each backend.</p>
+
+        <p>That is a complete, production-shaped bloom. In Module 11 this is exactly what will make lava, glowstone and glowing ore <em>read</em> as light sources: give those materials emissive color above <code>1.0</code> so they land in the HDR target, and this pipeline turns them into pools of glow across the voxel world. The next lesson wires bloom, tone mapping and the rest into one composable post-process stack your engine can toggle per effect.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Bloom fakes light scatter around very bright areas; it runs on <strong>linear HDR</strong> color and must be composited <strong>before</strong> tone mapping.</li>
+            <li>The <strong>bright pass</strong> keeps only luminance above a threshold, rescaling color to preserve hue, with an optional soft knee to avoid flicker.</li>
+            <li>A <strong>downsample chain</strong> of 5–6 half-then-quarter-res targets, each blurred with a 13-tap energy-preserving filter, reaches a huge blur radius cheaply.</li>
+            <li>The <strong>upsample-and-add</strong> pass walks back up the chain, additively blending a 9-tap tent filter so many blur scales sum into a smooth, band-free glow.</li>
+            <li>The C++ orchestration allocates one mip chain, loops down (opaque) then up (additive) with no ping-pong, and leaves the finished bloom in mip 0.</li>
+            <li>Composite with <code>scene + bloomStrength * bloom</code>, then tone map. Keep the threshold high enough that only highlights glow, and never bloom after the tone curve.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

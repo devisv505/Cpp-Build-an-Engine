@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sockets on Windows &amp; macOS — Learn C++ Engine Development</title>
+  <meta name="description" content="Create a small portable socket layer for Winsock2 on Windows and BSD sockets on macOS, built with CLion and CMake.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page"><div id="app"><main class="content"><article class="lesson">
+  <h1>Sockets on Windows &amp; macOS</h1>
+  <p class="lead">The socket API is almost the same on both course platforms. Windows provides Winsock2; macOS provides BSD/POSIX sockets. We will isolate their small lifecycle and type differences in one header so every later networking lesson builds from the same CLion project.</p>
+
+  <div class="objectives"><div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div><ul>
+    <li>Include and link the correct networking API on Windows and macOS.</li>
+    <li>Normalize socket handles, closing, errors, and non-blocking mode.</li>
+    <li>Use RAII for Windows socket subsystem startup.</li>
+    <li>Create a UDP socket with one shared C++ code path.</li>
+  </ul></div>
+
+  <h2>The differences worth hiding</h2>
+  <div class="table-wrap"><table><thead><tr><th>Concept</th><th>Windows</th><th>macOS</th></tr></thead><tbody>
+    <tr><td>Headers</td><td><code>winsock2.h</code>, <code>ws2tcpip.h</code></td><td><code>sys/socket.h</code>, <code>netinet/in.h</code>, <code>arpa/inet.h</code></td></tr>
+    <tr><td>Handle</td><td><code>SOCKET</code></td><td><code>int</code></td></tr>
+    <tr><td>Invalid handle</td><td><code>INVALID_SOCKET</code></td><td><code>-1</code></td></tr>
+    <tr><td>Close</td><td><code>closesocket</code></td><td><code>close</code></td></tr>
+    <tr><td>Last error</td><td><code>WSAGetLastError()</code></td><td><code>errno</code></td></tr>
+    <tr><td>Startup</td><td><code>WSAStartup</code>/<code>WSACleanup</code></td><td>none</td></tr>
+  </tbody></table></div>
+
+  <h2>A portable socket header</h2>
+  <pre><code class="language-cpp" data-file="SocketPlatform.h">#pragma once
+
+#ifdef _WIN32
+  #define WIN32_LEAN_AND_MEAN
+  #include &lt;winsock2.h&gt;
+  #include &lt;ws2tcpip.h&gt;
+
+  using SocketHandle = SOCKET;
+  using SocketLength = int;
+  constexpr SocketHandle InvalidSocket = INVALID_SOCKET;
+
+  inline int CloseSocket(SocketHandle socket) { return closesocket(socket); }
+  inline int LastSocketError() { return WSAGetLastError(); }
+  inline bool WouldBlock(int error) { return error == WSAEWOULDBLOCK; }
+  inline bool SetNonBlocking(SocketHandle socket) {
+      u_long enabled = 1;
+      return ioctlsocket(socket, FIONBIO, &amp;enabled) == 0;
+  }
+#else
+  #include &lt;arpa/inet.h&gt;
+  #include &lt;cerrno&gt;
+  #include &lt;fcntl.h&gt;
+  #include &lt;netinet/in.h&gt;
+  #include &lt;sys/socket.h&gt;
+  #include &lt;unistd.h&gt;
+
+  using SocketHandle = int;
+  using SocketLength = socklen_t;
+  constexpr SocketHandle InvalidSocket = -1;
+
+  inline int CloseSocket(SocketHandle socket) { return close(socket); }
+  inline int LastSocketError() { return errno; }
+  inline bool WouldBlock(int error) { return error == EWOULDBLOCK || error == EAGAIN; }
+  inline bool SetNonBlocking(SocketHandle socket) {
+      const int flags = fcntl(socket, F_GETFL, 0);
+      return flags != -1 &amp;&amp; fcntl(socket, F_SETFL, flags | O_NONBLOCK) != -1;
+  }
+#endif
+
+class SocketRuntime {
+public:
+    SocketRuntime() {
+#ifdef _WIN32
+        WSADATA data{};
+        m_ready = WSAStartup(MAKEWORD(2, 2), &amp;data) == 0;
+#else
+        m_ready = true;
+#endif
+    }
+
+    ~SocketRuntime() {
+#ifdef _WIN32
+        if (m_ready) WSACleanup();
+#endif
+    }
+
+    bool Ready() const { return m_ready; }
+
+private:
+    bool m_ready = false;
+};</code></pre>
+
+  <h2>Create a socket once</h2>
+  <pre><code class="language-cpp" data-file="main.cpp">#include "SocketPlatform.h"
+#include &lt;iostream&gt;
+
+int main() {
+    SocketRuntime runtime;
+    if (!runtime.Ready()) {
+        std::cerr &lt;&lt; "Socket subsystem initialization failed\n";
+        return 1;
+    }
+
+    SocketHandle socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket == InvalidSocket) {
+        std::cerr &lt;&lt; "socket() failed: " &lt;&lt; LastSocketError() &lt;&lt; '\n';
+        return 1;
+    }
+
+    std::cout &lt;&lt; "UDP socket ready\n";
+    CloseSocket(socket);
+}</code></pre>
+
+  <h2>CMake in CLion</h2>
+  <pre><code class="language-cmake" data-file="CMakeLists.txt">cmake_minimum_required(VERSION 3.24)
+project(SocketDemo LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+add_executable(SocketDemo main.cpp)
+
+if(WIN32)
+  target_link_libraries(SocketDemo PRIVATE ws2_32)
+endif()</code></pre>
+  <p>macOS needs no extra socket library. Reload CMake in CLion after editing this file, then run the same target on either platform.</p>
+
+  <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Do not expose platform socket types</div><p>Engine headers should use <code>SocketHandle</code> and helper functions from this file. That prevents later gameplay and serialization code from becoming Windows-only.</p></div></div>
+
+  <div class="recap"><div class="r-title">Recap</div><ul>
+    <li>Winsock2 and BSD sockets share the core calls: <code>socket</code>, <code>bind</code>, <code>sendto</code>, and <code>recvfrom</code>.</li>
+    <li><code>SocketPlatform.h</code> hides handles, close functions, errors, and non-blocking setup.</li>
+    <li><code>SocketRuntime</code> performs Windows-only startup with RAII and is a no-op on macOS.</li>
+    <li>CMake links <code>ws2_32</code> only inside its <code>WIN32</code> branch.</li>
+  </ul></div>
+</article></main></div><script src="../../js/curriculum.js"></script><script src="../../js/main.js"></script></body>
+</html>

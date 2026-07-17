@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Textures &amp; Sampling — Learn C++ Engine Development</title>
+  <meta name="description" content="Add UV coordinates, upload an ID3D11Texture2D, create a shader resource view and sampler, and sample a texture in HLSL.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Textures &amp; Sampling</h1>
+
+        <p class="lead">So far our triangles have been painted with flat vertex colors. Real engines wrap geometry in images — brick walls, character skins, UI icons. In this lesson we teach the GPU to read pixels from a texture and paint them onto our mesh. This is the exact machinery Unity and Unreal use for every material you have ever seen, and it is the foundation for the material system we will build later.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What UV texture coordinates are and how to add them to your <code>Vertex</code>.</li>
+            <li>How to create an <code>ID3D11Texture2D</code> and wrap it in an <code>ID3D11ShaderResourceView</code>.</li>
+            <li>How a sampler state controls filtering and address (wrap/clamp) modes.</li>
+            <li>How to sample a texture in HLSL with <code>tex.Sample(samp, uv)</code>.</li>
+            <li>How to bind both to the pixel shader with <code>PSSetShaderResources</code> and <code>PSSetSamplers</code>.</li>
+          </ul>
+        </div>
+
+        <h2>UV coordinates: a map from mesh to image</h2>
+
+        <p>A texture is just a 2D grid of pixels. To decide which pixel lands on which part of a triangle, every vertex carries a <strong>texture coordinate</strong> — a 2D point usually written <code>(u, v)</code>. By convention <code>(0, 0)</code> is the top-left corner of the image and <code>(1, 1)</code> is the bottom-right, regardless of the texture's actual resolution. The GPU interpolates these UVs across the triangle, exactly the way it interpolated colors in earlier lessons, so every pixel gets its own coordinate into the image.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="40" y="30" width="140" height="140" stroke="#4aa8ff"/>
+          <text x="30" y="25" fill="currentColor" stroke="none" font-size="13">(0,0)</text>
+          <text x="150" y="192" fill="currentColor" stroke="none" font-size="13">(1,1)</text>
+          <text x="70" y="105" fill="currentColor" stroke="none" font-size="13">image</text>
+          <path d="M200 100 L280 100" stroke="#4aa8ff"/>
+          <path d="M272 92 L280 100 L272 108" stroke="#4aa8ff"/>
+          <polygon points="360,40 480,60 400,170" stroke="#4aa8ff"/>
+          <text x="360" y="35" fill="currentColor" stroke="none" font-size="12">uv (0,0)</text>
+          <text x="486" y="60" fill="currentColor" stroke="none" font-size="12">uv (1,0)</text>
+          <text x="360" y="188" fill="currentColor" stroke="none" font-size="12">uv (0,1)</text>
+        </svg></div><figcaption>UVs assign each vertex a spot in the image; the rasterizer fills in the rest.</figcaption></figure>
+
+        <p>Let's extend the vertex layout we built for our mesh. We add a two-float UV field and describe it to Direct3D with a new input element.</p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">#include &lt;DirectXMath.h&gt;
+
+struct Vertex
+{
+    DirectX::XMFLOAT3 position; // x, y, z
+    DirectX::XMFLOAT2 uv;       // u, v  (new!)
+};
+
+// Describe the layout to the Input Assembler.
+// The offsets must match the struct exactly.
+D3D11_INPUT_ELEMENT_DESC layout[] =
+{
+    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+      D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    // 12 bytes = the three position floats come first.
+    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12,
+      D3D11_INPUT_PER_VERTEX_DATA, 0 },
+};</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Offsets must match the struct</div><p>The <code>12</code> in the <code>TEXCOORD</code> element is the byte offset of <code>uv</code> — three 4-byte floats of position. If your struct and layout disagree, the GPU reads garbage and your texture appears scrambled. You can pass <code>D3D11_APPEND_ALIGNED_ELEMENT</code> instead of a hard-coded offset to let Direct3D compute it for you.</p></div></div>
+
+        <h2>Creating the texture</h2>
+
+        <p>A texture on the GPU is an <code>ID3D11Texture2D</code>. In a shipping engine you would load its pixels from a file — the <strong>WIC</strong> API (via <code>DirectXTK</code>'s <code>CreateWICTextureFromFile</code>) decodes PNG/JPG, and a DDS loader (<code>CreateDDSTextureFromFile</code>) reads pre-compressed textures with mipmaps. Both helpers hand you the texture and its view in one call. To keep this lesson dependency-free and to make the data crystal clear, we will instead generate a tiny <strong>procedural checkerboard</strong> in memory and upload it ourselves.</p>
+
+        <pre><code class="language-cpp" data-file="Texture.cpp">#include &lt;d3d11.h&gt;
+#include &lt;vector&gt;
+#include &lt;cstdint&gt;
+#include &lt;wrl/client.h&gt;
+
+using Microsoft::WRL::ComPtr;
+
+// Build an 8x8 RGBA checkerboard entirely in CPU memory.
+static std::vector&lt;uint32_t&gt; MakeCheckerboard()
+{
+    const int size = 8;
+    std::vector&lt;uint32_t&gt; pixels(size * size);
+    for (int y = 0; y &lt; size; ++y)
+        for (int x = 0; x &lt; size; ++x)
+        {
+            bool dark = ((x + y) &amp; 1) != 0;
+            // 0xAABBGGRR byte order for DXGI_FORMAT_R8G8B8A8_UNORM.
+            pixels[y * size + x] = dark ? 0xFF404040u : 0xFFFFFFFFu;
+        }
+    return pixels;
+}
+
+// Returns a shader resource view ready to bind to the pixel shader.
+ComPtr&lt;ID3D11ShaderResourceView&gt; CreateCheckerboardSRV(ID3D11Device* device)
+{
+    const UINT size = 8;
+    std::vector&lt;uint32_t&gt; pixels = MakeCheckerboard();
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width          = size;
+    desc.Height         = size;
+    desc.MipLevels      = 1;                 // one level, no mipmaps
+    desc.ArraySize      = 1;
+    desc.Format         = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;               // no MSAA on the texture
+    desc.Usage          = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags      = D3D11_BIND_SHADER_RESOURCE;
+
+    // Point the initial data at our pixel buffer.
+    D3D11_SUBRESOURCE_DATA init = {};
+    init.pSysMem     = pixels.data();
+    init.SysMemPitch = size * sizeof(uint32_t); // bytes per row
+
+    ComPtr&lt;ID3D11Texture2D&gt; texture;
+    HRESULT hr = device-&gt;CreateTexture2D(&amp;desc, &amp;init, &amp;texture);
+    if (FAILED(hr)) return nullptr;
+
+    // A shader resource view is the handle shaders actually read through.
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format              = desc.Format;
+    srvDesc.ViewDimension       = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    ComPtr&lt;ID3D11ShaderResourceView&gt; srv;
+    hr = device-&gt;CreateShaderResourceView(texture.Get(), &amp;srvDesc, &amp;srv);
+    if (FAILED(hr)) return nullptr;
+
+    return srv;
+}</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Texture vs. view</div><p>The <code>ID3D11Texture2D</code> owns the pixel memory; the <code>ID3D11ShaderResourceView</code> (SRV) is the read-only handle a shader binds to. This split lets the same resource be viewed different ways — as a render target, a depth buffer, or a shader input. Shaders always read through a view, never the resource directly.</p></div></div>
+
+        <p><strong>SysMemPitch</strong> is the number of bytes in one row of the source image. For our 8-pixel-wide RGBA texture that is <code>8 * 4 = 32</code> bytes. Getting the pitch wrong is a classic cause of skewed or diagonally-smeared textures.</p>
+
+        <h2>The sampler: how pixels are read</h2>
+
+        <p>The texture holds the data, but <em>how</em> the GPU reads it is a separate object: an <code>ID3D11SamplerState</code>. It answers two questions. First, <strong>filtering</strong>: when a UV lands between texels, do we snap to the nearest one (crisp, blocky) or blend neighbors (smooth)? Second, <strong>addressing</strong>: what happens when a UV goes outside the <code>0..1</code> range — wrap (tile), clamp, or mirror?</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Setting</th><th>Value we use</th><th>Effect</th></tr></thead><tbody>
+          <tr><td>Filter</td><td><code>MIN_MAG_MIP_LINEAR</code></td><td>Smoothly blends texels when magnified or minified.</td></tr>
+          <tr><td>AddressU / V</td><td><code>WRAP</code></td><td>UVs beyond 1.0 tile the image — great for repeating brick.</td></tr>
+          <tr><td>Alternative filter</td><td><code>MIN_MAG_MIP_POINT</code></td><td>Nearest-texel; keeps our checkerboard crisp and pixel-art sharp.</td></tr>
+        </tbody></table></div>
+
+        <pre><code class="language-cpp" data-file="Sampler.cpp">// Create a sampler that blends texels and tiles out-of-range UVs.
+ComPtr&lt;ID3D11SamplerState&gt; CreateSampler(ID3D11Device* device)
+{
+    D3D11_SAMPLER_DESC desc = {};
+    desc.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR; // smooth blending
+    desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    desc.MinLOD   = 0;
+    desc.MaxLOD   = D3D11_FLOAT32_MAX;
+
+    ComPtr&lt;ID3D11SamplerState&gt; sampler;
+    HRESULT hr = device-&gt;CreateSamplerState(&amp;desc, &amp;sampler);
+    return SUCCEEDED(hr) ? sampler : nullptr;
+}</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Samplers are reusable</div><p>You typically create a handful of samplers at startup — one linear-wrap, one point-clamp, maybe an anisotropic one — and share them across every draw call. They are cheap, immutable state objects. Our engine's material system will let each material pick which shared sampler it wants.</p></div></div>
+
+        <h2>Sampling in HLSL</h2>
+
+        <p>Now the shader side. The pixel shader declares two new global objects — a <code>Texture2D</code> and a <code>SamplerState</code> — each bound to a register. The vertex shader simply passes the interpolated UV straight through.</p>
+
+        <pre><code class="language-hlsl" data-file="Textured.hlsl">// ---- Vertex shader ----
+struct VSInput
+{
+    float3 position : POSITION;
+    float2 uv       : TEXCOORD0;
+};
+
+struct PSInput
+{
+    float4 position : SV_POSITION; // clip-space, required
+    float2 uv       : TEXCOORD0;   // interpolated across the triangle
+};
+
+PSInput VSMain(VSInput input)
+{
+    PSInput output;
+    output.position = float4(input.position, 1.0f);
+    output.uv       = input.uv; // hand the UV to the pixel shader
+    return output;
+}
+
+// ---- Pixel shader ----
+Texture2D    gTexture : register(t0); // matches SRV slot 0
+SamplerState gSampler : register(s0); // matches sampler slot 0
+
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    // Read the color at this pixel's UV using our sampling rules.
+    return gTexture.Sample(gSampler, input.uv);
+}</code></pre>
+
+        <p>The register letters matter: <code>t0</code> is texture (SRV) slot 0, and <code>s0</code> is sampler slot 0. These must line up with the C++ slots you bind to. In the next lesson we will multiply the position by a camera matrix here, but the texturing logic stays identical.</p>
+
+        <h2>Binding before the draw call</h2>
+
+        <p>Each frame, before <code>DrawIndexed</code>, we tell the pixel shader stage which SRV and which sampler to use. The <code>PS</code> prefix means "pixel shader stage"; there are matching <code>VS</code>/<code>CS</code> versions for other stages.</p>
+
+        <pre><code class="language-cpp" data-file="Render.cpp">// context is an ID3D11DeviceContext*, created once at startup.
+ID3D11ShaderResourceView* srvs[]     = { checkerSRV.Get() };
+ID3D11SamplerState*        samplers[] = { sampler.Get() };
+
+// Bind to slots starting at 0 -> matches register(t0) / register(s0).
+context-&gt;PSSetShaderResources(0, 1, srvs);
+context-&gt;PSSetSamplers(0, 1, samplers);
+
+// ... set vertex/index buffers, shaders, input layout ...
+context-&gt;DrawIndexed(indexCount, 0, 0);</code></pre>
+
+        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">Black geometry? Check these first</div><p>If your mesh renders solid black, the usual culprits are: you forgot to call <code>PSSetShaderResources</code>/<code>PSSetSamplers</code>, the register slots in HLSL don't match the C++ binding slots, or the UVs in your vertex buffer are all zero. Turn on the D3D11 debug layer — it prints a warning when a shader samples an unbound texture.</p></div></div>
+
+        <p>That is the complete pipeline: UVs travel from the vertex buffer, through the rasterizer, into the pixel shader, where a sampler reads the bound texture and returns a color. Swap the checkerboard for a WIC-loaded PNG and you have a real textured material — the same building block every asset in a modern game is built on.</p>
+
+        <h2>macOS — textures and samplers in Metal</h2>
+        <p>Create an <code>MTL::Texture</code> from a texture descriptor, upload pixels, and bind it with a sampler:</p>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::TextureDescriptor* desc =
+    MTL::TextureDescriptor::texture2DDescriptor(
+        MTL::PixelFormatRGBA8Unorm, width, height, true);
+desc-&gt;setUsage(MTL::TextureUsageShaderRead);
+
+MTL::Texture* texture = device-&gt;newTexture(desc);
+// Upload decoded RGBA bytes to mip level 0, then generate or upload mips.
+
+encoder-&gt;setFragmentTexture(texture, 0);
+encoder-&gt;setFragmentSamplerState(sampler, 0);</code></pre>
+        <p>An HLSL <code>Texture2D</code>/<code>SamplerState</code> pair maps directly to MSL <code>texture2d&lt;float&gt;</code>/<code>sampler</code> arguments. Asset decoding and mip data stay shared C++; resource creation and binding stay in the backend.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>UV coordinates <code>(0,0)</code>–<code>(1,1)</code> map each vertex to a spot in the image; add a <code>XMFLOAT2 uv</code> to your vertex and a <code>TEXCOORD</code> input element.</li>
+            <li>An <code>ID3D11Texture2D</code> holds the pixels; you read it through an <code>ID3D11ShaderResourceView</code>. Load real images with WIC or a DDS loader, or upload data yourself via <code>D3D11_SUBRESOURCE_DATA</code>.</li>
+            <li>An <code>ID3D11SamplerState</code> controls filtering (point vs. linear) and addressing (wrap/clamp/mirror), and is shared across draws.</li>
+            <li>In HLSL, declare <code>Texture2D</code> at <code>register(t0)</code> and <code>SamplerState</code> at <code>register(s0)</code>, then call <code>tex.Sample(samp, uv)</code>.</li>
+            <li>Bind them each frame with <code>PSSetShaderResources</code> and <code>PSSetSamplers</code>, matching the register slots.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

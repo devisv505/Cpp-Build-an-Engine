@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Encapsulation, const &amp; Access — Learn C++ &amp; DirectX</title>
+  <title>Encapsulation, const &amp; Access — Learn C++ Engine Development</title>
   <meta name="description" content="Learn C++ encapsulation: access specifiers, hiding data behind methods, getters/setters and const-correct member functions for a clean engine API.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -186,6 +186,9 @@ private:
 
         <h2>Why a clean engine API relies on this</h2>
         <p>Unity and Unreal expose thousands of objects through small, disciplined interfaces. You never poke a private field of a Unity <code>Transform</code>; you call <code>SetPosition</code> and trust it to update everything downstream. Your engine will grow the same way. Every component you build — meshes, materials, cameras — becomes a black box with a tidy public face and a protected interior. When a subsystem misbehaves you look inside one class, not the whole program, because nothing else could have touched its data.</p>
+
+        <h2>The same interface on macOS</h2>
+        <p>The encapsulated public <code>Transform</code> API does not change. A Windows implementation may store or convert to DirectXMath types, while a macOS implementation can convert the same private floats to <code>simd_float3</code> and <code>simd_float4x4</code>. Because callers use getters, setters, and <code>worldMatrix()</code>, the backing library remains an implementation detail.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Graphics Pipeline Explained — Learn C++ Engine Development</title>
+  <meta name="description" content="A beginner-friendly tour of the Direct3D 11 graphics pipeline: how vertices flow through stages and become the pixels you see.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>The Graphics Pipeline Explained</h1>
+
+        <p class="lead">
+          Before we write a single line of Direct3D code, we need a mental map of what actually happens
+          when a triangle appears on screen. The GPU is a factory, and the <strong>graphics pipeline</strong>
+          is its assembly line: raw numbers go in one end, finished pixels come out the other. Once this
+          picture clicks, every DirectX function we call in the coming lessons will have an obvious "home"
+          on that assembly line — and our engine's renderer will stop feeling like magic.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why the GPU uses a fixed sequence of <strong>stages</strong> instead of one big function.</li>
+            <li>The five core Direct3D 11 stages and what each one consumes and produces.</li>
+            <li>How a list of vertices is turned into shaded pixels through <strong>rasterization</strong>.</li>
+            <li>What <strong>buffers</strong> and <strong>shaders</strong> are, at a high level, so later lessons make sense.</li>
+            <li>Where our engine's data (meshes, transforms, materials) will plug into the pipeline.</li>
+          </ul>
+        </div>
+
+        <h2>The GPU as an assembly line</h2>
+        <p>
+          A modern GPU renders millions of triangles every frame. It can do this because it does not treat
+          each triangle as a one-off problem. Instead, all geometry flows through the same fixed sequence of
+          steps, and each step is heavily optimized to do one job for thousands of items in parallel. That
+          sequence is the graphics pipeline.
+        </p>
+        <p>
+          Some stages are <strong>fixed-function</strong> — the hardware does exactly one thing and you only
+          tweak settings. Other stages are <strong>programmable</strong>: you supply a small program, called a
+          <strong>shader</strong>, that runs once per vertex or once per pixel. Direct3D 11 exposes both kinds,
+          and understanding which is which tells you where <em>you</em> get to write code and where you simply
+          configure the machine.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Data goes in, pixels come out</div>
+            <p>
+              The whole pipeline has one purpose: take a description of geometry (points in 3D space plus
+              properties like color and texture coordinates) and decide what color each pixel of the final
+              image should be. Everything else is detail.
+            </p>
+          </div>
+        </div>
+
+        <h2>The five core stages</h2>
+        <p>
+          Direct3D 11 has several stages, but five carry the essential story. Read them top to bottom — data
+          flows in exactly this order, and the output of each stage becomes the input to the next.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 620 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagram of the Direct3D 11 pipeline stages from Input Assembler to Output Merger">
+              <defs>
+                <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0 0 L8 3 L0 6 z" fill="#4aa8ff"/>
+                </marker>
+              </defs>
+              <!-- Stage boxes -->
+              <g fill="none" stroke="#4aa8ff" stroke-width="2">
+                <rect x="20"  y="90" width="90" height="60" rx="8"/>
+                <rect x="140" y="90" width="90" height="60" rx="8"/>
+                <rect x="260" y="90" width="90" height="60" rx="8"/>
+                <rect x="380" y="90" width="90" height="60" rx="8"/>
+                <rect x="500" y="90" width="90" height="60" rx="8"/>
+              </g>
+              <!-- Connecting arrows -->
+              <g stroke="#4aa8ff" stroke-width="2">
+                <line x1="110" y1="120" x2="140" y2="120" marker-end="url(#arrow)"/>
+                <line x1="230" y1="120" x2="260" y2="120" marker-end="url(#arrow)"/>
+                <line x1="350" y1="120" x2="380" y2="120" marker-end="url(#arrow)"/>
+                <line x1="470" y1="120" x2="500" y2="120" marker-end="url(#arrow)"/>
+              </g>
+              <!-- Stage labels -->
+              <g fill="currentColor" font-family="sans-serif" font-size="12" text-anchor="middle">
+                <text x="65"  y="115">Input</text><text x="65"  y="131">Assembler</text>
+                <text x="185" y="115">Vertex</text><text x="185" y="131">Shader</text>
+                <text x="305" y="123">Rasterizer</text>
+                <text x="425" y="115">Pixel</text><text x="425" y="131">Shader</text>
+                <text x="545" y="115">Output</text><text x="545" y="131">Merger</text>
+              </g>
+              <!-- Programmable badges -->
+              <g fill="#4aa8ff" font-family="sans-serif" font-size="10" text-anchor="middle">
+                <text x="185" y="80">programmable</text>
+                <text x="425" y="80">programmable</text>
+              </g>
+              <!-- In / Out labels -->
+              <g fill="currentColor" font-family="sans-serif" font-size="12" text-anchor="middle" opacity="0.8">
+                <text x="65"  y="185">vertices in</text>
+                <text x="545" y="185">pixels out</text>
+              </g>
+            </svg>
+          </div>
+          <figcaption>The core Direct3D 11 pipeline. The Vertex Shader and Pixel Shader are programmable; the others are configured.</figcaption>
+        </figure>
+
+        <h3>1. Input Assembler (IA)</h3>
+        <p>
+          The pipeline starts here. The Input Assembler reads your raw vertex data out of a
+          <strong>vertex buffer</strong> and, optionally, an <strong>index buffer</strong>, then groups those
+          vertices into <strong>primitives</strong> — usually triangles. You also tell it the
+          <em>topology</em> (for example, "treat every three vertices as one triangle"). Its output is a
+          stream of assembled primitives ready to be transformed.
+        </p>
+
+        <h3>2. Vertex Shader (VS)</h3>
+        <p>
+          This is the first place you write a program. The Vertex Shader runs <strong>once per vertex</strong>.
+          Its main job is to take a vertex's position in model space and transform it — through the world,
+          view, and projection matrices — into <strong>clip space</strong>, the coordinate system the GPU
+          needs to figure out where the vertex lands on screen. It can also pass along extra data (colors,
+          normals, texture coordinates) for later stages. One vertex in, one transformed vertex out.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">This is where our Transform lives</div>
+            <p>
+              When our engine gives an object a <code>Transform</code> component (position, rotation, scale),
+              that data ends up as matrices fed to the Vertex Shader. Moving a cube in the world is really
+              just handing the VS a different world matrix each frame.
+            </p>
+          </div>
+        </div>
+
+        <h3>3. Rasterizer</h3>
+        <p>
+          The Rasterizer is fixed-function and does the crucial hand-off from geometry to image. It takes each
+          triangle (now in screen space), figures out exactly which pixels the triangle covers, and generates
+          a <strong>fragment</strong> for every one of them. Along the way it <em>interpolates</em> the
+          per-vertex data across the triangle's surface, so a fragment in the middle of a triangle gets a
+          smooth blend of its three corners' colors and coordinates. This is the moment <strong>vertices
+          become pixels</strong>. It also clips geometry outside the screen and can cull back-facing triangles
+          to save work.
+        </p>
+
+        <h3>4. Pixel Shader (PS)</h3>
+        <p>
+          The second programmable stage. The Pixel Shader runs <strong>once per fragment</strong> and decides
+          its final color. This is where lighting, texture sampling, and material logic happen — the shading
+          that makes a flat triangle look like brick, metal, or skin. One fragment in, one color out.
+        </p>
+
+        <h3>5. Output Merger (OM)</h3>
+        <p>
+          The final stage blends each shaded fragment into the <strong>render target</strong> (the image you
+          will present to the window). It runs the <strong>depth test</strong> so nearer objects correctly
+          hide farther ones, applies any transparency <strong>blending</strong>, and writes the result. After
+          the Output Merger, your pixel is done.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">There are more stages than these five</div>
+            <p>
+              Between the Vertex Shader and Rasterizer, Direct3D 11 also offers the <strong>Hull</strong>,
+              <strong>Tessellator</strong>, and <strong>Domain</strong> shaders (for tessellation) and the
+              <strong>Geometry Shader</strong> (for creating or discarding primitives). They are optional and
+              powerful, but we will leave them disabled for a long time. Ignore them for now — the five core
+              stages are all our engine needs to draw its first mesh.
+            </p>
+          </div>
+        </div>
+
+        <h2>Following one triangle through</h2>
+        <p>
+          Let's trace a single triangle to make the flow concrete. Suppose we want to draw one red triangle:
+        </p>
+        <ol>
+          <li><strong>IA:</strong> reads three vertices from the vertex buffer and assembles them into one triangle primitive.</li>
+          <li><strong>VS:</strong> runs three times (once per vertex), transforming each corner into clip space.</li>
+          <li><strong>Rasterizer:</strong> discovers the triangle covers, say, 4,000 pixels and emits 4,000 fragments, interpolating position and color across them.</li>
+          <li><strong>PS:</strong> runs 4,000 times, returning red (or a lit variation) for each fragment.</li>
+          <li><strong>OM:</strong> depth-tests each fragment and writes the survivors into the render target.</li>
+        </ol>
+        <p>
+          Notice how the work multiplies: three vertices ballooned into thousands of pixels. That is exactly
+          why the GPU is built for massive parallelism, and why we care about feeding it efficiently.
+        </p>
+
+        <h2>Buffers and shaders: the two things you supply</h2>
+        <p>
+          To make the pipeline run, you provide two categories of resource. We will build both in the next
+          lessons, so here is just enough vocabulary to recognize them.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>You supply</th><th>What it is</th><th>Pipeline stage it feeds</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Vertex buffer</td><td>An array of vertices (positions, colors, UVs, normals)</td><td>Input Assembler</td></tr>
+              <tr><td>Index buffer</td><td>A list of indices that reuse vertices to form triangles</td><td>Input Assembler</td></tr>
+              <tr><td>Constant buffer</td><td>Small, per-draw data such as transform matrices</td><td>Vertex &amp; Pixel Shaders</td></tr>
+              <tr><td>Vertex shader</td><td>A small HLSL program run per vertex</td><td>Vertex Shader stage</td></tr>
+              <tr><td>Pixel shader</td><td>A small HLSL program run per fragment</td><td>Pixel Shader stage</td></tr>
+              <tr><td>Textures</td><td>Images sampled to color surfaces</td><td>Pixel Shader (usually)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Shaders are written in <strong>HLSL</strong> (High-Level Shading Language), a C-like language that
+          runs on the GPU. Here is the shape of a minimal vertex/pixel shader pair so the words above have a
+          face. Do not worry about the syntax yet — just see that each is a tiny function with a clear input
+          and output, matching the stages we described.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Triangle.hlsl">// A constant buffer: per-draw data uploaded from C++ (our Transform ends up here)
+cbuffer PerObject : register(b0)
+{
+    float4x4 worldViewProj; // combined transform matrix
+};
+
+// What the Input Assembler hands to the Vertex Shader
+struct VSInput
+{
+    float3 position : POSITION;
+    float4 color    : COLOR;
+};
+
+// What the Vertex Shader passes down to the Pixel Shader
+struct VSOutput
+{
+    float4 position : SV_POSITION; // clip-space position (required)
+    float4 color    : COLOR;
+};
+
+// Vertex Shader: runs once per vertex
+VSOutput VSMain(VSInput input)
+{
+    VSOutput output;
+    // Transform the model-space point into clip space
+    output.position = mul(float4(input.position, 1.0f), worldViewProj);
+    output.color    = input.color; // pass color through for interpolation
+    return output;
+}
+
+// Pixel Shader: runs once per fragment, returns the final color
+float4 PSMain(VSOutput input) : SV_TARGET
+{
+    return input.color; // the rasterizer already blended the corner colors
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">SV_POSITION is not optional</div>
+            <p>
+              The vertex shader <em>must</em> output a clip-space position tagged with the
+              <code>SV_POSITION</code> semantic. Without it the Rasterizer has no idea where the triangle
+              belongs on screen, and you will get nothing but a blank window — one of the most common
+              first-triangle bugs.
+            </p>
+          </div>
+        </div>
+
+        <h2>Why this matters for our engine</h2>
+        <p>
+          Every renderer, including the ones inside Unity and Unreal, ultimately drives this same pipeline.
+          When our engine grows a <code>MeshRenderer</code> component, its job will be to bind a vertex buffer,
+          upload the object's transform into a constant buffer, set the right shaders, and issue a draw call.
+          The pipeline you just met is the target of all that plumbing. Keeping this five-stage picture in your
+          head will make the upcoming, more detailed lessons feel like filling in a diagram you already
+          understand rather than memorizing disconnected API calls.
+        </p>
+
+        <h2>macOS — the same pipeline in Metal</h2>
+        <p>Metal exposes the same programmable pipeline with different object names. The engine-level stages do not change:</p>
+        <div class="table-wrap"><table><thead><tr><th>Pipeline job</th><th>Direct3D 11</th><th>Metal</th></tr></thead><tbody>
+          <tr><td>Vertex input description</td><td>Input layout</td><td><code>MTLVertexDescriptor</code></td></tr>
+          <tr><td>Vertex program</td><td>HLSL vertex shader</td><td>Metal vertex function</td></tr>
+          <tr><td>Rasterization</td><td>Rasterizer state</td><td>Render encoder state</td></tr>
+          <tr><td>Pixel program</td><td>HLSL pixel shader</td><td>Metal fragment function</td></tr>
+          <tr><td>Final target</td><td>Render-target view</td><td>Color attachment texture</td></tr>
+        </tbody></table></div>
+        <p>Direct3D commands go through a device context. Metal records commands through an <code>MTL::RenderCommandEncoder</code> inside a command buffer. Our renderer interface names the intent—bind pipeline, bind mesh, draw—so gameplay never depends on either vocabulary.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The graphics pipeline is a fixed sequence of stages that turns vertices into pixels.</li>
+            <li>The five core stages are Input Assembler, Vertex Shader, Rasterizer, Pixel Shader, and Output Merger.</li>
+            <li>The Vertex Shader and Pixel Shader are programmable (you write HLSL); the others you configure.</li>
+            <li>The Rasterizer is where geometry becomes fragments and per-vertex data gets interpolated.</li>
+            <li>You feed the pipeline with buffers (vertex, index, constant) and shaders — the resources we build next.</li>
+            <li>Optional tessellation and geometry stages exist, but we leave them off until much later.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

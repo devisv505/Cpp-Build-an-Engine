@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Constructors, Destructors &amp; RAII — Learn C++ &amp; DirectX</title>
+  <title>Constructors, Destructors &amp; RAII — Learn C++ Engine Development</title>
   <meta name="description" content="Learn C++ constructors, member initializer lists, destructors, and the RAII idiom that keeps engine resources safe.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -164,12 +164,12 @@ int main() {
           <tbody>
             <tr><td>Heap memory</td><td><code>new[]</code> / allocator</td><td><code>delete[]</code> / deallocate</td></tr>
             <tr><td>File handle</td><td><code>fopen</code> / <code>ifstream</code> open</td><td><code>fclose</code> / stream close</td></tr>
-            <tr><td>DirectX 11 buffer</td><td><code>CreateBuffer</code></td><td><code>Release()</code> on the COM object</td></tr>
+            <tr><td>GPU buffer</td><td>D3D <code>CreateBuffer</code> or Metal <code>newBuffer</code></td><td>COM release on Windows or Metal object release on macOS</td></tr>
             <tr><td>Std container</td><td><code>std::vector</code> ctor</td><td><code>std::vector</code> dtor</td></tr>
           </tbody>
         </table></div>
 
-        <p>When we reach DirectX, every device, buffer, and shader is a reference-counted COM object that must be released. We will wrap those in RAII types (Microsoft even ships <code>Microsoft::WRL::ComPtr</code> for exactly this) so that a <code>Mesh</code> or <code>Texture</code> component owns its GPU resources and releases them automatically when the component is destroyed. Our future <strong>Transform</strong> and <strong>Mesh</strong> components will be RAII objects through and through.</p>
+        <p>GPU resources need explicit ownership on both platforms. Direct3D uses reference-counted COM objects, commonly held by <code>Microsoft::WRL::ComPtr</code>. Metal objects on macOS are held by Objective-C strong references or metal-cpp ownership helpers. Our <code>Mesh</code> and <code>Texture</code> wrappers use RAII so the selected backend releases resources automatically.</p>
 
         <div class="callout tip">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
@@ -184,7 +184,7 @@ int main() {
             <li>A <strong>destructor</strong> (<code>~ClassName</code>) runs automatically at the end of an object's lifetime and is where cleanup belongs.</li>
             <li><strong>RAII</strong> ties a resource's lifetime to an object's: acquire in the constructor, release in the destructor, and cleanup becomes automatic and leak-proof.</li>
             <li>Writing a resource-releasing destructor triggers the <strong>Rule of Three</strong> — handle copying too, or avoid copying the object for now.</li>
-            <li>Standard types like <code>std::vector</code> and <code>std::unique_ptr</code> are RAII, and our DirectX engine will wrap every GPU resource the same way.</li>
+            <li>Standard types like <code>std::vector</code> and <code>std::unique_ptr</code> are RAII, and both graphics backends wrap GPU resources the same way.</li>
           </ul>
         </div>
       </article>

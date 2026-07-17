@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Fullscreen Post-Process Pass — Learn C++ Engine Development</title>
+  <meta name="description" content="The core mechanic behind every post-processing effect: draw one big triangle covering the screen and run a pixel shader over every pixel of the rendered scene.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>The Fullscreen Post-Process Pass</h1>
+
+        <p class="lead">In the last lesson we stopped drawing to the screen and drew the whole scene into a texture instead. That texture is now just data — an image we can read and transform. This lesson teaches the one mechanic that turns that image into any effect you can imagine: draw geometry that covers the entire screen, and run a pixel shader over every pixel of the scene. Grayscale, invert, tone mapping, blur, bloom — they are all this same pass with a different pixel shader. Get this right once and every effect that follows is just math.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What a fullscreen pass is and why it reads one texture and writes another.</li>
+            <li>The single-triangle trick — why one oversized triangle beats a two-triangle quad.</li>
+            <li>How to generate that triangle in HLSL from <code>SV_VertexID</code> with no vertex buffer bound.</li>
+            <li>A pass-through pixel shader plus grayscale, invert and tint variations.</li>
+            <li>A reusable <code>FullscreenPass</code> in our engine that any effect can drive with <code>Draw(3, 0)</code>.</li>
+          </ul>
+        </div>
+
+        <h2>What a fullscreen pass actually is</h2>
+
+        <p>A normal draw takes 3D geometry, transforms it by a camera matrix, and shades whatever fragments the triangles cover. A <strong>fullscreen pass</strong> throws all of that away. There is no model, no camera, no lighting — just a shape that blankets the viewport so the rasterizer generates <em>exactly one fragment per output pixel</em>. In the pixel shader we sample the scene texture from the previous lesson at this pixel's coordinate, do some math, and write the result. Input is one texture (bound as a shader resource view); output is another texture or the swap-chain back buffer (bound as a render target).</p>
+
+        <p>Every post-processing effect is this shape:</p>
+
+        <pre><code class="language-cpp" data-file="post-concept.txt">read  sceneSRV  (the rendered scene, from the previous lesson)
+  for every output pixel:
+    color = sceneSRV.Sample(clampSampler, uv)   // this pixel's scene color
+    color = transform(color)                     // the effect lives here
+write outputRTV (back buffer, or the next texture in the chain)</code></pre>
+
+        <p>Because the transform runs per pixel with the full scene color already available, the pass is where tone mapping decides how to compress HDR, where blur averages neighbours, and where bloom adds glow. First we need the geometry that covers the screen.</p>
+
+        <h2>One triangle, not two</h2>
+
+        <p>The instinct is to draw a screen-sized <strong>quad</strong>: two triangles forming a rectangle from <code>(-1,-1)</code> to <code>(1,1)</code> in clip space. That works, but the professional trick is to draw a <strong>single triangle so large it overhangs the screen on all sides</strong>. The GPU clips the parts that fall outside the viewport, and what remains covers every pixel exactly once.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 520 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A single oversized triangle whose three vertices lie at or beyond the screen edges, with the visible clip-space square marked inside it">
+          <polygon points="110,60 430,60 110,360" fill="#4aa8ff" fill-opacity="0.08" stroke="#4aa8ff" stroke-width="2"/>
+          <rect x="110" y="60" width="160" height="150" fill="#4aa8ff" fill-opacity="0.16" stroke="#4aa8ff" stroke-width="2" stroke-dasharray="6 4"/>
+          <circle cx="110" cy="60" r="4" fill="#4aa8ff" stroke="none"/>
+          <circle cx="430" cy="60" r="4" fill="#4aa8ff" stroke="none"/>
+          <circle cx="110" cy="360" r="4" fill="#4aa8ff" stroke="none"/>
+          <text x="10" y="48" fill="currentColor" stroke="none" font-size="13">id 0 &#183; uv (0,0)</text>
+          <text x="346" y="48" fill="currentColor" stroke="none" font-size="13">id 1 &#183; uv (2,0)</text>
+          <text x="10" y="384" fill="currentColor" stroke="none" font-size="13">id 2 &#183; uv (0,2)</text>
+          <text x="140" y="128" fill="currentColor" stroke="none" font-size="13">visible screen</text>
+          <text x="150" y="148" fill="currentColor" stroke="none" font-size="12">[-1,1] &#215; [-1,1]</text>
+          <text x="298" y="258" fill="currentColor" stroke="none" font-size="12">everything past the</text>
+          <text x="298" y="276" fill="currentColor" stroke="none" font-size="12">screen edge is clipped</text>
+        </svg></div><figcaption>Three vertices at clip positions (-1,1), (3,1) and (-1,-3). The dashed square is the actual screen; the GPU discards the overhang.</figcaption></figure>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why one triangle beats a quad</div><p>A quad has a diagonal seam where its two triangles meet. The GPU rasterizes in small quads of pixels (2&#215;2), and along that seam pixels get shaded twice or fall into partial helper lanes — wasted work and, with derivative-sensitive effects, a faint visible line. A single triangle has no interior edge crossing the screen, so every screen pixel is covered by one continuous surface with perfectly linear UV interpolation. It is a touch faster and strictly cleaner.</p></div></div>
+
+        <h2>Generating the triangle from the vertex id</h2>
+
+        <p>Here is the elegant part: we do not upload any vertices. The vertex shader is invoked three times, and each invocation receives its index in <code>SV_VertexID</code> (0, 1, 2). From that single integer we compute both the clip-space position <em>and</em> the texture coordinate with a couple of bit operations. No vertex buffer, no input layout, no memory traffic.</p>
+
+        <pre><code class="language-hlsl" data-file="Fullscreen.hlsl">struct VSOut
+{
+    float4 position : SV_POSITION; // clip-space position, required
+    float2 uv       : TEXCOORD0;   // where to sample the scene texture
+};
+
+// Invoked 3 times. id is 0, 1, 2. No vertex buffer is bound.
+VSOut FullscreenVS(uint id : SV_VertexID)
+{
+    VSOut o;
+
+    // id 0 -&gt; (0,0),  id 1 -&gt; (2,0),  id 2 -&gt; (0,2)
+    float2 uv = float2((id &lt;&lt; 1) &amp; 2, id &amp; 2);
+    o.uv = uv;
+
+    // Map uv in [0,2] to clip space in [-1,3], flipping V so that
+    // uv (0,0) lands at the TOP-LEFT of the screen (D3D texture origin).
+    o.position = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    return o;
+}</code></pre>
+
+        <p>Walk the three invocations through the math and you get the vertices in the figure:</p>
+
+        <div class="table-wrap"><table><thead><tr><th><code>id</code></th><th><code>(id&lt;&lt;1)&amp;2</code></th><th><code>id&amp;2</code></th><th>uv</th><th>clip <code>position.xy</code></th></tr></thead><tbody>
+          <tr><td>0</td><td>0</td><td>0</td><td>(0, 0)</td><td>(-1, &#160;1)</td></tr>
+          <tr><td>1</td><td>2</td><td>0</td><td>(2, 0)</td><td>(&#160;3, &#160;1)</td></tr>
+          <tr><td>2</td><td>0</td><td>2</td><td>(0, 2)</td><td>(-1, -3)</td></tr>
+        </tbody></table></div>
+
+        <p>The three clip positions <code>(-1,1)</code>, <code>(3,1)</code>, <code>(-1,-3)</code> form a right triangle whose legs stretch to twice the screen size, so it fully encloses the <code>[-1,1]</code> square. The UVs run from <code>(0,0)</code> to <code>(2,0)</code> and <code>(0,2)</code>; after the rasterizer interpolates and clipping trims the overhang, the four visible screen corners end up with exactly <code>(0,0)</code>, <code>(1,0)</code>, <code>(0,1)</code>, <code>(1,1)</code> — a perfect <code>0..1</code> UV map over the scene texture.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">No buffers, no layout</div><p>All three positions come out of <code>SV_VertexID</code>, so there is nothing to allocate, upload, or describe with an input layout. Bind a null vertex buffer, set <code>TRIANGLELIST</code> topology, and issue <code>Draw(3, 0)</code>. This shader is compiled once and shared by every post-process effect in the engine — only the pixel shader changes.</p></div></div>
+
+        <h2>The pixel shader: pass-through, then effects</h2>
+
+        <p>With the geometry handled, the pixel shader is where the effect lives. The simplest one just samples the scene texture at the interpolated UV and returns it unchanged — a copy pass. We declare the scene texture at <code>t0</code> and the sampler at <code>s0</code>, matching the C++ binding slots.</p>
+
+        <pre><code class="language-hlsl" data-file="Fullscreen.hlsl">Texture2D    sceneTex : register(t0); // the rendered scene from last lesson
+SamplerState smp      : register(s0); // a CLAMP sampler (see warning below)
+
+// Pass-through: copy the scene one-to-one.
+float4 PSCopy(VSOut input) : SV_TARGET
+{
+    return sceneTex.Sample(smp, input.uv);
+}</code></pre>
+
+        <p>Because the color of every pixel is now in your hands, an effect is just a function of that color. Here are three that prove the point — each is one line of change from the copy pass.</p>
+
+        <pre><code class="language-hlsl" data-file="Effects.hlsl">// Grayscale via perceptual luminance (Rec. 601 weights).
+float4 PSGrayscale(VSOut input) : SV_TARGET
+{
+    float4 c = sceneTex.Sample(smp, input.uv);
+    float g = dot(c.rgb, float3(0.299, 0.587, 0.114));
+    return float4(g, g, g, c.a);
+}
+
+// Photographic negative: flip each channel.
+float4 PSInvert(VSOut input) : SV_TARGET
+{
+    float4 c = sceneTex.Sample(smp, input.uv);
+    return float4(1.0 - c.rgb, c.a);
+}
+
+// Warm tint: scale channels toward amber.
+float4 PSTint(VSOut input) : SV_TARGET
+{
+    float4 c = sceneTex.Sample(smp, input.uv);
+    return float4(c.rgb * float3(1.10, 0.92, 0.72), c.a);
+}</code></pre>
+
+        <p>The grayscale weights are the standard luminance coefficients — the eye is far more sensitive to green than to blue, so a naive <code>(r+g+b)/3</code> looks muddy by comparison. Everything harder that follows — tone mapping curves, blur kernels, bloom composites — is the same skeleton: sample, compute, return.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Use a CLAMP sampler, and mind the V flip</div><p>Bind a sampler with <code>ADDRESS_CLAMP</code>, not <code>WRAP</code>. Blur and other neighbour-reading effects sample slightly outside <code>0..1</code> at the screen edges; wrapping would pull in color from the opposite side of the image, clamping repeats the edge pixel instead. Also note the <code>* float2(2,-2) + float2(-1,1)</code> in the vertex shader: clip-space Y points up while a Direct3D texture's V axis points down (V=0 is the top row). The <code>-2</code> flips V so the scene is not rendered upside down. Get this wrong and everything is mirrored vertically.</p></div></div>
+
+        <h2>The draw call</h2>
+
+        <p>On Direct3D 11 the whole pass is a handful of state changes and a three-vertex draw. Notice there is no input layout, no vertex buffer, and no index buffer.</p>
+
+        <pre><code class="language-cpp" data-file="RenderPost.cpp">// Output: write to the back buffer (or the next texture in the chain).
+context-&gt;OMSetRenderTargets(1, backBufferRTV.GetAddressOf(), nullptr);
+
+// The viewport must match the OUTPUT size, not the scene texture size.
+D3D11_VIEWPORT vp = {};
+vp.Width = (FLOAT)outputWidth; vp.Height = (FLOAT)outputHeight;
+vp.MaxDepth = 1.0f;
+context-&gt;RSSetViewports(1, &amp;vp);
+
+// No geometry to fetch: null vertex buffer, no input layout, list topology.
+context-&gt;IASetInputLayout(nullptr);
+context-&gt;IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+context-&gt;IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+// Shared fullscreen VS + the effect's pixel shader.
+context-&gt;VSSetShader(fullscreenVS.Get(), nullptr, 0);
+context-&gt;PSSetShader(effectPS.Get(),     nullptr, 0);
+
+// Input: the scene texture as a shader resource, plus a clamp sampler.
+ID3D11ShaderResourceView* srvs[]  = { sceneSRV.Get() };
+ID3D11SamplerState*       samps[] = { clampSampler.Get() };
+context-&gt;PSSetShaderResources(0, 1, srvs);
+context-&gt;PSSetSamplers(0, 1, samps);
+
+// Three vertices generated entirely from SV_VertexID.
+context-&gt;Draw(3, 0);</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Never read and write the same texture</div><p>A texture cannot be bound as an input SRV and an output render target at the same time. Direct3D silently unbinds one and the debug layer prints a warning; the sampled result is undefined. That is exactly why the previous lesson rendered into its own texture — so this pass can read that texture and write somewhere else. When you chain effects, you <strong>ping-pong</strong> between two intermediate textures: read A / write B, then read B / write A. We will lean on that in the blur and bloom lessons.</p></div></div>
+
+        <h2>A reusable FullscreenPass in the engine</h2>
+
+        <p>Every effect repeats the same dance — set the output target, bind an input SRV and sampler, set the shared VS and an effect PS, draw three vertices, then detach the input. That is a perfect thing to wrap once. Our engine gets a small <code>FullscreenPass</code> that owns the shared vertex shader and exposes a single <code>Draw</code>.</p>
+
+        <pre><code class="language-cpp" data-file="FullscreenPass.h">#include &lt;d3d11.h&gt;
+#include &lt;wrl/client.h&gt;
+
+using Microsoft::WRL::ComPtr;
+
+// Owns the shared triangle-generating vertex shader. One per renderer.
+class FullscreenPass
+{
+public:
+    // Compile the fullscreen VS once at startup from its bytecode.
+    void Init(ID3D11Device* device, const void* vsBytecode, size_t vsSize)
+    {
+        device-&gt;CreateVertexShader(vsBytecode, vsSize, nullptr, &amp;m_vs);
+    }
+
+    // Run one effect: read `input`, write `output`, with `effectPS`.
+    void Draw(ID3D11DeviceContext* ctx,
+              ID3D11ShaderResourceView* input,
+              ID3D11RenderTargetView*   output,
+              ID3D11PixelShader*        effectPS,
+              ID3D11SamplerState*       sampler)
+    {
+        ctx-&gt;OMSetRenderTargets(1, &amp;output, nullptr);
+
+        ctx-&gt;IASetInputLayout(nullptr);
+        ctx-&gt;IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+        ctx-&gt;IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        ctx-&gt;VSSetShader(m_vs.Get(), nullptr, 0);
+        ctx-&gt;PSSetShader(effectPS,   nullptr, 0);
+        ctx-&gt;PSSetShaderResources(0, 1, &amp;input);
+        ctx-&gt;PSSetSamplers(0, 1, &amp;sampler);
+
+        ctx-&gt;Draw(3, 0);
+
+        // Detach the input so this texture can be an OUTPUT next pass.
+        ID3D11ShaderResourceView* nullSRV[] = { nullptr };
+        ctx-&gt;PSSetShaderResources(0, 1, nullSRV);
+    }
+
+private:
+    ComPtr&lt;ID3D11VertexShader&gt; m_vs; // shared across all effects
+};</code></pre>
+
+        <p>The whole point is that swapping an effect is now a one-argument change. Applying grayscale to the rendered scene and presenting it becomes three self-explanatory lines:</p>
+
+        <pre><code class="language-cpp" data-file="Frame.cpp">// ... earlier: rendered the scene into sceneTexture (sceneRTV / sceneSRV) ...
+
+// Post-process: read the scene, write the back buffer, using grayscale.
+fullscreen.Draw(context, sceneSRV.Get(), backBufferRTV.Get(),
+                grayscalePS.Get(), clampSampler.Get());
+
+swapChain-&gt;Present(1, 0);</code></pre>
+
+        <p>Point <code>output</code> at another intermediate texture instead of the back buffer and you can stack passes: scene &#8594; blur &#8594; bloom composite &#8594; tone map &#8594; screen. Each link is one <code>FullscreenPass::Draw</code> with a different pixel shader and the two textures swapped. That is the entire architecture of the post-processing stack we build across the rest of this module.</p>
+
+        <h2>macOS &mdash; the same pass in Metal</h2>
+
+        <p>Metal expresses the identical idea. The vertex function takes <code>[[vertex_id]]</code> and generates the triangle with the same bit math — Metal's clip space and texture origin match Direct3D's, so the flip is the same. You bind no vertex buffer and call <code>drawPrimitives</code> for three vertices.</p>
+
+        <pre><code class="language-cpp" data-file="Fullscreen.metal">#include &lt;metal_stdlib&gt;
+using namespace metal;
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex VSOut fullscreenVS(uint id [[vertex_id]])
+{
+    VSOut o;
+    float2 uv = float2((id &lt;&lt; 1) &amp; 2, id &amp; 2);
+    o.uv = uv;
+    o.position = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    return o;
+}
+
+fragment float4 grayscaleFS(VSOut in [[stage_in]],
+                            texture2d&lt;float&gt; sceneTex [[texture(0)]],
+                            sampler smp              [[sampler(0)]])
+{
+    float4 c = sceneTex.sample(smp, in.uv);
+    float g = dot(c.rgb, float3(0.299, 0.587, 0.114));
+    return float4(g, g, g, c.a);
+}</code></pre>
+
+        <pre><code class="language-cpp" data-file="MetalPost.cpp">// output is an MTL::RenderPassDescriptor pointing at the destination texture.
+MTL::RenderCommandEncoder* enc = cmd-&gt;renderCommandEncoder(output);
+enc-&gt;setRenderPipelineState(grayscalePSO); // fullscreenVS + grayscaleFS
+enc-&gt;setFragmentTexture(sceneTexture, 0);
+enc-&gt;setFragmentSamplerState(clampSampler, 0);
+
+// No vertex buffer: three vertices, generated from [[vertex_id]].
+enc-&gt;drawPrimitives(MTL::PrimitiveTypeTriangle,
+                    NS::UInteger(0), NS::UInteger(3));
+enc-&gt;endEncoding();</code></pre>
+
+        <p>Keep the two shaders byte-for-byte equivalent in HLSL and MSL and the effect looks the same on both backends. The engine-level <code>FullscreenPass</code> stays platform-neutral; only the resource binding and draw call differ behind the renderer abstraction we built in module 08.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A fullscreen pass reads the scene texture as an input SRV and writes a filtered result to an output render target — one fragment per pixel.</li>
+            <li>Draw a single oversized triangle with clip verts <code>(-1,1)</code>, <code>(3,1)</code>, <code>(-1,-3)</code>, not a two-triangle quad: no diagonal seam, cleaner and slightly faster.</li>
+            <li>Generate all three positions and UVs from <code>SV_VertexID</code> with <code>float2((id&lt;&lt;1)&amp;2, id&amp;2)</code> — no vertex or index buffers, no input layout.</li>
+            <li>The <code>* float2(2,-2) + float2(-1,1)</code> maps uv to clip space and flips V, because a D3D texture's V axis points down while clip-space Y points up.</li>
+            <li>Issue the pass with <code>TRIANGLELIST</code> topology, a null vertex buffer, a CLAMP sampler, and <code>context-&gt;Draw(3, 0)</code>; on Metal, <code>drawPrimitives</code> with vertex count 3 and <code>[[vertex_id]]</code>.</li>
+            <li>Wrap it in a reusable <code>FullscreenPass</code> so tone mapping, blur and bloom are each just a different pixel shader on the same three-vertex draw.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

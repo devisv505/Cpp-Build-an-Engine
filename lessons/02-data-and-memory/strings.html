@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Text: std::string — Learn C++ &amp; DirectX</title>
+  <title>Text: std::string — Learn C++ Engine Development</title>
   <meta name="description" content="Learn std::string in C++: create, concatenate, measure, index, slice, compare, and read lines with getline — the text tool for your engine.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -158,13 +158,13 @@ int main() {
         <h2>C-strings and c_str()</h2>
         <p>Before <code>std::string</code>, C++ inherited C's way of storing text: a raw <code>char</code> array ending in a hidden <code>'\0'</code> (the null terminator), passed around as a <code>const char*</code>. These <em>C-strings</em> have no built-in length and no <code>+</code>; you manipulate them with functions like <code>strlen</code>, and it is easy to overflow a buffer. This is exactly the manual, error-prone bookkeeping <code>std::string</code> saves you from.</p>
 
-        <p>You still meet C-strings at API boundaries — including parts of DirectX and the Windows/Win32 headers, which predate the standard library. When a function wants a <code>const char*</code>, hand it <code>c_str()</code>, which returns a read-only, null-terminated view of the string's characters.</p>
+        <p>You still meet C-strings at API boundaries, including SDL3 and native Windows/macOS APIs. When a function wants a <code>const char*</code>, hand it <code>c_str()</code>, which returns a read-only, null-terminated view.</p>
 
         <pre><code class="language-cpp" data-file="cstr.cpp">#include &lt;cstdio&gt;
 #include &lt;string&gt;
 
 int main() {
-    std::string shaderPath = "shaders/basic.hlsl";
+    std::string shaderPath = "shaders/basic"; // backend adds .hlsl or .metal
 
     // std::fopen is an old C function; it needs a const char*, not a std::string
     std::FILE* f = std::fopen(shaderPath.c_str(), "rb");
@@ -247,7 +247,7 @@ int main() {
             <li><code>std::string</code> (from <code>&lt;string&gt;</code>) is a safe, growable, self-managing container of text.</li>
             <li>Build strings with <code>+</code> and <code>+=</code>, measure them with <code>size()</code>/<code>length()</code>, and read characters with <code>[]</code> or the checked <code>at()</code>.</li>
             <li><code>substr</code> slices out copies, <code>find</code> locates characters, and <code>==</code>/<code>&lt;</code> compare contents directly.</li>
-            <li><code>std::getline</code> reads a whole line including spaces; <code>c_str()</code> hands a <code>const char*</code> to older C-style APIs like parts of DirectX and Win32.</li>
+            <li><code>std::getline</code> reads a whole line including spaces; <code>c_str()</code> hands a <code>const char*</code> to C-style APIs such as SDL3.</li>
             <li>Prefer <code>std::string</code> throughout your engine and drop down to a raw C-string only at the boundary that requires it.</li>
           </ul>
         </div>

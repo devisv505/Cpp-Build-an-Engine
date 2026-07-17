@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voxels, Chunks &amp; World Coordinates — Learn C++ Engine Development</title>
+  <meta name="description" content="The data model of a Minecraft-style world: what a voxel is, why the world is split into fixed-size chunks, and the coordinate math that ties world, chunk and local space together.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Voxels, Chunks &amp; World Coordinates</h1>
+
+        <p class="lead">
+          Welcome to module 11, where MiniEngine grows a Minecraft-style voxel world. Before we can mesh a
+          single block or generate any terrain, we need the one thing everything else stands on: a data model
+          for the world. This lesson is all about that model — what a voxel is, why an infinite world has to be
+          sliced into fixed-size <strong>chunks</strong>, and the small pile of integer math that lets you turn
+          "the block at world position (−37, 64, 12)" into an exact byte inside an exact chunk. Get this layer
+          right and the rest of the module is a pleasure; get it subtly wrong and you will chase the same bug
+          every voxel developer meets on day one.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What a voxel is, and why the world is conceptually one enormous 3D grid of block ids.</li>
+            <li>Why a single giant array is impossible, and how fixed-size <strong>chunks</strong> solve it.</li>
+            <li>How to store a chunk as one flat, cache-friendly array and index it with <code>x + SIZE*(y + SIZE*z)</code>.</li>
+            <li>The three coordinate spaces — world, chunk, and local — and how to convert between them.</li>
+            <li>The classic negative-coordinate bug, its correct <code>floorDiv</code>/<code>floorMod</code> fix, and the power-of-two shift/mask shortcut.</li>
+          </ul>
+        </div>
+
+        <h2>What is a voxel?</h2>
+
+        <p>
+          A <strong>voxel</strong> is a "volume pixel": a pixel is a colored square on a 2D grid, and a voxel is
+          a block sitting on a regular 3D grid. In a Minecraft-style world every position <code>(x, y, z)</code>
+          in that grid holds exactly one block — stone, dirt, air, water — and each block type is identified by
+          a small integer, its <strong>block id</strong>. By convention we reserve id <code>0</code> for
+          <em>air</em>, the empty block, so a freshly created world is simply a grid full of zeros.
+        </p>
+
+        <p>
+          So conceptually the entire world is one gigantic 3D array of block ids:
+          <code>world[x][y][z]</code>. That mental model is exactly right, and it is worth holding onto — most
+          of what we build in this module is just an efficient way to store, stream, and draw that array. The
+          catch is the word "gigantic."
+        </p>
+
+        <h2>Why not one giant array?</h2>
+
+        <p>
+          The trouble is that the world is effectively <em>unbounded</em>. A player can walk in any horizontal
+          direction indefinitely, and we would like to generate fresh terrain as they go. There is no finite
+          <code>world[X][Y][Z]</code> we could allocate up front that is both big enough to never run out and
+          small enough to fit in memory. Even a merely "large" fixed world runs into three walls at once:
+        </p>
+
+        <ul>
+          <li><strong>Memory.</strong> A modest 4096 × 256 × 4096 world at two bytes per block is over eight
+          gigabytes — most of it air the player will never see.</li>
+          <li><strong>Streaming.</strong> You want to load the terrain around the player and unload what is far
+          away. One monolithic array is all-or-nothing; you cannot page a corner of it in from disk.</li>
+          <li><strong>Saving.</strong> When the player edits one block, you want to write a small amount back to
+          disk, not re-serialize the whole planet.</li>
+        </ul>
+
+        <p>
+          The fix is the idea the rest of this module is built on: stop thinking of the world as one array and
+          start thinking of it as a grid of small, independent boxes.
+        </p>
+
+        <h2>Chunks: slicing the world into boxes</h2>
+
+        <p>
+          A <strong>chunk</strong> is a fixed-size cube of voxels — a self-contained tile of the world that can
+          be generated, loaded, saved, meshed, and freed on its own. The world becomes a sparse grid of chunks:
+          we keep the handful near the player resident in memory and forget the rest. Walk east, and new chunks
+          stream in ahead of you while chunks behind you are written to disk and released.
+        </p>
+
+        <p>
+          We will use a chunk that is <strong>16 × 16 × 16</strong> voxels:
+        </p>
+
+        <pre><code class="language-cpp" data-file="VoxelTypes.h">#include &lt;cstdint&gt;
+
+// A block type is a small integer id. 0 is reserved for "air".
+using BlockId = uint16_t;
+
+// Edge length of a chunk, in voxels. A power of two on purpose.
+static constexpr int CHUNK_SIZE = 16;
+
+// Total voxels in one chunk: 16 * 16 * 16 = 4096.
+static constexpr int CHUNK_VOLUME = CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE;</code></pre>
+
+        <p>
+          Why 16? It is a sweet spot. It is small enough that one chunk is a tiny 4096-voxel unit of work — cheap
+          to generate and quick to re-mesh when the player edits a block — yet large enough that the world is not
+          drowning in chunk bookkeeping. Crucially it is a <em>power of two</em>, which (as we will see) turns
+          the world-to-chunk coordinate math into single-instruction bit operations. A cubic chunk also keeps
+          our code symmetric: the same <code>CHUNK_SIZE</code> governs all three axes, so there is only one
+          number to reason about.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">How Minecraft does it</div>
+          <p>Minecraft's chunks are 16 × 16 columns that are tall — historically 256 blocks high, now more —
+          but internally each column is sliced into 16 × 16 × 16 "sections." So under the hood it is cubic
+          chunks too. We use cubic 16³ chunks directly because it keeps the math uniform on all three axes and
+          the sections idea generalizes cleanly if you ever want a taller world.</p></div>
+        </div>
+
+        <h2>One flat array, not three dimensions</h2>
+
+        <p>
+          It is tempting to store a chunk as a real 3D array — <code>BlockId blocks[16][16][16]</code>, or worse,
+          a <code>std::vector</code> of vectors of vectors. Don't. A <code>vector&lt;vector&lt;vector&lt;...&gt;&gt;&gt;</code>
+          scatters 16 × 16 = 256 little allocations all over the heap, and every <code>GetBlock</code> chases
+          three pointers through memory that the CPU cache hates.
+        </p>
+
+        <p>
+          Instead we store the chunk as <strong>one flat, contiguous array</strong> of 4096 block ids and do the
+          3D-to-1D mapping ourselves with a little arithmetic:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Chunk.h">// Map local (x, y, z), each in [0, CHUNK_SIZE), to a flat index in [0, CHUNK_VOLUME).
+static inline int Index(int x, int y, int z) {
+    return x + CHUNK_SIZE * (y + CHUNK_SIZE * z);
+}</code></pre>
+
+        <p>
+          One allocation, perfect contiguity, and one multiply-add to reach any block. Expanding the formula
+          shows the memory layout: <code>index = x + 16*y + 256*z</code>. So <code>x</code> is the
+          fastest-changing axis (neighbouring <code>x</code> values are neighbouring bytes), <code>y</code>
+          strides by 16, and <code>z</code> strides by 256. That choice of axis order matters when you iterate:
+          to walk the array in memory order — which is what the cache wants — put <code>x</code> in the
+          innermost loop and <code>z</code> in the outermost:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Chunk.cpp">// Cache-friendly: consecutive iterations touch consecutive memory.
+for (int z = 0; z &lt; CHUNK_SIZE; ++z)
+    for (int y = 0; y &lt; CHUNK_SIZE; ++y)
+        for (int x = 0; x &lt; CHUNK_SIZE; ++x) {
+            BlockId id = blocks[Index(x, y, z)]; // steps through memory in order
+            // ...
+        }</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">8 KB per chunk</div>
+          <p>4096 voxels × 2 bytes (<code>uint16_t</code>) is exactly <strong>8 KB</strong> of block data per
+          chunk — small enough to hold thousands of them resident. If your game never needs more than 256 block
+          types you can switch <code>BlockId</code> to <code>uint8_t</code> and halve that to 4 KB. Start with
+          <code>uint16_t</code>; you will thank yourself the first time you add the 257th block.</p></div>
+        </div>
+
+        <h2>Three coordinate spaces</h2>
+
+        <p>
+          Once the world is a grid of chunks, a block has an address in three different frames of reference, and
+          you will constantly convert between them:
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Space</th><th>What it names</th><th>Range</th><th>Example for a block</th></tr></thead>
+            <tbody>
+              <tr><td><strong>World</strong></td><td>The block's absolute position in the whole world.</td><td>any integer</td><td><code>(−37, 64, 12)</code></td></tr>
+              <tr><td><strong>Chunk</strong></td><td>Which chunk that block lives in.</td><td>any integer</td><td><code>(−3, 4, 0)</code></td></tr>
+              <tr><td><strong>Local</strong></td><td>Where inside that chunk the block sits.</td><td><code>0 … CHUNK_SIZE−1</code></td><td><code>(11, 0, 12)</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          World coordinates are global signed integers. Chunk coordinates say which box; they are also signed,
+          because the world extends in the negative direction too. Local coordinates are always in the range
+          <code>0 … 15</code> — they are the index we feed to <code>Index(x, y, z)</code>. The whole game is
+          computing chunk and local from world.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 620 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A top-down grid of chunks, each subdivided into voxels, with one chunk highlighted and its local x and z axes labelled.">
+              <!-- fine voxel grid inside the highlighted chunk -->
+              <g stroke="#4aa8ff" stroke-width="0.75" opacity="0.45">
+                <line x1="171.25" y1="140" x2="171.25" y2="230"/><line x1="182.5" y1="140" x2="182.5" y2="230"/><line x1="193.75" y1="140" x2="193.75" y2="230"/>
+                <line x1="205" y1="140" x2="205" y2="230"/><line x1="216.25" y1="140" x2="216.25" y2="230"/><line x1="227.5" y1="140" x2="227.5" y2="230"/><line x1="238.75" y1="140" x2="238.75" y2="230"/>
+                <line x1="160" y1="151.25" x2="250" y2="151.25"/><line x1="160" y1="162.5" x2="250" y2="162.5"/><line x1="160" y1="173.75" x2="250" y2="173.75"/>
+                <line x1="160" y1="185" x2="250" y2="185"/><line x1="160" y1="196.25" x2="250" y2="196.25"/><line x1="160" y1="207.5" x2="250" y2="207.5"/><line x1="160" y1="218.75" x2="250" y2="218.75"/>
+              </g>
+              <!-- highlight fill -->
+              <rect x="160" y="140" width="90" height="90" fill="#4aa8ff" opacity="0.12"/>
+              <!-- bold chunk boundaries -->
+              <g stroke="#4aa8ff" stroke-width="2.5" fill="none">
+                <line x1="70" y1="50" x2="430" y2="50"/><line x1="70" y1="140" x2="430" y2="140"/><line x1="70" y1="230" x2="430" y2="230"/><line x1="70" y1="320" x2="430" y2="320"/>
+                <line x1="70" y1="50" x2="70" y2="320"/><line x1="160" y1="50" x2="160" y2="320"/><line x1="250" y1="50" x2="250" y2="320"/><line x1="340" y1="50" x2="340" y2="320"/><line x1="430" y1="50" x2="430" y2="320"/>
+              </g>
+              <!-- chunk coordinate labels (X, Z) -->
+              <g fill="currentColor" font-size="12" text-anchor="middle" opacity="0.75">
+                <text x="115" y="99">(0,0)</text><text x="205" y="99">(1,0)</text><text x="295" y="99">(2,0)</text><text x="385" y="99">(3,0)</text>
+                <text x="115" y="189">(0,1)</text><text x="295" y="189">(2,1)</text><text x="385" y="189">(3,1)</text>
+                <text x="115" y="279">(0,2)</text><text x="205" y="279">(1,2)</text><text x="295" y="279">(2,2)</text><text x="385" y="279">(3,2)</text>
+              </g>
+              <!-- highlighted chunk label -->
+              <text x="205" y="132" fill="#4aa8ff" font-size="12.5" font-weight="600" text-anchor="middle">chunk (1,1)</text>
+              <!-- local axes on the highlighted chunk -->
+              <g stroke="#4aa8ff" stroke-width="2" fill="none">
+                <line x1="160" y1="140" x2="248" y2="140"/><polygon points="252,140 244,136 244,144" fill="#4aa8ff"/>
+                <line x1="160" y1="140" x2="160" y2="228"/><polygon points="160,232 156,224 164,224" fill="#4aa8ff"/>
+              </g>
+              <circle cx="160" cy="140" r="3.5" fill="#4aa8ff"/>
+              <g fill="currentColor" font-size="12">
+                <text x="258" y="145">local x: 0 → 15</text>
+                <text x="150" y="248" text-anchor="middle">z</text>
+                <text x="168" y="256" font-size="11" opacity="0.8">local 0 → 15</text>
+              </g>
+              <!-- side note -->
+              <g fill="currentColor" font-size="12.5">
+                <text x="470" y="150">world = chunk × 16</text>
+                <text x="470" y="170" font-size="12">&#160;&#160;&#160;&#160;&#160;&#160;+ local</text>
+                <text x="470" y="205" opacity="0.75" font-size="11.5">each chunk holds</text>
+                <text x="470" y="222" opacity="0.75" font-size="11.5">16×16×16 voxels</text>
+              </g>
+            </svg>
+          </div>
+          <figcaption>Top-down view (the X–Z plane) of the world grid. Bold lines are chunk boundaries; one chunk is highlighted and subdivided into its voxels, with local coordinates running 0…15 from its corner. Each chunk is really 16×16×16; the fine grid is shown schematically.</figcaption>
+        </figure>
+
+        <h2>The negative-coordinate trap</h2>
+
+        <p>
+          Going from a world coordinate to a chunk coordinate is "divide by 16," and from world to local is "the
+          remainder." For positive coordinates that is exactly integer <code>/</code> and <code>%</code>, and
+          everything looks fine — until the player walks west of the origin into negative coordinates. This is
+          the single most common first voxel bug, so let us meet it head-on.
+        </p>
+
+        <p>
+          C++ integer division <strong>truncates toward zero</strong>, and <code>%</code> follows suit, so
+          <code>−1 % 16</code> is <code>−1</code>, not <code>15</code>. Watch what that does:
+        </p>
+
+        <pre><code class="language-cpp" data-file="bug.cpp">int worldX = -1;                     // one block west of the origin
+int chunkX = worldX / CHUNK_SIZE;    // == 0   -- WRONG, it should be -1
+int localX = worldX % CHUNK_SIZE;    // == -1  -- WRONG, and it is negative
+
+BlockId id = chunk.blocks[localX];   // blocks[-1]: out-of-bounds read, undefined behavior</code></pre>
+
+        <p>
+          Block <code>−1</code> should live in chunk <code>−1</code> at local index <code>15</code> — the last
+          slot of the chunk just west of the origin. Instead truncating division reports chunk <code>0</code>
+          and a <em>negative</em> local index, which indexes off the front of the array. The symptom in-game is
+          a seam of corrupted or crashing blocks along every axis where the coordinate crosses zero.
+        </p>
+
+        <p>
+          What we actually want is <strong>floor</strong> division (round toward negative infinity) and a
+          matching modulo that always returns a non-negative result. Here is the table that makes the
+          difference obvious:
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th><code>worldX</code></th><th><code>/ 16</code> (C++)</th><th><code>% 16</code> (C++)</th><th><code>floorDiv</code></th><th><code>floorMod</code></th><th>Correct chunk / local</th></tr></thead>
+            <tbody>
+              <tr><td>17</td><td>1</td><td>1</td><td>1</td><td>1</td><td>chunk 1, local 1</td></tr>
+              <tr><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>chunk 0, local 0</td></tr>
+              <tr><td>−1</td><td>0 ✗</td><td>−1 ✗</td><td>−1</td><td>15</td><td>chunk −1, local 15</td></tr>
+              <tr><td>−16</td><td>−1</td><td>0</td><td>−1</td><td>0</td><td>chunk −1, local 0</td></tr>
+              <tr><td>−17</td><td>−1 ✗</td><td>−1 ✗</td><td>−2</td><td>15</td><td>chunk −2, local 15</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          The fixes are two small helpers. Both nudge the truncated result by one when the operands have
+          different signs and the division was not exact:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Coords.h">// Integer division that rounds toward negative infinity (floor), not toward zero.
+static inline int floorDiv(int a, int b) {
+    int q = a / b;
+    if ((a % b != 0) &amp;&amp; ((a &lt; 0) != (b &lt; 0))) --q;
+    return q;
+}
+
+// Modulo whose result has the sign of b (here always non-negative, since b = CHUNK_SIZE &gt; 0).
+static inline int floorMod(int a, int b) {
+    int r = a % b;
+    if (r != 0 &amp;&amp; ((r &lt; 0) != (b &lt; 0))) r += b;
+    return r;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Never use plain <code>/</code> and <code>%</code> for world coordinates</div>
+          <p>The very first time your world extends west or south of the origin, plain division silently puts
+          blocks in the wrong chunk and hands you a negative local index. It usually does not crash immediately
+          — it corrupts a thin seam of blocks near <code>x = 0</code> or <code>z = 0</code> that looks like a
+          bizarre rendering glitch. Always route world-to-chunk math through <code>floorDiv</code>/<code>floorMod</code>
+          (or the bit trick below), and it simply never happens.</p></div>
+        </div>
+
+        <h2>The power-of-two shortcut</h2>
+
+        <p>
+          Here is the payoff for choosing <code>CHUNK_SIZE = 16</code>. Because 16 is <code>2⁴</code>, floor
+          division by 16 is exactly an arithmetic right shift by 4, and floor modulo by 16 is exactly a bitwise
+          AND with 15. And — this is the elegant part — <em>both bit operations already do the right thing for
+          negative numbers</em> in two's-complement, which C++20 guarantees for signed integers.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Coords.h">static constexpr int CHUNK_BITS = 4;               // log2(CHUNK_SIZE)
+static constexpr int CHUNK_MASK = CHUNK_SIZE - 1;  // 15 == 0b1111
+
+// For any int w (positive or negative, C++20 two's-complement):
+//   floorDiv(w, 16)  ==  w &gt;&gt; CHUNK_BITS
+//   floorMod(w, 16)  ==  w &amp;  CHUNK_MASK</code></pre>
+
+        <p>
+          Check it against the tricky rows of the table. For <code>w = −1</code>, the bit pattern is all ones:
+          <code>−1 &amp; 15</code> keeps the low four bits, giving <code>15</code> (correct local), and
+          <code>−1 &gt;&gt; 4</code> is still <code>−1</code> (correct chunk). For <code>w = −17</code>,
+          <code>−17 &amp; 15</code> is <code>15</code> and <code>−17 &gt;&gt; 4</code> is <code>−2</code> — again
+          exactly the floor answers. The mask and shift are branchless and single-instruction, which is why
+          essentially every voxel engine uses a power-of-two chunk size.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Keep <code>floorDiv</code> around anyway</div>
+          <p>The shift/mask trick only works when <code>CHUNK_SIZE</code> is a power of two. Keep the general
+          <code>floorDiv</code>/<code>floorMod</code> helpers in the codebase for any math that is not chunk-sized
+          — and so that if you ever experiment with a non-power-of-two size, the world does not quietly break.</p></div>
+        </div>
+
+        <h2>The Chunk struct</h2>
+
+        <p>
+          Now we can assemble the pieces. A <code>Chunk</code> is little more than that flat 8 KB array wrapped
+          in <code>GetBlock</code>/<code>SetBlock</code> accessors that hide the index math. Note that these
+          accessors take <em>local</em> coordinates in <code>0 … 15</code> and trust the caller — bounds
+          checking every access would be wasteful in the meshing loops of later lessons. In debug builds an
+          <code>assert</code> catches mistakes; in release it compiles away.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Chunk.h">#include &lt;vector&gt;
+#include &lt;cassert&gt;
+#include "VoxelTypes.h"
+
+struct Chunk {
+    // One flat, contiguous array of 4096 block ids (8 KB), all air (0) to start.
+    std::vector&lt;BlockId&gt; blocks = std::vector&lt;BlockId&gt;(CHUNK_VOLUME, 0);
+
+    // Local (x, y, z), each in [0, CHUNK_SIZE), -&gt; flat index.
+    static inline int Index(int x, int y, int z) {
+        return x + CHUNK_SIZE * (y + CHUNK_SIZE * z);
+    }
+
+    // Read/write a block by LOCAL coordinates. Caller guarantees 0 &lt;= x,y,z &lt; CHUNK_SIZE.
+    BlockId GetBlock(int x, int y, int z) const {
+        assert(x &gt;= 0 &amp;&amp; x &lt; CHUNK_SIZE &amp;&amp; y &gt;= 0 &amp;&amp; y &lt; CHUNK_SIZE &amp;&amp; z &gt;= 0 &amp;&amp; z &lt; CHUNK_SIZE);
+        return blocks[Index(x, y, z)];
+    }
+
+    void SetBlock(int x, int y, int z, BlockId id) {
+        assert(x &gt;= 0 &amp;&amp; x &lt; CHUNK_SIZE &amp;&amp; y &gt;= 0 &amp;&amp; y &lt; CHUNK_SIZE &amp;&amp; z &gt;= 0 &amp;&amp; z &lt; CHUNK_SIZE);
+        blocks[Index(x, y, z)] = id;
+    }
+};</code></pre>
+
+        <p>
+          The two remaining pieces are free functions that convert a world coordinate into "which chunk" and
+          "where inside it." We express them per-axis and bundle the results in tiny structs:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Coords.h">struct ChunkCoord { int x, y, z; };  // which chunk
+struct LocalCoord { int x, y, z; };  // position within that chunk, 0..CHUNK_SIZE-1
+
+// Which chunk does this world position belong to?
+inline ChunkCoord WorldToChunk(int wx, int wy, int wz) {
+    return { wx &gt;&gt; CHUNK_BITS, wy &gt;&gt; CHUNK_BITS, wz &gt;&gt; CHUNK_BITS };
+}
+
+// Where inside that chunk does it sit? Always in [0, CHUNK_SIZE).
+inline LocalCoord WorldToLocal(int wx, int wy, int wz) {
+    return { wx &amp; CHUNK_MASK, wy &amp; CHUNK_MASK, wz &amp; CHUNK_MASK };
+}</code></pre>
+
+        <p>
+          And the inverse — reconstructing a world coordinate from a chunk plus a local offset — is just the
+          definition run backwards, <code>world = chunk × CHUNK_SIZE + local</code>:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Coords.h">inline int LocalToWorld(int chunkCoord, int localCoord) {
+    return chunkCoord * CHUNK_SIZE + localCoord;
+}</code></pre>
+
+        <p>
+          That is the whole coordinate toolkit. To read the block at world <code>(−37, 64, 12)</code> you now
+          call <code>WorldToChunk</code> to find the chunk, look that chunk up in your world's chunk map, call
+          <code>WorldToLocal</code> for the offset, and hand those local coordinates to <code>GetBlock</code>.
+          The chunk map itself — how you store and look up chunks by their <code>ChunkCoord</code> — we will
+          build shortly; here the point is that every access decomposes cleanly into these conversions.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">What we are deliberately leaving out</div>
+          <p>Right now a block is just a number. What that number <em>means</em> — is it solid, is it
+          transparent, what textures does it wear — is the job of a block registry, which is the very next
+          lesson. And turning these voxels into the triangles MiniEngine actually draws is meshing, a few
+          lessons after that. This lesson intentionally stops at the data model: the grid, the box, and the
+          math that connects them.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <strong>voxel</strong> is a block on a regular 3D grid; the world is conceptually one huge 3D array of <code>BlockId</code>s, with id 0 meaning air.</li>
+            <li>One giant array is impossible (unbounded, can't stream, can't save incrementally), so the world is split into fixed-size <strong>chunks</strong> — we use 16×16×16 = 4096 voxels.</li>
+            <li>Store a chunk as <strong>one flat, contiguous array</strong> indexed by <code>x + CHUNK_SIZE*(y + CHUNK_SIZE*z)</code>; that layout makes <code>x</code> the innermost, cache-friendliest loop axis. At 2 bytes each, a chunk is 8 KB.</li>
+            <li>Every block has a <strong>world</strong>, <strong>chunk</strong>, and <strong>local</strong> (0…15) address, and you convert world → chunk/local constantly.</li>
+            <li>Plain <code>/</code> and <code>%</code> are <em>wrong</em> for negative coordinates — use <code>floorDiv</code>/<code>floorMod</code>, or for a power-of-two size the equivalent <code>w &gt;&gt; 4</code> and <code>w &amp; 15</code>.</li>
+            <li>The <code>Chunk</code> struct plus <code>WorldToChunk</code>/<code>WorldToLocal</code> is the entire data model the rest of module 11 builds on — block properties and meshing come next.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

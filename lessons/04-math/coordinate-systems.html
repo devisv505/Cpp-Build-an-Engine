@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Coordinate Systems &amp; Spaces — Learn C++ &amp; DirectX</title>
+  <title>Coordinate Systems &amp; Spaces — Learn C++ Engine Development</title>
   <meta name="description" content="Learn X/Y/Z axes, left- vs right-handed coordinates, and the local to world to view to clip to screen pipeline that drives all rendering math.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -218,6 +218,9 @@ XMVECTOR VertexToClip(FXMVECTOR localPos,
         </ul>
 
         <p>Choosing meters up front makes physics (gravity ≈ 9.81 units/s²), lighting falloff, and imported assets all agree without magic fudge factors. Mismatched scales are a leading cause of "why is my model a speck?" or "why is it a mountain?" confusion.</p>
+
+        <h2>Direct3D and Metal conventions</h2>
+        <p>Neither Metal nor Apple <code>simd</code> forces your world to be left- or right-handed. Choose one engine convention and convert only at the renderer boundary. Both Direct3D and Metal use a normalized depth range of 0 to 1, but their common matrix/vector notation can differ, so test a known point and triangle winding on each backend.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

@@ -13,7 +13,7 @@ window.CURRICULUM = [
     lessons: [
       { slug: "what-is-cpp",         title: "What Is C++ & Why Build Engines With It" },
       { slug: "how-cpp-works",       title: "How C++ Works: Compiler, Linker & Binary" },
-      { slug: "install-visual-studio", title: "Installing Visual Studio & the Tools" },
+      { slug: "install-clion",         title: "Installing CLion & the C++ Tools" },
       { slug: "first-program",       title: "Your First Program: Hello, World" },
       { slug: "build-run-debug",     title: "Building, Running & Debugging" },
       { slug: "project-anatomy",     title: "Anatomy of a C++ Project" }
@@ -73,40 +73,40 @@ window.CURRICULUM = [
     num: "04",
     title: "Math for Graphics",
     tag: "Vectors & matrices",
-    blurb: "The 3D math every renderer runs on: coordinate spaces, vectors, matrices and DirectXMath.",
+    blurb: "The 3D math every renderer runs on: coordinate spaces, vectors, matrices and SIMD math on Windows and macOS.",
     dir: "lessons/04-math",
     lessons: [
       { slug: "coordinate-systems", title: "Coordinate Systems & Spaces" },
       { slug: "vectors",            title: "Vectors: the Language of 3D" },
       { slug: "dot-cross",          title: "Dot & Cross Products" },
       { slug: "matrices",           title: "Matrices & Transformations" },
-      { slug: "directxmath",        title: "Using DirectXMath (SIMD)" }
+      { slug: "simd-math",          title: "SIMD Math: DirectXMath & Apple simd" }
     ]
   },
   {
     num: "05",
-    title: "Windows & the Game Loop",
-    tag: "Win32 & timing",
-    blurb: "Open a window with Win32, pump the message queue and drive everything from a real-time game loop.",
-    dir: "lessons/05-windows-game-loop",
+    title: "Platform & the Game Loop",
+    tag: "SDL3 & timing",
+    blurb: "Open a portable SDL3 window, process events and input, and drive everything from a real-time game loop.",
+    dir: "lessons/05-platform-game-loop",
     lessons: [
-      { slug: "win32-window", title: "Creating a Win32 Window" },
-      { slug: "message-loop", title: "The Message Loop & Input" },
+      { slug: "platform-window", title: "Creating a Window with SDL3" },
+      { slug: "message-loop",    title: "Events & Input with SDL3" },
       { slug: "game-loop",    title: "The Game Loop & Delta Time" }
     ]
   },
   {
     num: "06",
-    title: "DirectX 11 Foundations",
+    title: "Graphics Foundations",
     tag: "Real-time rendering",
-    blurb: "From an empty device to textured, depth-tested 3D — the complete Direct3D 11 rendering path.",
-    dir: "lessons/06-directx-foundations",
+    blurb: "Build textured, depth-tested 3D with Direct3D 11 on Windows and Metal on macOS.",
+    dir: "lessons/06-graphics-foundations",
     lessons: [
       { slug: "graphics-pipeline",   title: "The Graphics Pipeline Explained" },
-      { slug: "d3d11-init",          title: "Initializing Direct3D 11" },
+      { slug: "graphics-init",        title: "Initializing the Graphics Backend: Direct3D 11 & Metal" },
       { slug: "clear-screen",        title: "Render Targets: Clearing the Screen" },
       { slug: "first-triangle",      title: "Your First Triangle" },
-      { slug: "shaders-hlsl",        title: "Shaders & HLSL" },
+      { slug: "shaders",             title: "Shaders: HLSL & Metal Shading Language" },
       { slug: "input-layouts",       title: "Input Layouts & Vertex Formats" },
       { slug: "constant-buffers",    title: "Constant Buffers" },
       { slug: "transformations-mvp", title: "Model, View & Projection" },
@@ -137,10 +137,11 @@ window.CURRICULUM = [
     num: "08",
     title: "Build Your Engine",
     tag: "Capstone project",
-    blurb: "Assemble everything into a real, component-based DirectX engine — and learn where to take it next.",
+    blurb: "Assemble everything into a component-based engine with YAML configuration, portable systems, and native Windows/macOS renderers.",
     dir: "lessons/08-build-engine",
     lessons: [
       { slug: "project-setup",        title: "Structuring the Engine Project" },
+      { slug: "yaml-configuration",   title: "Reading & Writing YAML Configuration" },
       { slug: "application-window",   title: "The Application & Window Classes" },
       { slug: "renderer-abstraction", title: "Abstracting the Renderer" },
       { slug: "math-library",         title: "Building a Small Math Library" },
@@ -162,12 +163,54 @@ window.CURRICULUM = [
     dir: "lessons/09-multiplayer-networking",
     lessons: [
       { slug: "networking-basics",     title: "Networking Fundamentals for Games" },
-      { slug: "winsock-setup",         title: "Sockets in C++ with Winsock" },
-      { slug: "tcp-client-server",     title: "A TCP Client & Server" },
-      { slug: "udp-datagrams",         title: "UDP Datagrams for Real-Time" },
+      { slug: "sockets-setup",         title: "Sockets on Windows & macOS" },
+      { slug: "tcp-client-server",     title: "A Portable TCP Client & Server" },
+      { slug: "udp-datagrams",         title: "Portable UDP Datagrams" },
       { slug: "serialization",         title: "Serializing Game State" },
       { slug: "game-networking-model", title: "The Client-Server Game Model" },
       { slug: "engine-networking",     title: "Networking MiniEngine" }
+    ]
+  },
+  {
+    num: "10",
+    title: "Shaders & Post-Processing",
+    tag: "Textures, HDR & bloom",
+    blurb: "Push past flat color: master texture sampling, render into off-screen targets, and build a real HDR bloom pipeline you can drop into any scene.",
+    dir: "lessons/10-shaders-postfx",
+    lessons: [
+      { slug: "texture-filtering-mips", title: "Textures In Depth: Filtering, Mipmaps & sRGB" },
+      { slug: "atlases-and-arrays",     title: "Texture Atlases & Texture Arrays" },
+      { slug: "render-targets",         title: "Render Targets: Drawing Into a Texture" },
+      { slug: "fullscreen-pass",        title: "The Fullscreen Post-Process Pass" },
+      { slug: "hdr-tonemapping",        title: "HDR Color & Tone Mapping" },
+      { slug: "gaussian-blur",          title: "Separable Gaussian Blur" },
+      { slug: "bloom",                  title: "Bloom: Making Bright Things Glow" },
+      { slug: "post-pipeline",          title: "A Composable Post Stack & Engine Integration" }
+    ]
+  },
+  {
+    num: "11",
+    title: "Build Minecraft: A Voxel Engine",
+    tag: "Voxels, chunks & fast algorithms",
+    blurb: "Turn your engine into a Minecraft-style sandbox: chunked worlds, greedy meshing, procedural terrain with trees and foliage, flood-fill light, fast voxel raycasting, and a threaded job system.",
+    dir: "lessons/11-voxel-minecraft",
+    lessons: [
+      { slug: "voxels-and-chunks",    title: "Voxels, Chunks & World Coordinates" },
+      { slug: "block-registry",       title: "Blocks, IDs & a Data-Oriented Registry" },
+      { slug: "naive-meshing",        title: "From Voxels to Triangles: Naïve Meshing" },
+      { slug: "hidden-face-removal",  title: "Hidden Face Removal" },
+      { slug: "greedy-meshing",       title: "Greedy Meshing" },
+      { slug: "voxel-texturing",      title: "Texturing Voxels with an Atlas" },
+      { slug: "ambient-occlusion",    title: "Voxel Ambient Occlusion" },
+      { slug: "terrain-generation",   title: "Procedural Terrain with Noise" },
+      { slug: "trees-and-decoration", title: "Trees, Grass & World Decoration" },
+      { slug: "flood-fill-lighting",  title: "Flood-Fill Lighting" },
+      { slug: "chunk-streaming",      title: "Infinite Worlds: Chunk Streaming & LOD" },
+      { slug: "job-system",           title: "A Job System: Meshing Off the Main Thread" },
+      { slug: "voxel-raycasting",     title: "Block Picking with Voxel Raycasting (DDA)" },
+      { slug: "frustum-culling",      title: "Frustum Culling & Draw-Call Batching" },
+      { slug: "water-transparency",   title: "Water, Transparency & Glow" },
+      { slug: "capstone-voxel",       title: "Capstone: Your Voxel Sandbox" }
     ]
   }
 ];

@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Initializing Direct3D 11 &amp; Metal through SDL3 — Learn C++ Engine Development</title>
+  <meta name="description" content="Connect an SDL3 window to Direct3D 11 on Windows or Metal on macOS and initialize the native graphics backend.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Initializing the Graphics Backend: Direct3D 11 &amp; Metal</h1>
+
+        <p class="lead">SDL3 gave us one window and event layer for both platforms. It does not make Direct3D calls work on macOS or Metal calls work on Windows. This lesson adds the narrow platform seam: an SDL window enters the selected renderer backend, which creates the native GPU and presentation objects.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Which code SDL3 unifies and which code remains renderer-specific</li>
+            <li>How CMake selects Direct3D 11 or Metal while sharing the same application</li>
+            <li>How SDL exposes an <code>HWND</code> to DXGI on Windows</li>
+            <li>How SDL creates a Metal view and exposes its <code>CAMetalLayer</code> on macOS</li>
+            <li>How to initialize and shut down every resource in a safe order</li>
+          </ul>
+        </div>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Follow one backend, understand both</div><p>Windows students compile the Direct3D 11 sections; macOS students compile the Metal sections. The public class has the same name and lifecycle on both platforms, so the shared application code is identical.</p></div></div>
+
+        <h2>The common responsibilities</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Engine responsibility</th><th>Direct3D 11 on Windows</th><th>Metal on macOS</th></tr></thead>
+          <tbody>
+            <tr><td>Select a GPU</td><td><code>ID3D11Device</code></td><td><code>MTL::Device</code></td></tr>
+            <tr><td>Submit commands</td><td><code>ID3D11DeviceContext</code></td><td><code>MTL::CommandQueue</code></td></tr>
+            <tr><td>Present to SDL's window</td><td><code>IDXGISwapChain</code> using an <code>HWND</code></td><td><code>CA::MetalLayer</code> from an SDL Metal view</td></tr>
+            <tr><td>Address the back buffer</td><td><code>ID3D11RenderTargetView</code></td><td>A new <code>CA::MetalDrawable</code> each frame</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>The responsibilities match; the object models do not. In particular, Metal has no exact equivalent of D3D11's immediate context or DXGI swap chain. Our renderer interface unifies engine operations, not every native class.</p>
+
+        <h2>Project layout and CMake</h2>
+        <pre><code class="language-text">MiniEngine/
+├── CMakeLists.txt
+├── external/
+│   └── metal-cpp/        # macOS only
+└── src/
+    ├── main.cpp
+    ├── D3D11Renderer.h   # Windows only
+    ├── D3D11Renderer.cpp
+    ├── MetalRenderer.h   # macOS only
+    ├── MetalRenderer.cpp
+    └── MetalCpp.cpp</code></pre>
+
+        <pre><code class="language-cmake" data-file="CMakeLists.txt">cmake_minimum_required(VERSION 3.24)
+project(MiniEngine LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(FetchContent)
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+    SDL3
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+    GIT_TAG release-3.4.12
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(SDL3)
+
+add_executable(MiniEngine src/main.cpp)
+target_link_libraries(MiniEngine PRIVATE SDL3::SDL3)
+
+if(WIN32)
+    target_sources(MiniEngine PRIVATE
+        src/D3D11Renderer.cpp)
+    target_link_libraries(MiniEngine PRIVATE d3d11 dxgi)
+
+elseif(APPLE)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/metal-cpp/Metal/Metal.hpp")
+        message(FATAL_ERROR
+            "Clone metal-cpp into external/metal-cpp before configuring")
+    endif()
+
+    target_sources(MiniEngine PRIVATE
+        src/MetalRenderer.cpp
+        src/MetalCpp.cpp)
+
+    target_include_directories(MiniEngine PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/metal-cpp")
+
+    target_link_libraries(MiniEngine PRIVATE
+        "-framework Foundation"
+        "-framework Metal"
+        "-framework QuartzCore")
+else()
+    message(FATAL_ERROR
+        "This course implements Windows and macOS graphics backends")
+endif()</code></pre>
+
+        <p>SDL3 is shared; CMake compiles exactly one native renderer. The macOS path no longer enables Objective-C++ or links Cocoa for a hand-written view bridge—<code>SDL_Metal_CreateView</code> performs that platform work.</p>
+
+        <h3>Get metal-cpp on macOS</h3>
+        <p>Apple's metal-cpp headers provide C++ interfaces for Foundation, Metal, and QuartzCore. From the project root, clone the tested release rather than a moving default branch:</p>
+
+        <pre><code class="language-bash">git clone --depth 1 \
+  --branch release/metal-cpp_macOS26_iOS26 \
+  https://github.com/apple/metal-cpp.git external/metal-cpp</code></pre>
+
+        <p>The repository is header-only, but its private implementations must be emitted in exactly one translation unit:</p>
+
+        <pre><code class="language-cpp" data-file="src/MetalCpp.cpp">#define NS_PRIVATE_IMPLEMENTATION
+#define CA_PRIVATE_IMPLEMENTATION
+#define MTL_PRIVATE_IMPLEMENTATION
+
+#include &lt;Foundation/Foundation.hpp&gt;
+#include &lt;Metal/Metal.hpp&gt;
+#include &lt;QuartzCore/QuartzCore.hpp&gt;</code></pre>
+
+        <h2>The shared application entry point</h2>
+        <p>This is still the SDL window from Module 5. The only compile-time choice is which header defines the platform's <code>Renderer</code> class.</p>
+
+        <pre><code class="language-cpp" data-file="src/main.cpp">#include &lt;SDL3/SDL.h&gt;
+#include &lt;SDL3/SDL_main.h&gt;
+#include &lt;iostream&gt;
+
+#if defined(_WIN32)
+    #include "D3D11Renderer.h"
+#elif defined(__APPLE__)
+    #include "MetalRenderer.h"
+#endif
+
+int main(int argc, char* argv[])
+{
+    if (!SDL_Init(SDL_INIT_VIDEO))
+    {
+        std::cerr &lt;&lt; "SDL initialization failed: "
+                  &lt;&lt; SDL_GetError() &lt;&lt; '\n';
+        return 1;
+    }
+
+    SDL_WindowFlags flags =
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+#if defined(__APPLE__)
+    flags |= SDL_WINDOW_METAL;
+#endif
+
+    SDL_Window* window = SDL_CreateWindow(
+        "MiniEngine", 1280, 720, flags);
+    if (window == nullptr)
+    {
+        std::cerr &lt;&lt; "Window creation failed: "
+                  &lt;&lt; SDL_GetError() &lt;&lt; '\n';
+        SDL_Quit();
+        return 1;
+    }
+
+    Renderer renderer;
+    if (!renderer.Initialize(window))
+    {
+        std::cerr &lt;&lt; "Renderer initialization failed\n";
+        renderer.Shutdown();
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+
+    bool running = true;
+    while (running)
+    {
+        SDL_Event event;
+        while (SDL_PollEvent(&amp;event))
+        {
+            if (event.type == SDL_EVENT_QUIT ||
+                event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+            {
+                running = false;
+            }
+        }
+
+        // Lesson 40 submits and presents a frame here.
+    }
+
+    renderer.Shutdown();       // destroys the SDL Metal view on macOS
+    SDL_DestroyWindow(window); // must come after renderer shutdown
+    SDL_Quit();
+    return 0;
+}</code></pre>
+
+        <h2>Windows path — Direct3D 11</h2>
+        <p>SDL owns the Win32 window. The renderer reads SDL's read-only native-handle property, then gives that <code>HWND</code> to DXGI as the swap chain's output window.</p>
+
+        <pre><code class="language-cpp" data-file="src/D3D11Renderer.h">#pragma once
+
+struct SDL_Window;
+struct ID3D11Device;
+struct ID3D11DeviceContext;
+struct ID3D11RenderTargetView;
+struct IDXGISwapChain;
+
+class Renderer
+{
+public:
+    bool Initialize(SDL_Window* window);
+    void Shutdown();
+
+private:
+    bool CreateRenderTarget();
+
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* context = nullptr;
+    IDXGISwapChain* swapChain = nullptr;
+    ID3D11RenderTargetView* renderTargetView = nullptr;
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="src/D3D11Renderer.cpp">#include "D3D11Renderer.h"
+
+#include &lt;SDL3/SDL.h&gt;
+#include &lt;Windows.h&gt;
+#include &lt;d3d11.h&gt;
+#include &lt;dxgi.h&gt;
+
+template&lt;typename T&gt;
+void SafeRelease(T*&amp; object)
+{
+    if (object != nullptr)
+    {
+        object-&gt;Release();
+        object = nullptr;
+    }
+}
+
+bool Renderer::CreateRenderTarget()
+{
+    ID3D11Texture2D* backBuffer = nullptr;
+    const HRESULT result = swapChain-&gt;GetBuffer(
+        0, __uuidof(ID3D11Texture2D),
+        reinterpret_cast&lt;void**&gt;(&amp;backBuffer));
+
+    if (FAILED(result))
+        return false;
+
+    const HRESULT viewResult = device-&gt;CreateRenderTargetView(
+        backBuffer, nullptr, &amp;renderTargetView);
+    backBuffer-&gt;Release();
+    return SUCCEEDED(viewResult);
+}
+
+bool Renderer::Initialize(SDL_Window* window)
+{
+    const SDL_PropertiesID properties =
+        SDL_GetWindowProperties(window);
+
+    HWND hwnd = static_cast&lt;HWND&gt;(SDL_GetPointerProperty(
+        properties,
+        SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+        nullptr));
+
+    if (hwnd == nullptr)
+        return false;
+
+    int pixelWidth = 0;
+    int pixelHeight = 0;
+    if (!SDL_GetWindowSizeInPixels(
+            window, &amp;pixelWidth, &amp;pixelHeight))
+        return false;
+
+    DXGI_SWAP_CHAIN_DESC description{};
+    description.BufferDesc.Width = static_cast&lt;UINT&gt;(pixelWidth);
+    description.BufferDesc.Height = static_cast&lt;UINT&gt;(pixelHeight);
+    description.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    description.SampleDesc.Count = 1;
+    description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    description.BufferCount = 2;
+    description.OutputWindow = hwnd;
+    description.Windowed = TRUE;
+    description.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+
+    UINT creationFlags = 0;
+#if !defined(NDEBUG)
+    creationFlags |= D3D11_CREATE_DEVICE_DEBUG;
+#endif
+
+    const HRESULT result = D3D11CreateDeviceAndSwapChain(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        creationFlags,
+        nullptr,
+        0,
+        D3D11_SDK_VERSION,
+        &amp;description,
+        &amp;swapChain,
+        &amp;device,
+        nullptr,
+        &amp;context);
+
+    if (FAILED(result) || !CreateRenderTarget())
+    {
+        Shutdown();
+        return false;
+    }
+
+    return true;
+}
+
+void Renderer::Shutdown()
+{
+    if (context != nullptr)
+    {
+        // Drop any back-buffer bindings retained by the immediate context.
+        context-&gt;ClearState();
+        context-&gt;Flush();
+    }
+
+    SafeRelease(renderTargetView);
+    SafeRelease(swapChain);
+    SafeRelease(context);
+    SafeRelease(device);
+}</code></pre>
+
+        <p>The swap chain owns the presentable buffers. The render-target view describes how D3D11 will write to its current back buffer. Lesson 40 binds, clears, and presents that view.</p>
+
+        <h2>macOS path — Metal through SDL3</h2>
+        <p><code>SDL_Metal_CreateView</code> creates and attaches a Metal-compatible native view. <code>SDL_Metal_GetLayer</code> returns its <code>CAMetalLayer</code>. SDL owns that layer; the renderer borrows the pointer and supplies the Metal device and pixel format.</p>
+
+        <pre><code class="language-cpp" data-file="src/MetalRenderer.h">#pragma once
+
+#include &lt;SDL3/SDL_metal.h&gt;
+
+struct SDL_Window;
+namespace CA { class MetalLayer; }
+namespace MTL { class CommandQueue; class Device; }
+
+class Renderer
+{
+public:
+    bool Initialize(SDL_Window* window);
+    void Shutdown();
+
+private:
+    SDL_MetalView metalView = nullptr; // owned by this renderer
+    CA::MetalLayer* layer = nullptr;   // borrowed from metalView
+    MTL::Device* device = nullptr;
+    MTL::CommandQueue* commandQueue = nullptr;
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="src/MetalRenderer.cpp">#include "MetalRenderer.h"
+
+#include &lt;SDL3/SDL.h&gt;
+#include &lt;Metal/Metal.hpp&gt;
+#include &lt;QuartzCore/QuartzCore.hpp&gt;
+
+bool Renderer::Initialize(SDL_Window* window)
+{
+    device = MTL::CreateSystemDefaultDevice();
+    if (device == nullptr)
+        return false;
+
+    commandQueue = device-&gt;newCommandQueue();
+    if (commandQueue == nullptr)
+    {
+        Shutdown();
+        return false;
+    }
+
+    metalView = SDL_Metal_CreateView(window);
+    if (metalView == nullptr)
+    {
+        Shutdown();
+        return false;
+    }
+
+    layer = static_cast&lt;CA::MetalLayer*&gt;(
+        SDL_Metal_GetLayer(metalView));
+    if (layer == nullptr)
+    {
+        Shutdown();
+        return false;
+    }
+
+    layer-&gt;setDevice(device);
+    layer-&gt;setPixelFormat(MTL::PixelFormatBGRA8Unorm);
+    layer-&gt;setFramebufferOnly(true);
+    return true;
+}
+
+void Renderer::Shutdown()
+{
+    // SDL owns the layer. Never call layer-&gt;release().
+    layer = nullptr;
+
+    if (metalView != nullptr)
+    {
+        SDL_Metal_DestroyView(metalView);
+        metalView = nullptr;
+    }
+
+    if (commandQueue != nullptr)
+    {
+        commandQueue-&gt;release();
+        commandQueue = nullptr;
+    }
+
+    if (device != nullptr)
+    {
+        device-&gt;release();
+        device = nullptr;
+    }
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Two different ownership rules</div><p>The renderer owns <code>SDL_MetalView</code> and must destroy it before <code>SDL_DestroyWindow</code>. The renderer does <em>not</em> own the layer returned by <code>SDL_Metal_GetLayer</code>. Releasing that borrowed pointer causes a lifetime bug.</p></div></div>
+
+        <h2>Checkpoint and common errors</h2>
+        <p>Reload CMake, build, and run. The window may still show an undefined or system-provided background because this lesson initializes presentation but deliberately submits no frame. It should remain responsive, close cleanly, and print no renderer-initialization error. Lesson 40 makes the result visible with a clear color.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Symptom</th><th>Fix</th></tr></thead>
+          <tbody>
+            <tr><td><code>SDL3/SDL.h</code> not found</td><td>Confirm <code>FetchContent_MakeAvailable(SDL3)</code>, link <code>SDL3::SDL3</code>, then reload CMake.</td></tr>
+            <tr><td>SDL clone/configure fails</td><td>Check internet access and the exact <code>release-3.4.12</code> tag; delete only the failed CMake build directory and configure again.</td></tr>
+            <tr><td><code>Metal/Metal.hpp</code> not found</td><td>Clone metal-cpp so <code>external/metal-cpp/Metal/Metal.hpp</code> exists, then reload CMake.</td></tr>
+            <tr><td>Undefined metal-cpp private symbols</td><td>Add <code>MetalCpp.cpp</code> to the target and define each private-implementation macro exactly once.</td></tr>
+            <tr><td><code>SDL_Metal_CreateView</code> fails</td><td>Create the macOS window with <code>SDL_WINDOW_METAL</code> and call all SDL window/Metal-view functions on the main thread.</td></tr>
+            <tr><td>D3D creation fails only in Debug</td><td>Install Windows <em>Graphics Tools</em>, or temporarily omit <code>D3D11_CREATE_DEVICE_DEBUG</code>.</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>SDL3 unifies the window and event layer, not Direct3D 11 and Metal commands.</li>
+            <li>Windows obtains SDL's <code>HWND</code> property and builds a D3D11 device, context, swap chain, and render-target view.</li>
+            <li>macOS asks SDL for a Metal view, borrows its layer, and assigns a Metal device and command queue.</li>
+            <li>The SDL Metal view replaces the old hand-written Cocoa/Objective-C++ bridge.</li>
+            <li>Renderer shutdown must finish before the SDL window is destroyed.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

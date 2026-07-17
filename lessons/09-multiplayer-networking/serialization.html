@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Serializing Game State — Learn C++ &amp; DirectX</title>
+  <title>Serializing Game State — Learn C++ Engine Development</title>
   <meta name="description" content="Turn a Transform and player id into portable bytes with a ByteWriter/ByteReader and send game state between MiniEngine instances.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -37,6 +37,8 @@
         </ul>
 
         <p>Serialization fixes both by defining an explicit, byte-for-byte layout that both sides obey — independent of how any one compiler happens to lay out memory.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Not the same job as YAML configuration</div><p>Module 08 used YAML for small, human-edited files read at startup. Gameplay packets are frequent, size-sensitive, and untrusted, so keep the explicit bounded binary format in this lesson; do not send the engine's YAML settings every frame.</p></div></div>
 
         <div class="callout danger">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
@@ -249,7 +251,7 @@ struct PlayerStatePacket {
         <p>Now we connect it to the UDP socket from the previous lesson. On the sending side, MiniEngine grabs a player's <code>Transform</code>, serializes a packet, and calls <code>sendto</code>. On the receiving side it reads the datagram, peeks the type byte, dispatches, and applies the state to the matching remote player.</p>
 
         <pre><code class="language-cpp" data-file="net_sync.cpp">// --- Sending: called each network tick for the local player ---
-void SendPlayerState(SOCKET sock, const sockaddr_in&amp; to,
+void SendPlayerState(SocketHandle sock, const sockaddr_in&amp; to,
                      uint32_t myId, const Transform&amp; xf) {
     PlayerStatePacket pkt{ myId, xf };
     std::vector&lt;uint8_t&gt; bytes = pkt.Serialize();
@@ -260,9 +262,9 @@ void SendPlayerState(SOCKET sock, const sockaddr_in&amp; to,
                       0,
                       reinterpret_cast&lt;const sockaddr*&gt;(&amp;to),
                       sizeof(to));
-    if (sent == SOCKET_ERROR) {
-        // WSAGetLastError() gives the real reason on Windows.
-        printf("sendto failed: %d\n", WSAGetLastError());
+    if (sent &lt; 0) {
+        // The portable helper chooses WSAGetLastError or errno.
+        printf("sendto failed: %d\n", LastSocketError());
     }
 }
 

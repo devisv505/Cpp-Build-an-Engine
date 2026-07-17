@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Infinite Worlds: Chunk Streaming &amp; LOD — Learn C++ Engine Development</title>
+  <meta name="description" content="Make the world endless: keep only the chunks near the player in memory, load and unload them as the player moves, and drop distant chunks to lower detail.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Infinite Worlds: Chunk Streaming &amp; LOD</h1>
+
+        <p class="lead">
+          Your engine can now generate a chunk of terrain, light it, and turn it into a textured mesh — but only a
+          fixed patch of it. Walk far enough and you either run off the edge of the world or you keep every chunk
+          you have ever visited resident until memory fills up. This lesson makes the world feel <em>endless</em> on
+          a small, fixed budget: keep only the chunks near the player in memory, stream new ones in as they walk,
+          drop the ones they leave behind, and draw distant terrain at lower detail. The work is almost entirely
+          bookkeeping — a map of chunks and a few rings around the camera — and getting those rings right is what
+          separates a world that glides from one that stutters every time you cross a chunk border.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Store resident chunks in a <code>std::unordered_map</code> keyed by chunk coordinate, with a fast custom hash — and why those lookups sit on the hot path.</li>
+            <li>Each frame, find the player's chunk and update the <strong>load</strong>, <strong>keep</strong>, and <strong>unload</strong> rings around it.</li>
+            <li>Use <strong>hysteresis</strong> — an unload radius larger than the load radius — so pacing a border never thrashes chunks in and out.</li>
+            <li>Fill the world toward the camera by loading <strong>nearest-first</strong>, and cap the work with a <strong>per-frame budget</strong>.</li>
+            <li>Coarsen distant chunks with <strong>level of detail</strong>, and hide the seams between LOD levels with skirts.</li>
+          </ul>
+        </div>
+
+        <h2>A window that follows the player</h2>
+
+        <p>
+          The core idea is a moving <strong>window</strong>. Pick a <em>render distance</em> <code>R</code> measured
+          in chunks. At any moment the only chunks that need to exist are the ones within <code>R</code> of the
+          player's current chunk; everything else can be generated later or freed now. As the player moves, the
+          window slides with them: chunks entering it are streamed in, chunks leaving it are unloaded. The player is
+          always at the centre of a bubble of loaded world that travels with them, so from the inside the world has
+          no edge.
+        </p>
+
+        <p>
+          Streaming happens in the horizontal plane — you walk around, you rarely fly straight up — so we key the
+          window on the <strong>(x, z)</strong> column and let each column own a vertical stack of chunk sections
+          (more on that at the end). The reason we cannot simply crank <code>R</code> up to the horizon is that the
+          count of chunks grows with the <em>square</em> of the radius:
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Render distance <code>R</code></th><th>Columns in window <code>(2R+1)²</code></th><th>Chunk sections (×16 tall)</th><th>Voxel data (8&nbsp;KB each)</th></tr></thead>
+            <tbody>
+              <tr><td>8</td><td>289</td><td>4,624</td><td>~36 MB</td></tr>
+              <tr><td>16</td><td>1,089</td><td>17,424</td><td>~136 MB</td></tr>
+              <tr><td>32</td><td>4,225</td><td>67,600</td><td>~528 MB</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Doubling <code>R</code> roughly <strong>quadruples</strong> the chunk count, and the mesh and lighting
+          data for each chunk roughly doubles the memory in the last column again. (A circular window trims about
+          21% off the square counts, which we will take for free below.) That quadratic wall is exactly why the two
+          halves of this lesson exist: stream so you only pay for what is near, and use LOD so the far rings cost a
+          fraction of a full chunk each.
+        </p>
+
+        <h2>Keying chunks by their coordinate</h2>
+
+        <p>
+          The resident world is a dictionary from a chunk coordinate to a chunk. A <code>std::unordered_map</code>
+          is the natural fit — average O(1) insert, erase, and lookup — but it needs two things for a struct key: an
+          equality operator, and a hash function. Here is the 2D column coordinate and a hash worth using:
+        </p>
+
+        <pre><code class="language-cpp" data-file="ColumnCoord.h">#include &lt;cstdint&gt;
+#include &lt;cstddef&gt;
+
+// The horizontal address of a column of chunks. y is handled by the vertical stack.
+struct ColumnCoord {
+    int x, z;
+    bool operator==(const ColumnCoord&amp; o) const noexcept {
+        return x == o.x &amp;&amp; z == o.z;
+    }
+};
+
+struct ColumnCoordHash {
+    std::size_t operator()(const ColumnCoord&amp; c) const noexcept {
+        // Pack the two 32-bit coords into one 64-bit value. This part is a perfect,
+        // collision-free map as long as each coord fits in 32 bits.
+        std::uint64_t h = (static_cast&lt;std::uint64_t&gt;(static_cast&lt;std::uint32_t&gt;(c.x)) &lt;&lt; 32)
+                        |  static_cast&lt;std::uint64_t&gt;(static_cast&lt;std::uint32_t&gt;(c.z));
+        // Then finalize with a splitmix64 avalanche so adjacent coords scatter widely.
+        h ^= h &gt;&gt; 30; h *= 0xBF58476D1CE4E5B9ull;
+        h ^= h &gt;&gt; 27; h *= 0x94D049BB133111EBull;
+        h ^= h &gt;&gt; 31;
+        return static_cast&lt;std::size_t&gt;(h);
+    }
+};</code></pre>
+
+        <p>
+          Why bother mixing if the packing is already collision-free? Because the map does not hash straight to a
+          slot — it takes <code>hash % bucket_count</code>, and bucket counts are usually powers of two, which throws
+          away the <em>high</em> bits. Without the avalanche step, the packed <code>x</code> (living entirely in the
+          high 32 bits) would never influence which bucket a chunk lands in, so an entire row of the world would
+          collide into a handful of buckets. The splitmix rounds fold every input bit down into the low bits, so
+          neighbouring chunks — the ones you look up together while meshing a border — spread out instead of piling
+          up. You would then declare the map as
+          <code>std::unordered_map&lt;ColumnCoord, std::unique_ptr&lt;Column&gt;, ColumnCoordHash&gt;</code>.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Map lookups are on the hot path</div>
+          <p>Reading a block <em>across</em> a chunk border — which the meshing and lighting passes do thousands of
+          times per chunk — turns into a hash, a modulo, and a bucket walk. That is far more expensive than the
+          multiply-add of an in-chunk index. Never call <code>GetBlock(worldX, worldY, worldZ)</code> in a tight
+          loop; instead resolve the six neighbour chunk pointers <em>once</em> before the loop and index directly.
+          Caching the current chunk pointer between accesses is the single biggest win in any voxel hot path.</p></div>
+        </div>
+
+        <h2>Load, keep and unload rings</h2>
+
+        <p>
+          The naive rule — "load everything within <code>R</code>, unload everything past <code>R</code>" — has a
+          nasty failure mode. Stand exactly on a chunk boundary and take one step back and forth: a column flickers
+          from just-inside to just-outside <code>R</code> every frame, so you generate it, free it, generate it
+          again — a stall on every step. The fix is <strong>hysteresis</strong>: make the unload radius a little
+          larger than the load radius, leaving a neutral <em>keep</em> band between them where chunks are neither
+          created nor destroyed.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 640 470" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Top-down rings around the player: an inner full-detail zone, then half- and quarter-resolution LOD rings, a solid load-radius circle, a dashed unload-radius circle with a keep band between them, and the unloaded region outside.">
+              <!-- filled LOD zones, largest first so they stack -->
+              <circle cx="210" cy="240" r="150" fill="#4aa8ff" opacity="0.07"/>
+              <circle cx="210" cy="240" r="100" fill="#4aa8ff" opacity="0.13"/>
+              <circle cx="210" cy="240" r="55"  fill="#4aa8ff" opacity="0.22"/>
+              <!-- unload boundary (dashed) -->
+              <circle cx="210" cy="240" r="180" fill="none" stroke="#4aa8ff" stroke-width="1.5" stroke-dasharray="6 5" opacity="0.85"/>
+              <!-- load boundary (solid) -->
+              <circle cx="210" cy="240" r="150" fill="none" stroke="#4aa8ff" stroke-width="2.5"/>
+              <!-- LOD ring boundaries -->
+              <circle cx="210" cy="240" r="100" fill="none" stroke="#4aa8ff" stroke-width="1.1" opacity="0.65"/>
+              <circle cx="210" cy="240" r="55"  fill="none" stroke="#4aa8ff" stroke-width="1.1" opacity="0.65"/>
+              <!-- player -->
+              <circle cx="210" cy="240" r="5" fill="#4aa8ff"/>
+              <text x="210" y="228" fill="currentColor" font-size="12" text-anchor="middle" font-weight="600">player</text>
+              <!-- in-diagram zone labels -->
+              <g fill="currentColor" font-size="11.5" text-anchor="middle" opacity="0.9">
+                <text x="210" y="300">LOD 0</text>
+                <text x="210" y="367">LOD 1</text>
+                <text x="210" y="415">LOD 2</text>
+              </g>
+              <!-- legend -->
+              <g font-size="12.5" fill="currentColor">
+                <rect x="430" y="120" width="16" height="16" fill="#4aa8ff" opacity="0.22"/><text x="456" y="132">LOD 0 · full-detail mesh</text>
+                <rect x="430" y="150" width="16" height="16" fill="#4aa8ff" opacity="0.13"/><text x="456" y="162">LOD 1 · half resolution</text>
+                <rect x="430" y="180" width="16" height="16" fill="#4aa8ff" opacity="0.07"/><text x="456" y="192">LOD 2 · quarter resolution</text>
+                <line x1="430" y1="218" x2="446" y2="218" stroke="#4aa8ff" stroke-width="2.5"/><text x="456" y="222">load radius R</text>
+                <line x1="430" y1="248" x2="446" y2="248" stroke="#4aa8ff" stroke-width="1.5" stroke-dasharray="5 4"/><text x="456" y="252">unload radius (R + margin)</text>
+                <text x="430" y="282">keep band = the gap</text>
+                <text x="430" y="299" opacity="0.8">between them (hysteresis)</text>
+                <text x="430" y="329" opacity="0.8">outside: freed to disk</text>
+              </g>
+            </svg>
+          </div>
+          <figcaption>Top-down view of the streaming rings. Chunks inside the solid circle are guaranteed resident; chunks are only freed once they drift past the dashed circle, and the band between is the hysteresis buffer. Farther-out rings are meshed at progressively coarser LOD.</figcaption>
+        </figure>
+
+        <p>
+          Every distance test in the streaming loop compares a chunk's offset from the centre against a radius. We
+          never actually need the distance — only whether it is inside a ring — so we compare <em>squared</em>
+          distances and skip the square root entirely:
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkManager.cpp">// Is column c inside a ring of the given radius (in chunks) around the centre?
+static inline bool WithinRadius(ColumnCoord c, ColumnCoord center, int radius) {
+    int dx = c.x - center.x;
+    int dz = c.z - center.z;
+    return dx * dx + dz * dz &lt;= radius * radius;   // integer math, no sqrt
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Compare squared distances</div>
+          <p>Because <code>a &lt; b</code> iff <code>a² &lt; b²</code> for non-negative values, you can do every
+          ring test, LOD selection, and nearest-first sort on <code>dx*dx + dz*dz</code> in pure integer
+          arithmetic. No floats, no <code>sqrt</code>, and no rounding surprises on the exact boundary — which is
+          precisely where a mis-rounded distance would cause the flicker hysteresis is meant to prevent.</p></div>
+        </div>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Unloading a neighbour a chunk still needs leaves holes</div>
+          <p>Hidden-face removal and flood-fill lighting both read one voxel <em>past</em> the chunk border to
+          decide whether a boundary face is visible and how bright it is. If you free a chunk while a still-resident
+          neighbour has already been meshed against it, that neighbour's border now reads as air: you get missing
+          faces (holes you can see the sky through) or a dark seam of wrong lighting. This is why the unload radius
+          must sit comfortably outside the load radius, and why unloading a chunk should <strong>mark its resident
+          neighbours dirty</strong> so their borders re-mesh — or, cheaper, keep a one-voxel border copy so the
+          mesh does not depend on the neighbour staying alive.</p></div>
+        </div>
+
+        <h2>Nearest-first, and a per-frame budget</h2>
+
+        <p>
+          When the player teleports or spins the camera, dozens of columns can enter the load ring at once.
+          Meshing them all in a single frame would freeze the game for a beat. Two rules keep it smooth. First,
+          <strong>process the nearest missing column first</strong> so the world fills in toward the camera — the
+          player sees the ground under their feet appear immediately and the far horizon fill in over the next
+          second, which reads as natural. Second, <strong>budget</strong>: load at most <code>N</code> columns per
+          frame and let the rest wait. The window is a set, not a queue, so nothing is lost by deferring — next
+          frame the still-missing columns are simply still missing, and the nearest of them go next.
+        </p>
+
+        <p>
+          To do both, we collect the missing coordinates, sort them by squared distance, and take the first
+          <code>N</code>. That sort is the reason we gather into a <code>std::vector</code> before touching the map.
+        </p>
+
+        <h2>The ChunkManager</h2>
+
+        <p>
+          Here is the whole thing assembled. <code>Update</code> runs once per frame with the player's world
+          position and does three passes: unload what has drifted out, find what is missing, and load the nearest
+          few within budget.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ChunkManager.h">#include &lt;unordered_map&gt;
+#include &lt;vector&gt;
+#include &lt;memory&gt;
+#include &lt;algorithm&gt;
+#include &lt;cmath&gt;
+
+class ChunkManager {
+public:
+    // Tunables, all in chunks. unloadRadius &gt; loadRadius gives us the hysteresis band.
+    int loadRadius       = 12;
+    int unloadRadius     = 14;
+    int maxLoadsPerFrame = 4;
+
+    void Update(const Vector3&amp; playerWorldPos);
+
+private:
+    // One resident column: a vertical stack of chunk sections plus its built mesh + state.
+    struct Column {
+        Mesh mesh;
+        bool meshed = false;
+        int  lod    = 0;
+        // ... unique_ptr&lt;Chunk&gt; sections[SECTIONS] ...
+    };
+
+    std::unordered_map&lt;ColumnCoord, std::unique_ptr&lt;Column&gt;, ColumnCoordHash&gt; columns_;
+
+    // Player world position -&gt; the chunk column they stand in. The shift is the
+    // floor-divide-by-CHUNK_SIZE trick from the coordinates lesson (correct for negatives).
+    ColumnCoord CenterColumn(const Vector3&amp; p) const {
+        int bx = static_cast&lt;int&gt;(std::floor(p.x));
+        int bz = static_cast&lt;int&gt;(std::floor(p.z));
+        return { bx &gt;&gt; CHUNK_BITS, bz &gt;&gt; CHUNK_BITS };
+    }
+
+    std::unique_ptr&lt;Column&gt; LoadColumn(ColumnCoord c);   // generate (or read from disk) + mesh
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="ChunkManager.cpp">void ChunkManager::Update(const Vector3&amp; playerWorldPos) {
+    const ColumnCoord center = CenterColumn(playerWorldPos);
+
+    // 1) UNLOAD: free every column that has drifted beyond the (larger) unload radius.
+    const int unloadSq = unloadRadius * unloadRadius;
+    for (auto it = columns_.begin(); it != columns_.end(); ) {
+        const int dx = it-&gt;first.x - center.x;
+        const int dz = it-&gt;first.z - center.z;
+        if (dx * dx + dz * dz &gt; unloadSq) {
+            // (Save lesson: if this column was edited, write it to disk here first.)
+            it = columns_.erase(it);          // unique_ptr frees voxel data + GPU mesh
+        } else {
+            ++it;
+        }
+    }
+
+    // 2) FIND MISSING: every column inside the (smaller) load radius that isn't resident.
+    const int loadSq = loadRadius * loadRadius;
+    std::vector&lt;ColumnCoord&gt; missing;
+    for (int dz = -loadRadius; dz &lt;= loadRadius; ++dz) {
+        for (int dx = -loadRadius; dx &lt;= loadRadius; ++dx) {
+            if (dx * dx + dz * dz &gt; loadSq) continue;      // circular window
+            ColumnCoord c { center.x + dx, center.z + dz };
+            if (columns_.find(c) == columns_.end())
+                missing.push_back(c);
+        }
+    }
+
+    // 3) PRIORITIZE: nearest-first, so the world fills toward the camera.
+    std::sort(missing.begin(), missing.end(),
+        [&amp;](const ColumnCoord&amp; a, const ColumnCoord&amp; b) {
+            const int da = (a.x - center.x) * (a.x - center.x) + (a.z - center.z) * (a.z - center.z);
+            const int db = (b.x - center.x) * (b.x - center.x) + (b.z - center.z) * (b.z - center.z);
+            return da &lt; db;
+        });
+
+    // 4) BUDGET: load at most maxLoadsPerFrame this frame; the rest wait for later frames.
+    const int budget = std::min&lt;int&gt;(maxLoadsPerFrame, static_cast&lt;int&gt;(missing.size()));
+    for (int i = 0; i &lt; budget; ++i) {
+        columns_.emplace(missing[i], LoadColumn(missing[i]));
+    }
+}</code></pre>
+
+        <p>
+          Notice how naturally the hysteresis falls out: the unload pass tests against <code>unloadRadius</code>
+          and the load pass against the smaller <code>loadRadius</code>, so a column sitting in the keep band
+          satisfies neither test and is simply left alone. There is no explicit "keep" list — the gap between the
+          two radii <em>is</em> the keep zone.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">The smooth-streaming recipe</div>
+          <p>Hysteresis margin (no thrashing at borders) + nearest-first (the world fills toward you) + a per-frame
+          budget (no single-frame stall) together give you streaming the player never notices. The one thing this
+          version still does wrong is that <code>LoadColumn</code> generates and meshes <em>on the main thread</em>,
+          so a big budget still hitches. That is exactly the problem the next lesson solves by handing
+          <code>LoadColumn</code>'s work to a job system running on background threads — then you can raise the
+          budget without touching the frame time.</p></div>
+        </div>
+
+        <h2>Level of detail: coarser chunks far away</h2>
+
+        <p>
+          A chunk sixty blocks away and a chunk six hundred blocks away are drawn at wildly different sizes on
+          screen, yet both cost a full mesh. Level of detail fixes that: pick a coarseness for each column from its
+          distance to the player, so the far rings are cheap. Because we already compute a squared distance for
+          streaming, LOD selection is a couple of comparisons:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Lod.cpp">// Choose a detail level for a column from its chunk-distance to the player.
+int LodForColumn(ColumnCoord c, ColumnCoord center) {
+    int dx = c.x - center.x, dz = c.z - center.z;
+    int distSq = dx * dx + dz * dz;
+    if (distSq &lt;  6 * 6)  return 0;   // full detail near the camera
+    if (distSq &lt; 12 * 12) return 1;   // half resolution
+    return 2;                         // quarter resolution
+}</code></pre>
+
+        <p>
+          There are a few ways to make a mesh coarser. You can run the same greedy mesher on a
+          <strong>down-sampled</strong> copy of the voxels — merge each 2×2×2 group into one block and mesh the
+          resulting 8³ grid at double voxel scale; you can merge several neighbouring chunks into one coarse mesh to
+          cut draw calls; or you can simply mesh at half the vertex density. Down-sampling is the most direct and
+          composes with everything you have already built:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Lod.cpp">// Build a coarse voxel buffer: each 2x2x2 group of source voxels becomes one.
+// The result is (CHUNK_SIZE/2)^3 voxels; the mesher emits its faces at 2x scale.
+std::vector&lt;BlockId&gt; Downsample2x(const Chunk&amp; src) {
+    const int N = CHUNK_SIZE / 2;                       // 8 for a 16^3 chunk
+    std::vector&lt;BlockId&gt; coarse(N * N * N, 0);
+    for (int z = 0; z &lt; N; ++z)
+    for (int y = 0; y &lt; N; ++y)
+    for (int x = 0; x &lt; N; ++x) {
+        BlockId chosen = 0;                             // pick any solid block in the group
+        for (int o = 0; o &lt; 8 &amp;&amp; chosen == 0; ++o) {
+            int ox = o &amp; 1, oy = (o &gt;&gt; 1) &amp; 1, oz = (o &gt;&gt; 2) &amp; 1;
+            chosen = src.GetBlock(x * 2 + ox, y * 2 + oy, z * 2 + oz);
+        }
+        coarse[x + N * (y + N * z)] = chosen;           // 0 stays air only if all 8 were air
+    }
+    return coarse;
+}</code></pre>
+
+        <p>
+          The catch with any LOD scheme is <strong>cracks</strong>. Where a full-detail chunk meets a half-resolution
+          neighbour, their surface vertices no longer line up along the shared edge: the fine side has a vertex the
+          coarse side skipped, so the two surfaces leave a thin gap you can see the sky (or the void) through. The
+          standard, cheap fix is a <strong>skirt</strong> — a vertical wall of geometry dropped straight down from
+          the chunk's border edge. It does not try to match the neighbour; it just hangs below the surface far
+          enough that whatever gap opens up is covered by wall instead of a hole:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Skirt.cpp">// Cover LOD cracks: drop a vertical wall along a chunk-border edge loop.
+// 'depth' must exceed the largest surface-height gap between adjacent LOD levels.
+void AddSkirt(Mesh&amp; mesh, const std::vector&lt;Vector3&gt;&amp; edge, float depth) {
+    for (std::size_t i = 0; i + 1 &lt; edge.size(); ++i) {
+        Vector3 a = edge[i];
+        Vector3 b = edge[i + 1];
+        Vector3 aDown { a.x, a.y - depth, a.z };
+        Vector3 bDown { b.x, b.y - depth, b.z };
+        mesh.AddQuad(a, b, bDown, aDown);      // one downward-facing wall segment
+    }
+}</code></pre>
+
+        <p>
+          Skirts are almost free — a thin ribbon of quads around each chunk's four sides — and because they are
+          textured like the block wall they hide behind, the player never notices them. There are fancier fixes
+          (stitching the two edges together vertex-by-vertex, or clamping the fine edge to the coarse one), but for
+          a Minecraft-style world skirts are the pragmatic default, and they hide streaming pop-in at the same
+          time.
+        </p>
+
+        <h2>Scaling up: vertical stacks and sparse octrees</h2>
+
+        <p>
+          Two structural notes to close on. First, <strong>vertical stacking</strong>: because the world has real
+          height, a column is not one chunk but a stack of chunk sections — a 256-block-tall world is 16 sections of
+          16³ each. Streaming stays 2D (you stream columns, not individual sections), but generation, meshing, and
+          the memory table above all multiply by the number of sections. Sections that are entirely air can be
+          left un-allocated, so a column above open sky costs almost nothing.
+        </p>
+
+        <p>
+          Second, the flat <code>unordered_map</code> is perfect for the modest render distances a
+          player-following window needs, but it scales linearly with the number of resident chunks. For very large
+          view distances — flight sims, planet-scale terrain, or an editor that wants to see for kilometres — the
+          usual move is a <strong>sparse voxel octree</strong>: a tree that stores empty regions as a single node
+          and refines only where there is detail, which naturally encodes LOD (a shallower node <em>is</em> a
+          coarser sample) and keeps far-away emptiness nearly free.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't reach for the octree yet</div>
+          <p>A sparse octree is more code and trickier to edit and re-mesh incrementally than a flat map of chunks.
+          For a render distance of 8–32 chunks — the range a Minecraft-style game actually uses — the
+          <code>unordered_map</code> window in this lesson is both simpler and faster. Treat the octree as the tool
+          you graduate to when your view distance outgrows what a flat map of resident chunks can hold, not the one
+          you start with.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>An infinite world is a <strong>moving window</strong> of chunks: keep the ones within render distance <code>R</code> of the player resident and free the rest. Chunk count grows with <code>R²</code>, so streaming plus LOD is not optional at large distances.</li>
+            <li>Store resident chunks in a <code>std::unordered_map</code> keyed by a <code>ColumnCoord</code>, with a pack-then-avalanche hash so adjacent chunks spread across buckets. Cross-border lookups are on the hot path — cache neighbour pointers instead of hashing per access.</li>
+            <li><strong>Hysteresis</strong> — an unload radius larger than the load radius — leaves a keep band that stops a player pacing a border from thrashing chunks in and out. The gap between the two radii <em>is</em> the keep zone; no explicit list needed.</li>
+            <li>Load <strong>nearest-first</strong> so the world fills toward the camera, and cap it with a <strong>per-frame budget</strong> so a teleport or fast turn never stalls a frame. Do every ring/LOD/sort test on squared integer distances.</li>
+            <li><strong>LOD</strong> meshes distant columns coarser (down-sample 2×2×2, merge chunks, or halve density); the cracks between LOD levels are hidden by a cheap vertical <strong>skirt</strong> dropped along each chunk border.</li>
+            <li>Beware unloading a chunk a still-resident neighbour was meshed against — it leaves holes and dark seams; re-mesh dirty borders or keep a one-voxel border copy. The synchronous <code>LoadColumn</code> here is what the next lesson moves onto a <strong>job system</strong>.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

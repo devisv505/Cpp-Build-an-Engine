@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your First Triangle — Learn C++ Engine Development</title>
+  <meta name="description" content="Define a vertex struct, build a Direct3D 11 vertex buffer, bind it, set the primitive topology, and issue your first Draw call.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Your First Triangle</h1>
+
+        <p class="lead">Last lesson we cleared the back buffer to a solid color — proof that our swap chain and render target are wired up correctly. Now we put actual geometry on screen. A single triangle is the "Hello, World" of GPU rendering, and every model your engine will ever draw is ultimately just a pile of triangles. In this lesson you'll describe three vertices in C++, upload them to GPU memory as a <strong>vertex buffer</strong>, and ask the device to draw them.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to define a <code>Vertex</code> struct with position and color using DirectXMath types</li>
+            <li>How to create a GPU vertex buffer with <code>D3D11_BUFFER_DESC</code> and <code>CreateBuffer</code></li>
+            <li>How to bind the buffer and set the primitive topology on the Input Assembler</li>
+            <li>How to issue a <code>Draw</code> call to render the triangle</li>
+            <li>Why we still need shaders and an input layout (coming in the next two lessons)</li>
+          </ul>
+        </div>
+
+        <h2>The GPU pipeline, from the top</h2>
+        <p>When you tell Direct3D to draw, your data flows through a series of stages called the <strong>graphics pipeline</strong>. The very first stage is the <strong>Input Assembler</strong> (IA). Its job is to read raw vertices out of a buffer and group them into primitives — points, lines, or triangles. Those primitives then travel to the vertex shader, the rasterizer, and finally the pixel shader, which decides the color of each pixel on screen.</p>
+        <p>Today we focus on feeding the Input Assembler. That means answering three questions for the GPU: <em>What</em> is a vertex? <em>Where</em> is the vertex data? And <em>how</em> should those vertices be assembled into shapes?</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="20" y="70" width="110" height="60" rx="8"/>
+              <text x="75" y="105" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Vertex Buffer</text>
+              <path d="M130 100 h40" stroke="#4aa8ff"/>
+              <path d="M162 94 l10 6 -10 6" stroke="#4aa8ff"/>
+              <rect x="175" y="70" width="130" height="60" rx="8"/>
+              <text x="240" y="97" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Input</text>
+              <text x="240" y="114" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Assembler</text>
+              <path d="M305 100 h40" stroke="#4aa8ff"/>
+              <path d="M337 94 l10 6 -10 6" stroke="#4aa8ff"/>
+              <rect x="350" y="70" width="120" height="60" rx="8"/>
+              <text x="410" y="105" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Vertex Shader</text>
+              <path d="M470 100 h40" stroke="#4aa8ff"/>
+              <path d="M502 94 l10 6 -10 6" stroke="#4aa8ff"/>
+              <rect x="515" y="70" width="70" height="60" rx="8"/>
+              <text x="550" y="97" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">Raster</text>
+              <text x="550" y="114" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">+ Pixel</text>
+            </svg>
+          </div>
+          <figcaption>Our data starts life in a vertex buffer and flows left-to-right through the pipeline.</figcaption>
+        </figure>
+
+        <h2>Defining a vertex</h2>
+        <p>A vertex is just a small bundle of data attached to one corner of our geometry. For our first triangle each vertex carries two attributes: a <strong>position</strong> in 3D space and a <strong>color</strong>. Direct3D ships with a math library, <strong>DirectXMath</strong>, that gives us tightly-packed types perfect for this. We use <code>XMFLOAT3</code> (three floats) for position and <code>XMFLOAT4</code> (four floats — red, green, blue, alpha) for color.</p>
+
+        <pre><code class="language-cpp" data-file="Triangle.cpp">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+// One corner of our geometry. The GPU will read these
+// fields in the exact order we declare them here.
+struct Vertex
+{
+    XMFLOAT3 position;  // x, y, z
+    XMFLOAT4 color;     // r, g, b, a
+};
+
+// Three vertices = one triangle. Positions are given in
+// clip space for now: x and y run from -1 (left/bottom)
+// to +1 (right/top), z is 0. We'll replace this with real
+// world-space coordinates once the engine has a camera.
+static const Vertex kVertices[] =
+{
+    { XMFLOAT3( 0.0f,  0.5f, 0.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 1.0f) }, // top    - red
+    { XMFLOAT3( 0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 1.0f, 0.0f, 1.0f) }, // right  - green
+    { XMFLOAT3(-0.5f, -0.5f, 0.0f), XMFLOAT4(0.0f, 0.0f, 1.0f, 1.0f) }, // left   - blue
+};</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Winding order matters</div>
+            <p>Direct3D's default is to treat triangles whose vertices wind <strong>clockwise</strong> as front-facing, and to cull (skip) back-facing ones. Our three vertices are listed clockwise, so the triangle faces the camera. If your triangle mysteriously vanishes, a reversed winding order is a common culprit.</p>
+          </div>
+        </div>
+
+        <h2>Creating the vertex buffer</h2>
+        <p>The array above lives in system RAM, but the GPU can't reach it there. We need to copy it into a resource the GPU owns — a <strong>buffer</strong>. Creating any Direct3D resource follows the same two-part pattern: fill out a <em>description</em> struct that says what you want, optionally supply the <em>initial data</em>, then call a <code>Create…</code> method on the device.</p>
+        <p>Here <code>device</code> is the <code>ID3D11Device*</code> you created back when you set up the swap chain. Buffer creation happens once, at load time — not every frame.</p>
+
+        <pre><code class="language-cpp" data-file="Triangle.cpp">// device       : ID3D11Device*        (created with the swap chain)
+// context      : ID3D11DeviceContext* (records our draw commands)
+// vertexBuffer : Microsoft::WRL::ComPtr&lt;ID3D11Buffer&gt;
+
+// 1) Describe the buffer we want the GPU to allocate.
+D3D11_BUFFER_DESC bufferDesc = {};
+bufferDesc.ByteWidth      = sizeof(kVertices);          // total size in bytes
+bufferDesc.Usage          = D3D11_USAGE_DEFAULT;        // GPU reads it, we won't update it often
+bufferDesc.BindFlags      = D3D11_BIND_VERTEX_BUFFER;   // this is vertex data
+bufferDesc.CPUAccessFlags = 0;                          // CPU needs no direct access
+bufferDesc.MiscFlags      = 0;
+bufferDesc.StructureByteStride = 0;
+
+// 2) Point the GPU at our initial vertex data.
+D3D11_SUBRESOURCE_DATA initData = {};
+initData.pSysMem = kVertices;                           // source array in system memory
+
+// 3) Ask the device to allocate the buffer and copy the data in.
+HRESULT hr = device-&gt;CreateBuffer(&amp;bufferDesc, &amp;initData, &amp;vertexBuffer);
+if (FAILED(hr))
+{
+    // In the engine we'll route this through a proper error handler.
+    return hr;
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Always check your HRESULTs</div>
+            <p>Nearly every Direct3D call returns an <code>HRESULT</code>. Use the <code>FAILED()</code> / <code>SUCCEEDED()</code> macros rather than comparing to <code>S_OK</code> directly. Silent failures here lead to a black screen that's painful to debug — checking early saves hours.</p>
+          </div>
+        </div>
+
+        <h3>Why ComPtr?</h3>
+        <p>Notice <code>vertexBuffer</code> is a <code>Microsoft::WRL::ComPtr&lt;ID3D11Buffer&gt;</code> rather than a raw pointer. Direct3D objects are reference-counted COM objects. <code>ComPtr</code> is a smart pointer (like <code>std::unique_ptr</code>, but for COM) that calls <code>Release()</code> for you when it goes out of scope. Using it everywhere means we won't leak GPU resources as the engine grows — exactly the kind of RAII discipline we established in the earlier C++ modules.</p>
+
+        <h2>Binding and drawing</h2>
+        <p>With the buffer created, the remaining work happens every frame on the <strong>device context</strong>. We tell the Input Assembler which buffer to read, how big each vertex is (its <em>stride</em>), where to start (its <em>offset</em>), and how to group vertices into primitives. Then we call <code>Draw</code>.</p>
+
+        <pre><code class="language-cpp" data-file="Triangle.cpp">// --- Per-frame: after clearing the render target ---
+
+// How many bytes to advance per vertex, and where to start.
+UINT stride = sizeof(Vertex);
+UINT offset = 0;
+
+// Bind our buffer to input slot 0 of the Input Assembler.
+context-&gt;IASetVertexBuffers(
+    0,                          // start slot
+    1,                          // number of buffers
+    vertexBuffer.GetAddressOf(),// the buffer(s)
+    &amp;stride,                    // bytes per vertex
+    &amp;offset);                   // starting byte
+
+// Tell the IA to assemble every 3 vertices into one triangle.
+context-&gt;IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+// Draw 3 vertices, starting at vertex 0.
+context-&gt;Draw(3, 0);
+
+// (swap chain Present() happens after this, as before)</code></pre>
+
+        <p>The two arguments to <code>Draw</code> are the vertex count and the index of the first vertex. Because we're using a <strong>triangle list</strong>, the GPU consumes vertices in groups of three: vertices 0, 1, 2 form our one triangle. Draw six vertices and you'd get two separate triangles; that's how we'll eventually build a quad, and later, whole meshes.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Topology</th><th>How vertices are grouped</th><th>Typical use</th></tr></thead>
+            <tbody>
+              <tr><td><code>POINTLIST</code></td><td>Each vertex is one point</td><td>Particles, debug dots</td></tr>
+              <tr><td><code>LINELIST</code></td><td>Every 2 vertices form a line</td><td>Wireframes, gizmos</td></tr>
+              <tr><td><code>TRIANGLELIST</code></td><td>Every 3 vertices form a triangle</td><td>Almost all solid geometry</td></tr>
+              <tr><td><code>TRIANGLESTRIP</code></td><td>Each new vertex reuses the last two</td><td>Terrain, ribbons</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>Why nothing shows up yet</h2>
+        <p>If you compile and run with only the code above, you'll still see just your cleared background. That's expected — the pipeline has two more pieces that are literally required before a single pixel can be shaded:</p>
+        <ul>
+          <li>A <strong>vertex shader</strong> and <strong>pixel shader</strong>. The GPU has no built-in idea of what to do with a vertex; you must supply small programs written in HLSL. We'll write these in the next lesson, <em>Shaders &amp; HLSL</em>.</li>
+          <li>An <strong>input layout</strong> (<code>ID3D11InputLayout</code>). This is the contract that tells the GPU how the bytes in each <code>Vertex</code> map to shader inputs — "the first 12 bytes are a POSITION, the next 16 are a COLOR." We'll build it in the lesson after that, once we have a compiled shader to validate it against.</li>
+        </ul>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't expect the triangle this lesson</div>
+            <p>Binding a vertex buffer and calling <code>Draw</code> without shaders bound is valid code, but it renders nothing. This is by design — we're building the pieces in a logical order. Your triangle will appear at the end of the input-layout lesson, when every stage of the Input Assembler and shader pipeline is finally connected.</p>
+          </div>
+        </div>
+
+        <h2>How this fits the engine</h2>
+        <p>This lowly triangle is the seed of your renderer. In a component-based engine, a <strong>MeshRenderer</strong> component will own a vertex buffer exactly like this one, created from mesh data loaded off disk. The stride/offset/topology dance you just wrote becomes a reusable <code>DrawMesh()</code> routine that the render system calls for every visible object each frame. Master the flow here — <em>describe, create, bind, draw</em> — and you've learned the pattern that every GPU resource in the engine follows.</p>
+
+        <h2>macOS — draw the triangle with Metal</h2>
+        <p>Create a shared buffer for the same vertex array, bind a compiled render pipeline, and encode a three-vertex draw:</p>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::Buffer* vertexBuffer = device-&gt;newBuffer(
+    vertices, sizeof(vertices), MTL::ResourceStorageModeShared);
+
+encoder-&gt;setRenderPipelineState(pipelineState);
+encoder-&gt;setVertexBuffer(vertexBuffer, 0, 0);
+encoder-&gt;drawPrimitives(MTL::PrimitiveTypeTriangle, 0, 3);</code></pre>
+        <p><code>drawPrimitives</code> is Metal's direct equivalent of a non-indexed <code>Draw</code>. Both APIs read vertices from slot 0, run the vertex function three times, rasterize one triangle, and run the fragment/pixel function.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <strong>vertex</strong> is a bundle of per-corner data; ours holds an <code>XMFLOAT3</code> position and an <code>XMFLOAT4</code> color.</li>
+            <li>GPU resources are created with a <strong>description struct</strong> plus optional initial data, then a <code>Create…</code> call — here <code>D3D11_BUFFER_DESC</code> + <code>D3D11_SUBRESOURCE_DATA</code> + <code>CreateBuffer</code>.</li>
+            <li>Each frame you <code>IASetVertexBuffers</code> with the correct <strong>stride</strong> and offset, set the topology to <code>TRIANGLELIST</code>, and call <code>Draw(3, 0)</code>.</li>
+            <li>Use <code>ComPtr</code> for COM objects and always check <code>HRESULT</code>s with <code>FAILED()</code>.</li>
+            <li>The triangle won't appear until we add a <strong>vertex/pixel shader</strong> and an <strong>input layout</strong> in the next two lessons.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

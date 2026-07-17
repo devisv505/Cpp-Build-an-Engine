@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SIMD Math: DirectXMath &amp; Apple simd — Learn C++ Engine Development</title>
+  <meta name="description" content="Learn SIMD graphics math with DirectXMath on Windows and Apple simd on macOS, then isolate both behind a portable engine math layer.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>SIMD Math: DirectXMath &amp; Apple simd</h1>
+
+        <p class="lead">You already know the math behind transformations. Now we'll use the SIMD libraries supplied by each platform: <strong>DirectXMath</strong> on Windows and <strong>Apple simd</strong> on macOS. Both accelerate vectors and matrices; our engine math layer will hide their naming and convention differences.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why DirectXMath splits types into <strong>storage</strong> types and <strong>SIMD calculation</strong> types</li>
+            <li>How to move data with <code>XMLoadFloat</code> and <code>XMStoreFloat</code></li>
+            <li>The key matrix helpers: translation, rotation, scaling, look-at, and perspective</li>
+            <li>How to combine them into a single world &times; view &times; projection matrix</li>
+            <li>The alignment rule that keeps SIMD code from crashing</li>
+            <li>How Apple simd maps the same concepts on macOS</li>
+          </ul>
+        </div>
+
+        <h2>Getting started: one header, one namespace</h2>
+        <p>DirectXMath comes with the Windows SDK, so there is nothing to install. You just include one header and open one namespace:</p>
+
+        <pre><code class="language-cpp" data-file="math_demo.cpp">#include &lt;DirectXMath.h&gt;   // the whole library
+#include &lt;iostream&gt;
+
+using namespace DirectX;      // XMFLOAT3, XMVECTOR, XMMatrix... live here
+
+int main()
+{
+    XMFLOAT3 position = { 1.0f, 2.0f, 3.0f };
+    std::cout &lt;&lt; "x = " &lt;&lt; position.x &lt;&lt; "\n";
+    return 0;
+}</code></pre>
+
+        <p>That compiles cleanly with the Windows toolchain configured in CLion. The interesting part is the two <em>families</em> of types the library gives you, and knowing when to use each.</p>
+
+        <h2>Storage types vs SIMD types</h2>
+        <p>This is the single most important idea in DirectXMath, so let's be precise. The library separates the type you <strong>store in memory</strong> from the type you <strong>calculate with</strong>.</p>
+
+        <h3>Storage types — small and plain</h3>
+        <p>Storage types are ordinary structs holding <code>float</code> fields. They are compact and safe to put inside your own classes, arrays, and vertex buffers:</p>
+        <ul>
+          <li><code>XMFLOAT2</code> — two floats (<code>x</code>, <code>y</code>)</li>
+          <li><code>XMFLOAT3</code> — three floats (a position, normal, or color)</li>
+          <li><code>XMFLOAT4</code> — four floats (a color with alpha, or a homogeneous point)</li>
+          <li><code>XMFLOAT4X4</code> — a 4&times;4 matrix, 16 floats in row-major order</li>
+        </ul>
+
+        <h3>SIMD types — fast but special</h3>
+        <p>The calculation types map directly onto the CPU's SIMD registers (SSE on x86/x64). One register holds four floats and the CPU operates on all four at once:</p>
+        <ul>
+          <li><code>XMVECTOR</code> — a 4-component vector living in a SIMD register</li>
+          <li><code>XMMATRIX</code> — four <code>XMVECTOR</code>s, i.e. a full 4&times;4 matrix</li>
+        </ul>
+
+        <p>You do all your <em>math</em> on <code>XMVECTOR</code> and <code>XMMATRIX</code>, then convert back to a storage type when you're done. Think of it like this: storage types are the boxes on your shelf; SIMD types are the workbench where the fast work happens.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Why not just use XMVECTOR everywhere?</div>
+            <p>Because <code>XMVECTOR</code> is a special register-backed type. Storing thousands of them in memory wastes space and hits alignment rules (below). The convention that every DirectX sample follows: <strong>store</strong> with <code>XMFLOAT*</code>, <strong>compute</strong> with <code>XMVECTOR</code>/<code>XMMATRIX</code>.</p>
+          </div>
+        </div>
+
+        <h2>Moving between the two: Load and Store</h2>
+        <p>You convert a storage type into a SIMD type with an <code>XMLoad*</code> function, and convert back with an <code>XMStore*</code> function. The name matches the type: <code>XMLoadFloat3</code> pairs with <code>XMFLOAT3</code>, and so on.</p>
+
+        <pre><code class="language-cpp" data-file="load_store.cpp">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+XMFLOAT3 AddPositions(const XMFLOAT3&amp; a, const XMFLOAT3&amp; b)
+{
+    // 1. Load: memory (XMFLOAT3) -&gt; SIMD register (XMVECTOR)
+    XMVECTOR va = XMLoadFloat3(&amp;a);
+    XMVECTOR vb = XMLoadFloat3(&amp;b);
+
+    // 2. Compute on the workbench (all 3 lanes added at once)
+    XMVECTOR sum = XMVectorAdd(va, vb);
+
+    // 3. Store: SIMD register -&gt; memory (XMFLOAT3)
+    XMFLOAT3 result;
+    XMStoreFloat3(&amp;result, sum);
+    return result;
+}</code></pre>
+
+        <p>Notice the pattern: <strong>load &rarr; compute &rarr; store</strong>. In a real engine you load once, do many operations while the data stays in registers, then store once at the end. That's where SIMD earns its speed.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't read individual lanes off an XMVECTOR</div>
+            <p>You can't reliably do <code>myVector.x</code>. To read a single component, either store to an <code>XMFLOAT*</code> first, or use accessors like <code>XMVectorGetX(v)</code>. Treat <code>XMVECTOR</code> as opaque.</p>
+          </div>
+        </div>
+
+        <h2>The alignment rule</h2>
+        <p>Because <code>XMVECTOR</code> and <code>XMMATRIX</code> live in 16-byte SIMD registers, they must be <strong>16-byte aligned</strong> in memory. Local variables and function arguments are handled for you, but if you make an <code>XMVECTOR</code> a <em>member</em> of a class that gets heap-allocated with <code>new</code>, alignment can silently break on 32-bit builds and crash.</p>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">The safe habit</div>
+            <p>Never store <code>XMVECTOR</code> or <code>XMMATRIX</code> as class members. Store <code>XMFLOAT3</code> / <code>XMFLOAT4X4</code> instead, and load them into SIMD types only inside functions. Our engine's <strong>Transform component</strong> will hold an <code>XMFLOAT3</code> position and produce an <code>XMMATRIX</code> on demand — exactly this pattern.</p>
+          </div>
+        </div>
+
+        <h2>Matrix helpers you'll use constantly</h2>
+        <p>DirectXMath builds the standard transformation matrices for you. Every one returns an <code>XMMATRIX</code>. Here are the ones we need this module:</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Function</th><th>What it builds</th></tr></thead>
+            <tbody>
+              <tr><td><code>XMMatrixTranslation(x, y, z)</code></td><td>Moves an object by (x, y, z)</td></tr>
+              <tr><td><code>XMMatrixRotationY(radians)</code></td><td>Rotates around the Y (up) axis</td></tr>
+              <tr><td><code>XMMatrixScaling(sx, sy, sz)</code></td><td>Scales along each axis</td></tr>
+              <tr><td><code>XMMatrixLookAtLH(eye, target, up)</code></td><td>The camera / view matrix (left-handed)</td></tr>
+              <tr><td><code>XMMatrixPerspectiveFovLH(fov, aspect, nearZ, farZ)</code></td><td>The projection matrix (left-handed)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Angles are in radians</div>
+            <p>All rotation helpers take radians, not degrees. Convert with <code>XMConvertToRadians(45.0f)</code> — it's clearer than typing out fractions of pi, and it documents your intent.</p>
+          </div>
+        </div>
+
+        <h2>Building world &times; view &times; projection</h2>
+        <p>Here is the payoff. To draw an object, the GPU needs one matrix that transforms a model's local vertices all the way to screen space. It is the product of three matrices:</p>
+        <ol>
+          <li><strong>World</strong> — where the object sits in the scene (its scale, rotation, position)</li>
+          <li><strong>View</strong> — where the camera is and which way it looks</li>
+          <li><strong>Projection</strong> — how 3D space is flattened onto the 2D screen</li>
+        </ol>
+
+        <p>DirectXMath uses <strong>row-major</strong> matrices and row vectors, so you multiply left-to-right in the order the transforms apply: <code>world * view * proj</code>.</p>
+
+        <pre><code class="language-cpp" data-file="wvp.cpp">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+// Produce the combined matrix the vertex shader will use.
+// We return an XMFLOAT4X4 (a storage type) so it is safe to keep around.
+XMFLOAT4X4 BuildWorldViewProj(float rotationRadians, float aspectRatio)
+{
+    // --- WORLD: scale, then spin around Y, then move into the scene ---
+    XMMATRIX scale     = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotate    = XMMatrixRotationY(rotationRadians);
+    XMMATRIX translate = XMMatrixTranslation(0.0f, 0.0f, 0.0f);
+    XMMATRIX world     = scale * rotate * translate;   // apply in that order
+
+    // --- VIEW: camera 5 units back, looking at the origin ---
+    XMVECTOR eye    = XMVectorSet(0.0f, 2.0f, -5.0f, 0.0f); // camera position
+    XMVECTOR target = XMVectorSet(0.0f, 0.0f,  0.0f, 0.0f); // look at origin
+    XMVECTOR up     = XMVectorSet(0.0f, 1.0f,  0.0f, 0.0f); // world up axis
+    XMMATRIX view   = XMMatrixLookAtLH(eye, target, up);
+
+    // --- PROJECTION: 45-degree vertical field of view ---
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(
+        XMConvertToRadians(45.0f), // field of view
+        aspectRatio,               // width / height, e.g. 1280.0f/720.0f
+        0.1f,                      // near clip plane
+        100.0f);                   // far clip plane
+
+    // Combine. Order matters: world, then view, then projection.
+    XMMATRIX wvp = world * view * proj;
+
+    // Store the SIMD matrix into a plain type we can hold and upload later.
+    XMFLOAT4X4 result;
+    XMStoreFloat4x4(&amp;result, wvp);
+    return result;
+}</code></pre>
+
+        <p>Read that top to bottom and it mirrors the pipeline exactly: build each piece as an <code>XMMATRIX</code>, multiply them on the SIMD workbench, then <code>XMStoreFloat4x4</code> the answer into an <code>XMFLOAT4X4</code> we can safely keep. Later in the engine we'll copy that <code>XMFLOAT4X4</code> into a GPU constant buffer, and the vertex shader will multiply every vertex by it.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Why "LH"?</div>
+            <p>The <code>LH</code> suffix means <strong>left-handed</strong> coordinates, where +Z points into the screen. This is the Direct3D convention, so we use the LH versions throughout. There are matching RH functions, but mixing them flips your world inside out — pick LH and stay consistent.</p>
+          </div>
+        </div>
+
+        <h2>macOS — the Apple simd equivalent</h2>
+        <p>Apple platforms expose SIMD vector and matrix types through <code>&lt;simd/simd.h&gt;</code>. The types are ordinary C-compatible values backed by the compiler's vector operations:</p>
+
+        <pre><code class="language-cpp" data-file="simd_demo.cpp">#include &lt;simd/simd.h&gt;
+
+simd_float4 TransformPoint(const simd_float4x4&amp; matrix,
+                           const simd_float3&amp; point)
+{
+    const simd_float4 homogeneous = { point.x, point.y, point.z, 1.0f };
+    return simd_mul(matrix, homogeneous);
+}
+
+simd_float4x4 IdentityMatrix()
+{
+    return matrix_identity_float4x4;
+}</code></pre>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Concept</th><th>Windows</th><th>macOS</th></tr></thead>
+          <tbody>
+            <tr><td>3-float storage</td><td><code>XMFLOAT3</code></td><td><code>simd_float3</code></td></tr>
+            <tr><td>4-lane vector</td><td><code>XMVECTOR</code></td><td><code>simd_float4</code></td></tr>
+            <tr><td>4×4 matrix</td><td><code>XMMATRIX</code>/<code>XMFLOAT4X4</code></td><td><code>simd_float4x4</code></td></tr>
+            <tr><td>Matrix multiply</td><td><code>a * b</code></td><td><code>simd_mul(a, b)</code></td></tr>
+            <tr><td>Identity</td><td><code>XMMatrixIdentity()</code></td><td><code>matrix_identity_float4x4</code></td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Matrix conventions are part of the API</div><p>DirectXMath examples commonly use row vectors and left-handed helpers; Metal Shading Language commonly uses column-vector notation. Do not copy raw matrices between backends without defining transpose and handedness rules. Our portable math types establish one convention and each renderer converts at the upload boundary.</p></div></div>
+
+        <h2>How this fits the engine</h2>
+        <p>The <strong>Transform</strong> and <strong>Camera</strong> components will expose engine-owned vector and matrix types. The Windows adapter can use DirectXMath internally; the macOS adapter can use Apple simd. Renderer code converts the final matrix to the layout expected by HLSL or Metal Shading Language.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Windows uses DirectXMath from <code>&lt;DirectXMath.h&gt;</code>; macOS uses Apple simd from <code>&lt;simd/simd.h&gt;</code>.</li>
+            <li><strong>Storage types</strong> (<code>XMFLOAT2/3/4</code>, <code>XMFLOAT4X4</code>) live in memory; <strong>SIMD types</strong> (<code>XMVECTOR</code>, <code>XMMATRIX</code>) do the fast math.</li>
+            <li>Move between them with <code>XMLoadFloat*</code> and <code>XMStoreFloat*</code>: load &rarr; compute &rarr; store.</li>
+            <li>Never make <code>XMVECTOR</code>/<code>XMMATRIX</code> a heap-allocated class member — they need 16-byte alignment.</li>
+            <li>Define one engine matrix convention and convert explicitly when uploading to Direct3D or Metal.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

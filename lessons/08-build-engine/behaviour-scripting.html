@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scripting with a MonoBehaviour-Style Class — Learn C++ &amp; DirectX</title>
+  <title>Scripting with a MonoBehaviour-Style Class — Learn C++ Engine Development</title>
   <meta name="description" content="Build a Unity-style Behaviour scripting layer on top of your Component system, with OnStart() and OnUpdate() driving your MiniEngine objects.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -215,16 +215,17 @@ private:
         <h2>Reading input: a PlayerController</h2>
         <p>
           A rotating cube is nice, but scripts get interesting when they react to the player. Here is a controller
-          that moves its object across the XZ plane using WASD. On Windows we can poll the keyboard directly with
-          <code>GetAsyncKeyState</code> from <code>&lt;Windows.h&gt;</code> — later we will route input through a
-          proper input manager, but this is perfect for learning.
+          that moves its object across the XZ plane using WASD. It asks the engine's <code>Input</code> service about
+          engine <code>Key</code> values, so gameplay never touches SDL3, Win32, or Cocoa directly.
         </p>
 
-<pre><code class="language-cpp" data-file="PlayerController.h">#include &lt;Windows.h&gt;   // GetAsyncKeyState for quick keyboard polling
+<pre><code class="language-cpp" data-file="PlayerController.h">#include "Input.h"
 
 // Moves its GameObject across the XZ plane using WASD.
 class PlayerController : public Behaviour {
 public:
+    explicit PlayerController(const Input&amp; input) : m_input(input) {}
+
     float moveSpeed = 5.0f;   // world units per second
 
     void OnStart() override {
@@ -234,19 +235,21 @@ public:
     void OnUpdate(float dt) override {
         Vector3 dir{ 0.0f, 0.0f, 0.0f };
 
-        // The high bit (0x8000) is set while the key is held down.
-        if (GetAsyncKeyState('W') &amp; 0x8000) dir.z += 1.0f;
-        if (GetAsyncKeyState('S') &amp; 0x8000) dir.z -= 1.0f;
-        if (GetAsyncKeyState('D') &amp; 0x8000) dir.x += 1.0f;
-        if (GetAsyncKeyState('A') &amp; 0x8000) dir.x -= 1.0f;
+        if (m_input.IsKeyDown(Key::W)) dir.z += 1.0f;
+        if (m_input.IsKeyDown(Key::S)) dir.z -= 1.0f;
+        if (m_input.IsKeyDown(Key::D)) dir.x += 1.0f;
+        if (m_input.IsKeyDown(Key::A)) dir.x -= 1.0f;
 
         m_transform-&gt;position.x += dir.x * moveSpeed * dt;
         m_transform-&gt;position.z += dir.z * moveSpeed * dt;
     }
 
 private:
+    const Input&amp; m_input; // Application owns Input longer than the scene
     Transform* m_transform = nullptr;
 };</code></pre>
+
+        <p><code>Input::ProcessEvent</code> performs the only SDL-scancode-to-<code>Key</code> mapping. The Application-owned service is injected when the component is created, so this script has no global lookup and remains unchanged if the window system changes. The <code>Transform</code> is still fetched in <code>OnStart</code>, after the component has an owner.</p>
 
         <p>
           Both scripts follow the same shape: reach for what they need in <code>OnStart()</code>, do work in
@@ -274,7 +277,8 @@ private:
           switch statements. That is the composition promise from the last lesson, delivered.
         </p>
 
-<pre><code class="language-cpp" data-file="main.cpp">// Build a little scene and give objects behaviour by attaching scripts.
+<pre><code class="language-cpp" data-file="Application.cpp">// Inside Application::Run(): m_input outlives the scene and its scripts.
+// Build a little scene and give objects behaviour by attaching scripts.
 GameObject* cube = scene.CreateGameObject("SpinningCube");
 cube-&gt;AddComponent&lt;MeshRenderer&gt;();                 // from the rendering lessons
 
@@ -282,7 +286,7 @@ RotatorBehaviour* spin = cube-&gt;AddComponent&lt;RotatorBehaviour&gt;();
 spin-&gt;degreesPerSecond = 180.0f;                   // AddComponent returns a T*, so we configure it
 
 GameObject* player = scene.CreateGameObject("Player");
-player-&gt;AddComponent&lt;PlayerController&gt;();           // WASD movement, zero extra wiring
+player-&gt;AddComponent&lt;PlayerController&gt;(m_input);    // inject the engine Input service
 
 // ...and in the main loop, once per frame:
 for (GameObject* go : scene.GetObjects())

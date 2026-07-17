@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Matrices &amp; Transformations — Learn C++ &amp; DirectX</title>
+  <title>Matrices &amp; Transformations — Learn C++ Engine Development</title>
   <meta name="description" content="Learn how 4x4 matrices encode translation, rotation, and scale, why multiplication order matters, and how DirectX builds a world matrix.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -166,6 +166,9 @@ Mat4 world = Scale(2.0f, 2.0f, 2.0f)
         </div>
 
         <p>This matters for our engine design. Each object's <strong>Transform component</strong> will store a scale, a rotation, and a position. Every frame it rebuilds one world matrix with exactly the <code>S * R * T</code> chain above, and hands that matrix to the GPU. In the next lesson we replace our hand-written <code>Mat4</code> with <strong>DirectXMath</strong>, which does the same math far faster using SIMD hardware instructions.</p>
+
+        <h2>The Metal/macOS matrix boundary</h2>
+        <p>Apple <code>simd</code> and Metal Shading Language commonly use column-vector notation, while this lesson's DirectX path uses row vectors. The transformations are equivalent, but the written multiplication order and translation location differ. Keep one engine convention and let <code>ToMetalMatrix</code> transpose or reorder once before upload.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>

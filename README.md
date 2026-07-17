@@ -1,94 +1,57 @@
-# Learn C++ & DirectX — Build Your Own Game Engine
+# Learn C++ — Build Your Own Cross-Platform Game Engine
 
-A free, self-paced, **offline-first** course website that teaches C++ from absolute zero and
-guides the learner all the way to building their own component-based 3D engine with **DirectX 11** —
-using the same architectural ideas as Unity and Unreal.
+A free, self-contained course that starts at absolute zero and guides the learner to a component-based 3D engine. The course uses **CLion and CMake** throughout, with **Direct3D 11 on Windows** and **Metal on macOS**. Shared engine, gameplay, networking, windowing, and math concepts remain portable.
 
-It's plain **HTML + CSS + JavaScript**. No build step, no dependencies, no server required.
+## Run the course
 
-## Running it
+No web build step is required. Open `index.html` in a browser, or serve the repository with any static file server.
 
-Just open `index.html` in any modern browser (double-click it, or drag it into a browser tab).
-Everything works from the local filesystem. Progress is saved in the browser's `localStorage`.
+Course progress and build-task completion are stored in the browser's local storage.
 
-> Tip: some browsers restrict a few features on `file://` pages. For the smoothest experience you can
-> optionally serve the folder with any static server, e.g. `python -m http.server` and open
-> `http://localhost:8000`.
+## Learning path
 
-## What's inside
+The course contains 101 lessons in 12 modules:
 
-| Path | Purpose |
-|------|---------|
-| `index.html` | Landing page — hero, module roadmap, the "build MiniEngine" project panel, "continue where you left off". |
-| `tasks.html` | **Engine Build Tracker** — all 68 build tasks as an interactive checklist grouped by module, with a progress ring. |
-| `css/styles.css` | The entire design system (dark/light themes, all components). |
-| `js/curriculum.js` | **Single source of truth** for every module and lesson (order, titles, paths). |
-| `js/tasks.js` | The 68 cumulative engine-build tasks (one per lesson). |
-| `js/main.js` | Builds all shared chrome: header, sidebar, table of contents, prev/next, lesson-completion + build-task boxes, progress tracking, code highlighting, theme toggle. |
-| `lessons/<module>/<slug>.html` | One file per lesson. Each contains only its `<article>` content. |
+1. **Getting Started** — CLion, CMake, the compiler/linker pipeline, first program, and debugging.
+2. **C++ Fundamentals** — variables, control flow, functions, scope, and lifetime.
+3. **Data & Memory** — arrays, strings, pointers, references, allocation, and multiple files.
+4. **Object-Oriented C++** — classes, RAII, polymorphism, templates, smart pointers, and the STL.
+5. **Math for Graphics** — coordinate systems, vectors, matrices, DirectXMath, and Apple `simd`.
+6. **Platform & the Game Loop** — SDL3 windows, events, input, delta time, Windows, and macOS.
+7. **Graphics Foundations** — the shared GPU pipeline, Direct3D 11, Metal, shaders, buffers, textures, depth, and cameras.
+8. **Engine Architecture** — subsystems, GameObjects, Actors, ECS, scene graphs, resources, input, and time.
+9. **Build Your Engine** — portable CMake targets, YAML configuration, renderer backends, components, scripting, materials, and the complete loop.
+10. **Multiplayer & Networking** — portable sockets, TCP/UDP, serialization, client-server design, and replication.
+11. **Shaders & Post-Processing** — texture filtering and atlases/arrays, render targets, fullscreen passes, HDR and tone mapping, separable Gaussian blur, and a full bloom pipeline.
+12. **Build Minecraft: A Voxel Engine** — chunked worlds, hidden-face and greedy meshing, voxel texturing and ambient occlusion, noise terrain, trees and foliage decoration, flood-fill lighting, chunk streaming, a threaded job system, DDA raycasting, frustum culling, and a playable sandbox capstone.
 
-## The project: build "MiniEngine"
+## Platform toolchains
 
-The course is **project-based**. Every lesson ends with one hands-on **build task**, injected
-automatically from `js/tasks.js`. Done in order, the 68 tasks stack into a small, Unity/Unreal-style
-DirectX 11 engine — from opening a Win32 window and a game loop, through Direct3D 11 rendering, to a
-GameObject–Component scene system, ending in a spinning textured cube rendered by the learner's own
-engine. The [Engine Build Tracker](tasks.html) aggregates every task with checkboxes and progress
-(saved in `localStorage` under `cppdx-tasks`, shared with each lesson's task box).
+| Platform | IDE | Compiler/toolchain | Windowing | Graphics |
+|---|---|---|---|---|
+| Windows | CLion | Bundled MinGW | SDL3/Win32 | Direct3D 11 + HLSL |
+| macOS | CLion | Apple Clang | SDL3/Cocoa | Metal + Metal Shading Language |
 
-## The curriculum (10 modules, 76 lessons)
+SDL3 provides the shared window, event, keyboard, mouse, and gamepad layer. Direct3D 11 and Metal remain native renderer backends selected behind CMake's `WIN32` and `APPLE` branches. Public gameplay interfaces use standard C++ engine types; SDL and native graphics types stay at the platform and renderer boundaries.
 
-0. **Getting Started** — tools, how C++ compiles, first program.
-1. **C++ Fundamentals** — variables, control flow, functions.
-2. **Data & Memory** — arrays, pointers, the heap.
-3. **Object-Oriented C++** — classes, inheritance, polymorphism, templates, smart pointers.
-4. **Math for Graphics** — vectors, matrices, DirectXMath.
-5. **Windows & the Game Loop** — Win32 window, message loop, delta time.
-6. **DirectX 11 Foundations** — from device init to textured, depth-tested 3D.
-7. **Engine Architecture** — GameObjects, Actors, ECS, scenes, subsystems.
-8. **Build Your Engine** — assemble it all into a working engine, including a Unity-style MonoBehaviour scripting class.
-9. **Multiplayer & Networking** — Winsock sockets, TCP/UDP, serialization, the client-server model, and replicating GameObjects online.
+## Project structure
 
-## How the pages fit together
-
-Each lesson page is intentionally minimal — it supplies **only** the `<article>` content:
-
-```html
-<body class="lesson-page">
-  <div id="app">
-    <main class="content">
-      <article class="lesson">
-        <h1>…</h1>
-        <p class="lead">…</p>
-        <div class="objectives">…</div>
-        <!-- teaching sections -->
-        <div class="recap">…</div>
-      </article>
-    </main>
-  </div>
-  <script src="../../js/curriculum.js"></script>
-  <script src="../../js/main.js"></script>
-</body>
-```
-
-At load time, `main.js` reads `curriculum.js` and injects the header, sidebar (with the current
-lesson highlighted), breadcrumb, the "Lesson N of 68" eyebrow, a reading-time estimate, the
-"On this page" table of contents, syntax-highlighted code blocks with copy buttons, the
-prev/next pager, and the "Mark as complete" button. **You never hand-write those** — they stay
-consistent everywhere because they come from one place.
+- `index.html` — landing page and roadmap.
+- `tasks.html` — one cumulative engine task per lesson.
+- `js/curriculum.js` — the source of truth for ordering, paths, and navigation.
+- `js/tasks.js` — the course build tasks.
+- `js/main.js` — shared page chrome, navigation, progress, search, and code blocks.
+- `lessons/` — the 101 lesson pages.
+- `css/styles.css` — shared presentation.
 
 ## Adding or reordering lessons
 
-1. Add or move an entry in `js/curriculum.js` (its `dir` + `slug` define the file path and its
-   position sets the numbering and prev/next links).
-2. Create the matching `lessons/<dir>/<slug>.html` file using the structure above.
+1. Add or move an entry in `js/curriculum.js`. Its `dir` and `slug` define the file path.
+2. Create the matching `lessons/<dir>/<slug>.html` page.
+3. Add a task in `js/tasks.js` whose id matches `<module>-<slug>`.
 
-That's it — the sidebar, roadmap, progress bar and navigation update automatically.
+The sidebar, roadmap, progress bar, lesson numbering, and previous/next links are generated automatically.
 
-## Content components available in a lesson
+## Lesson components
 
-`objectives` box · four `callout` styles (note / tip / warn / danger) · fenced code blocks with a
-`language-*` class (`cpp`, `hlsl`, `powershell`, `console`, `text`, `cmake`) · `table` wrapped in
-`.table-wrap` · `figure` / `.figure-box` for inline SVG diagrams · `kbd` keys · `recap` box.
-
-Inside code blocks, `<`, `>` and `&` must be HTML-escaped (`&lt;`, `&gt;`, `&amp;`).
+Lessons may use objectives, callouts, code blocks, wrapped tables, inline SVG figures, keyboard keys, and recap boxes. Code blocks use language classes such as `cpp`, `hlsl`, `shader`, `cmake`, `console`, and `text`. Inside code blocks, `<`, `>`, and `&` must be HTML-escaped.

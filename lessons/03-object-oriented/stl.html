@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>The Standard Template Library — Learn C++ &amp; DirectX</title>
+  <title>The Standard Template Library — Learn C++ Engine Development</title>
   <meta name="description" content="A practical tour of the C++ STL: vector, array, map and unordered_map, iterators, range-based for, and core algorithms for our engine.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -72,7 +72,7 @@ int main() {
     return 0;
 }</code></pre>
 
-        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">array vs. vector</div><p>Use <code>std::array</code> when the size never changes and is known while compiling. Use <code>std::vector</code> when the size is decided at runtime or grows over time. DirectX will later hand us buffers whose size we already know — <code>std::array</code> shines there.</p></div></div>
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">array vs. vector</div><p>Use <code>std::array</code> when the size never changes and is known while compiling. Use <code>std::vector</code> when the size is decided at runtime or grows. Fixed-size colors and vertex layouts suit arrays; loaded mesh data suits vectors on both Windows and macOS.</p></div></div>
 
         <h2>Associative containers: map and unordered_map</h2>
         <p>Vectors answer "give me the item at index 3." Maps answer "give me the item named <em>brick_wall</em>." They store <strong>key → value</strong> pairs, which is exactly what an asset manager needs: look up a texture or mesh by its name.</p>

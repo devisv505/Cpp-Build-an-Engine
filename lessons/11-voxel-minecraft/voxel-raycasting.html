@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Block Picking with Voxel Raycasting (DDA) — Learn C++ Engine Development</title>
+  <meta name="description" content="Find the exact block the player is looking at using Amanatides–Woo voxel traversal — a fast grid DDA that visits every voxel along a ray in order, missing none.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Block Picking with Voxel Raycasting (DDA)</h1>
+
+        <p class="lead">
+          Point the camera at a block and left-click: it breaks. Right-click the space in front of it: a block
+          appears. Both actions rest on one question — <em>which voxel is the player looking at?</em> The answer is
+          a ray cast from the camera into the grid, and there is exactly one correct way to walk a ray through a
+          voxel world: the Amanatides &amp; Woo traversal, a grid DDA that visits every cell the ray crosses,
+          in order, exactly once. In this lesson we implement it in full, recover the hit block, the face normal,
+          and the empty cell to build into — then wire break and place into the job system so edits relight and
+          re-mesh the affected chunks.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why fixed-step ray marching either skips thin cells or wastes work — and never gives you the exact entry face.</li>
+            <li>The Amanatides &amp; Woo grid DDA precisely: <code>step</code>, <code>tDelta</code> and <code>tMax</code>, and how to initialise each from the ray's fractional start.</li>
+            <li>The full <code>RaycastVoxel</code> returning the hit block, the empty cell to place into, the face normal, and the distance.</li>
+            <li>How to handle the sharp edges: a zero direction component, and starting inside a solid block.</li>
+            <li>Wiring left-click break and right-click place to relight and re-mesh the edited chunk — and its neighbours when the edit lands on a border.</li>
+          </ul>
+        </div>
+
+        <h2>Why not just march the ray?</h2>
+
+        <p>
+          The obvious idea is to sample the ray at fixed intervals: step a small amount along the direction, floor
+          the position to a voxel, and check if it is solid. It looks like this — and it is a trap.
+        </p>
+
+        <pre><code class="language-cpp" data-file="NaiveMarch.cpp">// Tempting, and wrong: march the ray in fixed steps.
+glm::vec3 dir = glm::normalize(lookDir);
+for (float t = 0.0f; t &lt; maxDistance; t += 0.1f) {
+    glm::vec3  p    = origin + dir * t;
+    glm::ivec3 cell = glm::ivec3(glm::floor(p));
+    if (world.isSolid(cell)) {
+        // We're somewhere *inside* this block. But which face did we enter
+        // through? We can't say — so we can't place a block against it. And
+        // did the last step tunnel straight through a thin cell we skipped?
+        break;
+    }
+}</code></pre>
+
+        <p>
+          Both failure modes are structural, not tuning problems. Too large a step and the ray <em>tunnels</em>:
+          it jumps over a one-voxel-thick wall entirely, sampling air on both sides. Too small a step and you test
+          the <em>same</em> cell dozens of times — pure wasted work — and you still land at some arbitrary point
+          <em>inside</em> a block, so you cannot recover the face you crossed to get there. But placing a block
+          needs exactly that face: the new block goes into the empty cell on the near side of it. No fixed step can
+          give you an exact, ordered, once-each walk of the cells a ray passes through. A grid DDA can.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">The algorithm has a name and a paper</div>
+          <p>This is the traversal from John Amanatides and Andrew Woo, <em>"A Fast Voxel Traversal Algorithm for
+          Ray Tracing"</em> (Eurographics, 1987). It is a 3D digital differential analyser: it walks the exact
+          sequence of voxels a ray intersects in front-to-back order, and its cost is <code>O(number of cells
+          crossed)</code> — independent of how far apart the solid blocks are. Every voxel engine on the planet
+          uses it for block picking.</p></div>
+        </div>
+
+        <h2>The idea: cross one boundary at a time</h2>
+
+        <p>
+          A voxel at integer coordinates <code>(x, y, z)</code> occupies the unit cube from <code>(x, y, z)</code>
+          to <code>(x+1, y+1, z+1)</code>. As the ray moves forward it is boxed inside its current voxel by three
+          pairs of planes — the cell walls perpendicular to each axis. To leave the cell it must cross one of those
+          walls. The whole algorithm is: <strong>of the next wall on each axis, cross the nearest one</strong>, move
+          into the neighbouring voxel across it, and repeat. Because we always advance to the closest boundary, we
+          can never skip a cell and never revisit one.
+        </p>
+
+        <p>
+          We track distance along the ray with the parameter <code>t</code>, where a point on the ray is
+          <code>origin + t · dir</code>. Three quantities drive the loop, one per axis:
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Quantity</th><th>Meaning</th><th>Value (per axis)</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>step</code></td><td>Which direction we walk cells on this axis.</td><td><code>+1</code> if <code>dir &gt; 0</code>, <code>-1</code> if <code>dir &lt; 0</code></td></tr>
+              <tr><td><code>tDelta</code></td><td>How much <code>t</code> advances to cross <em>one full cell</em> on this axis.</td><td><code>abs(1 / dir)</code></td></tr>
+              <tr><td><code>tMax</code></td><td>The value of <code>t</code> at which the ray reaches the <em>first</em> cell boundary on this axis.</td><td>from the fractional start (below)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          <code>tDelta</code> is the reciprocal of the direction's magnitude on that axis because a bigger component
+          means the ray sweeps across a cell's width in less parameter distance. <code>tMax</code> is the only value
+          that depends on <em>where inside the start cell</em> the ray begins. If we are stepping in the positive
+          direction, the next boundary is at <code>floor(o) + 1</code>, so the distance to it is
+          <code>(floor(o) + 1 − o) / dir</code>. If we are stepping negative, the next boundary is the lower wall at
+          <code>floor(o)</code>, giving <code>(o − floor(o)) / (−dir)</code>. Both expressions are non-negative, as a
+          distance must be.
+        </p>
+
+        <p>
+          Each loop iteration picks the axis with the <strong>smallest <code>tMax</code></strong> — that is the wall
+          the ray reaches next — steps the voxel one cell along that axis, then pushes that axis's <code>tMax</code>
+          forward by its <code>tDelta</code> so it now points at the <em>following</em> boundary on the same axis.
+          The face we just crossed has an outward normal of <code>−step</code> on that axis, and the empty cell we
+          came from is the neighbour on the normal side.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 620 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A ray cast across a 2D voxel grid. Its cells are numbered in the order the DDA visits them, starting at the camera cell, with a dot on each grid boundary the ray crosses, ending at the first solid block.">
+              <!-- shaded visited cells -->
+              <g fill="#4aa8ff" fill-opacity="0.10" stroke="none">
+                <rect x="70"  y="246" width="54" height="54"/>
+                <rect x="124" y="246" width="54" height="54"/>
+                <rect x="124" y="192" width="54" height="54"/>
+                <rect x="178" y="192" width="54" height="54"/>
+                <rect x="232" y="192" width="54" height="54"/>
+                <rect x="232" y="138" width="54" height="54"/>
+              </g>
+              <!-- hit cell -->
+              <rect x="286" y="138" width="54" height="54" fill="#4aa8ff" fill-opacity="0.30" stroke="#4aa8ff" stroke-width="3"/>
+              <!-- grid lines -->
+              <g stroke="#4aa8ff" stroke-width="1" stroke-opacity="0.4">
+                <path d="M70 30 V300"/><path d="M124 30 V300"/><path d="M178 30 V300"/>
+                <path d="M232 30 V300"/><path d="M286 30 V300"/><path d="M340 30 V300"/><path d="M394 30 V300"/>
+                <path d="M70 30 H394"/><path d="M70 84 H394"/><path d="M70 138 H394"/>
+                <path d="M70 192 H394"/><path d="M70 246 H394"/><path d="M70 300 H394"/>
+              </g>
+              <!-- the ray -->
+              <line x1="86" y1="278" x2="313" y2="154" stroke="#4aa8ff" stroke-width="2.5"/>
+              <path d="M313 154 l-13 1 l7 -9 Z" fill="#4aa8ff" stroke="none"/>
+              <!-- boundary-crossing dots -->
+              <g fill="#4aa8ff" stroke="none">
+                <circle cx="124" cy="257.6" r="3.6"/>
+                <circle cx="145" cy="246"   r="3.6"/>
+                <circle cx="178" cy="227.9" r="3.6"/>
+                <circle cx="232" cy="198.2" r="3.6"/>
+                <circle cx="243" cy="192"   r="3.6"/>
+                <circle cx="286" cy="168.5" r="3.6"/>
+              </g>
+              <!-- camera origin dot -->
+              <circle cx="86" cy="278" r="4.5" fill="currentColor" stroke="none"/>
+              <text x="70" y="316" fill="currentColor" stroke="none" font-size="12">camera</text>
+              <!-- visit-order numbers -->
+              <g fill="currentColor" stroke="none" font-size="15" text-anchor="middle" font-weight="600">
+                <text x="97"  y="279">0</text>
+                <text x="151" y="279">1</text>
+                <text x="151" y="225">2</text>
+                <text x="205" y="225">3</text>
+                <text x="259" y="225">4</text>
+                <text x="259" y="171">5</text>
+                <text x="313" y="171">6</text>
+              </g>
+              <text x="313" y="132" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">solid</text>
+              <!-- legend -->
+              <rect x="418" y="70" width="18" height="18" fill="#4aa8ff" fill-opacity="0.10" stroke="#4aa8ff" stroke-width="1"/>
+              <text x="444" y="83" fill="currentColor" stroke="none" font-size="13">visited, in order</text>
+              <rect x="418" y="106" width="18" height="18" fill="#4aa8ff" fill-opacity="0.30" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="444" y="119" fill="currentColor" stroke="none" font-size="13">first solid block (hit)</text>
+              <circle cx="427" cy="151" r="3.6" fill="#4aa8ff" stroke="none"/>
+              <text x="444" y="155" fill="currentColor" stroke="none" font-size="13">boundary crossing</text>
+              <text x="418" y="192" fill="currentColor" stroke="none" font-size="12">each crossing = one step;</text>
+              <text x="418" y="209" fill="currentColor" stroke="none" font-size="12">smallest tMax wins.</text>
+            </svg>
+          </div>
+          <figcaption>The ray from the camera walks the grid one boundary at a time. Cells are numbered in visit
+          order; each dot is the single grid line crossed on that step. Cell 6 is the first solid block — the hit.
+          The empty cell 5, just before it, is where a placed block would go.</figcaption>
+        </figure>
+
+        <h2>Setting up the traversal</h2>
+
+        <p>
+          Let's fix the return type first. A ray query answers four things at once: whether it hit, the solid block
+          it struck, the empty cell to build into, and the face normal — plus the distance, handy for a reach limit
+          or a highlight.
+        </p>
+
+        <pre><code class="language-cpp" data-file="VoxelRaycast.h">#include &lt;glm/glm.hpp&gt;
+
+struct VoxelHit {
+    bool       hit        = false;   // did the ray reach a solid block?
+    glm::ivec3 block      = {0,0,0}; // the solid voxel it struck (break this)
+    glm::ivec3 placeBlock = {0,0,0}; // the empty voxel just before it (place here)
+    glm::ivec3 normal     = {0,0,0}; // outward normal of the face we entered
+    float      distance   = 0.0f;    // t along the ray at the hit
+};
+
+VoxelHit RaycastVoxel(const World&amp; world, glm::vec3 origin,
+                      glm::vec3 dir, float maxDistance);</code></pre>
+
+        <p>
+          The per-axis setup is a short loop. We floor the origin to find the starting voxel, then compute
+          <code>step</code>, <code>tDelta</code>, and the initial <code>tMax</code> for each of the three axes.
+          The one branch that matters is <code>dir[a] == 0</code>: a ray parallel to an axis <em>never</em> crosses
+          that axis's walls, so we set both <code>tDelta</code> and <code>tMax</code> to infinity, which guarantees
+          that axis is never the smallest and is never chosen.
+        </p>
+
+        <pre><code class="language-cpp" data-file="VoxelRaycast.cpp">#include "VoxelRaycast.h"
+#include &lt;cmath&gt;
+#include &lt;limits&gt;
+
+VoxelHit RaycastVoxel(const World&amp; world, glm::vec3 origin,
+                      glm::vec3 dir, float maxDistance) {
+    const float kInf = std::numeric_limits&lt;float&gt;::infinity();
+
+    // The voxel the ray starts in.
+    glm::ivec3 voxel = glm::ivec3(glm::floor(origin));
+
+    glm::ivec3 step;    // +1 / -1 / 0 per axis
+    glm::vec3  tDelta;  // t to cross one whole cell
+    glm::vec3  tMax;    // t to the first boundary
+
+    for (int a = 0; a &lt; 3; ++a) {
+        if (dir[a] &gt; 0.0f) {
+            step[a]   = 1;
+            tDelta[a] = 1.0f / dir[a];
+            tMax[a]   = (std::floor(origin[a]) + 1.0f - origin[a]) / dir[a];
+        } else if (dir[a] &lt; 0.0f) {
+            step[a]   = -1;
+            tDelta[a] = 1.0f / -dir[a];
+            tMax[a]   = (origin[a] - std::floor(origin[a])) / -dir[a];
+        } else {
+            step[a]   = 0;
+            tDelta[a] = kInf;   // never crosses a wall on this axis...
+            tMax[a]   = kInf;   // ...so it is never the smallest tMax
+        }
+    }
+    // ... loop below ...</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">A zero direction component must be set to infinity explicitly</div>
+          <p>Do not try to fold the zero case into the general formula. A shortcut like
+          <code>tMax[a] = (origin[a] - std::floor(origin[a])) * tDelta[a]</code> looks tidy, but when
+          <code>dir[a]</code> is exactly <code>0</code>, <code>tDelta[a]</code> is <code>+inf</code> and the
+          fractional part can be <code>0</code> — and <code>0 * inf</code> is <strong>NaN</strong>. A <code>NaN</code>
+          in <code>tMax</code> poisons every comparison (all of <code>&lt;</code>, <code>&gt;</code>,
+          <code>==</code> return false), the wrong axis gets chosen, and the traversal walks off in a straight line
+          forever. Branch on the sign and assign infinity by hand, as above.</p></div>
+        </div>
+
+        <h2>The traversal loop</h2>
+
+        <p>
+          Now the heart of it. Each iteration finds the axis with the smallest <code>tMax</code> with a pair of
+          comparisons, checks that we have not exceeded the ray's reach, then steps that axis. Crucially the block
+          test happens <em>after</em> stepping — we test the voxel we just entered. The face normal is
+          <code>−step</code> on the stepped axis, and the empty cell we came from is <code>voxel + normal</code>,
+          which is exactly the previous voxel.
+        </p>
+
+        <pre><code class="language-cpp" data-file="VoxelRaycast.cpp">    // ... continued from the setup above ...
+
+    glm::ivec3 normal = {0,0,0};
+    while (true) {
+        // Which boundary does the ray reach next? Pick the smallest tMax.
+        int axis;
+        if (tMax.x &lt; tMax.y) axis = (tMax.x &lt; tMax.z) ? 0 : 2;
+        else                 axis = (tMax.y &lt; tMax.z) ? 1 : 2;
+
+        // If even the nearest boundary is past our reach, we hit nothing.
+        if (tMax[axis] &gt; maxDistance) break;
+
+        // Cross that boundary: advance one cell along this axis.
+        voxel[axis] += step[axis];
+
+        // The face we entered through points back the way we came.
+        normal = {0,0,0};
+        normal[axis] = -step[axis];
+
+        float dist   = tMax[axis];    // distance to the boundary we just crossed
+        tMax[axis]  += tDelta[axis];  // advance to the NEXT boundary on this axis
+
+        // Test the voxel we just stepped into.
+        if (world.isSolid(voxel)) {
+            VoxelHit h;
+            h.hit        = true;
+            h.block      = voxel;            // break this block
+            h.placeBlock = voxel + normal;   // the empty cell we came from
+            h.normal     = normal;
+            h.distance   = dist;
+            return h;
+        }
+    }
+    return VoxelHit{};   // reached maxDistance without hitting anything
+}</code></pre>
+
+        <p>
+          That is the entire algorithm — no floating-point accumulation drift, no re-testing a cell, no skipped
+          cells. It visits precisely the voxels the ray passes through, front to back, and stops at the first solid
+          one. Because <code>placeBlock</code> is <code>voxel + normal</code>, it is guaranteed to be the empty cell
+          the ray occupied one step earlier, which is exactly where a placed block should land: flush against the
+          face the player is aiming at.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">We step before we test — so the start voxel is never reported</div>
+          <p>The loop advances a cell and <em>then</em> checks solidity, which means the voxel the camera is
+          standing in is never returned as a hit. For block picking that is what you want: you should not be able to
+          break the block your own head is inside. But if you reuse this routine for collision or a light probe that
+          starts inside geometry, add a single test of the start voxel before the loop —
+          <code>if (world.isSolid(voxel)) { /* already embedded */ }</code> — because the traversal will otherwise
+          walk right out of it and report the first solid block it meets on the way.</p></div>
+        </div>
+
+        <h2>Reading the world in world space</h2>
+
+        <p>
+          <code>RaycastVoxel</code> leans on one method: <code>World::isSolid(glm::ivec3)</code>, taking an
+          <em>absolute world</em> voxel coordinate. That is the same accessor the ambient-occlusion mesher used, and
+          it decomposes into the coordinate helpers from <em>Voxels, Chunks &amp; World Coordinates</em> plus the
+          registry query from the block-registry lesson. It must read across chunk boundaries transparently — the
+          ray does not care where one chunk ends and the next begins.
+        </p>
+
+        <pre><code class="language-cpp" data-file="World.cpp">// One block by absolute world coordinate. Unloaded space reads as air.
+BlockId World::getBlock(glm::ivec3 wp) const {
+    ChunkCoord   cc = WorldToChunk(wp.x, wp.y, wp.z);
+    const Chunk* c  = getChunk(cc);        // hash-map lookup; null if not loaded
+    if (!c) return BLOCK_AIR;
+    LocalCoord lc = WorldToLocal(wp.x, wp.y, wp.z);
+    return c-&gt;GetBlock(lc.x, lc.y, lc.z);
+}
+
+// Does the ray stop here? Ask the registry, not the raw id.
+bool World::isSolid(glm::ivec3 wp) const {
+    return IsSolid(getBlock(wp));          // Blocks().Get(id).solid, inlined
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">One traversal, many uses</div>
+          <p>This exact walk powers far more than block picking. Swap the "is it solid?" test for "is it opaque?"
+          and you have <strong>line-of-sight</strong> for AI or a sunlight check. March it toward a light and sum
+          the blocks in the way for cheap <strong>light sampling</strong>. Run it along a movement vector and you
+          have a swept <strong>collision</strong> query against the grid. It is exact and its cost is only the number
+          of cells crossed, so it stays fast even over long distances — the same reason it is the standard voxel
+          ray-tracing primitive.</p></div>
+        </div>
+
+        <h2>Breaking and placing blocks</h2>
+
+        <p>
+          With the hit in hand, the interaction is short. Cast the ray from the camera's world position along its
+          look direction each frame the player clicks, then act on <code>block</code> or <code>placeBlock</code>.
+          Normalise the direction so <code>maxDistance</code> and <code>distance</code> come out in world units — a
+          reach of <code>6.0f</code> then means six blocks.
+        </p>
+
+        <pre><code class="language-cpp" data-file="BlockInteraction.cpp">// Called when the player clicks. camera/input come from modules 07–08.
+void UpdateBlockInteraction(World&amp; world, const Camera&amp; camera,
+                            const Input&amp; input, BlockId heldBlock) {
+    glm::vec3 origin = camera.WorldPosition();          // from the Transform
+    glm::vec3 dir    = glm::normalize(camera.Forward()); // look direction
+
+    VoxelHit hit = RaycastVoxel(world, origin, dir, /*maxDistance=*/ 6.0f);
+    if (!hit.hit) return;                                // aiming at the sky
+
+    // (Draw a wireframe box at hit.block here for the selection outline.)
+
+    if (input.MousePressed(MouseButton::Left)) {
+        world.editBlock(hit.block, BLOCK_AIR);           // break: turn to air
+    } else if (input.MousePressed(MouseButton::Right)) {
+        world.editBlock(hit.placeBlock, heldBlock);      // place into empty cell
+    }
+}</code></pre>
+
+        <p>
+          The real work is in <code>editBlock</code>. Writing the block into its chunk is one line; the rest is
+          keeping the rendered world consistent. A changed voxel invalidates its chunk's <em>lighting</em> (light no
+          longer flows the same way) and its <em>mesh</em> (a face appeared or vanished). And if the edited voxel
+          sits on a chunk face, the <em>neighbouring</em> chunk meshed against it — its border faces were culled or
+          kept based on this voxel — so that neighbour must be rebuilt as well. Forget the neighbour and you get a
+          hole or a stray face straddling the chunk seam.
+        </p>
+
+        <pre><code class="language-cpp" data-file="World.cpp">void World::editBlock(glm::ivec3 wp, BlockId id) {
+    ChunkCoord cc    = WorldToChunk(wp.x, wp.y, wp.z);
+    Chunk*     chunk = getChunk(cc);
+    if (!chunk) return;                    // don't edit space that isn't loaded
+
+    LocalCoord lc = WorldToLocal(wp.x, wp.y, wp.z);
+    chunk-&gt;SetBlock(lc.x, lc.y, lc.z, id);
+
+    // The edited chunk always needs a relight + remesh.
+    markChunkDirty(cc);
+
+    // A voxel on a chunk face changes a border block the NEIGHBOUR meshes
+    // against, so rebuild that neighbour too. Check each of the six faces.
+    if (lc.x == 0)              markChunkDirty({cc.x - 1, cc.y, cc.z});
+    if (lc.x == CHUNK_SIZE - 1) markChunkDirty({cc.x + 1, cc.y, cc.z});
+    if (lc.y == 0)              markChunkDirty({cc.x, cc.y - 1, cc.z});
+    if (lc.y == CHUNK_SIZE - 1) markChunkDirty({cc.x, cc.y + 1, cc.z});
+    if (lc.z == 0)              markChunkDirty({cc.x, cc.y, cc.z - 1});
+    if (lc.z == CHUNK_SIZE - 1) markChunkDirty({cc.x, cc.y, cc.z + 1});
+}</code></pre>
+
+        <p>
+          <code>markChunkDirty</code> is where this meets the job system from the previous lesson. Relighting and
+          re-meshing are expensive and must not stall the frame, so we hand them to a worker thread. The order is
+          fixed: <strong>relight first, mesh second</strong>, because the mesher bakes light and ambient-occlusion
+          values into the vertices. Only the final GPU upload comes back to the render thread — creating buffers is
+          a Direct3D 11 immediate-context (or Metal encoder) operation and cannot happen off it.
+        </p>
+
+        <pre><code class="language-cpp" data-file="World.cpp">void World::markChunkDirty(ChunkCoord cc) {
+    if (!getChunk(cc)) return;             // neighbour off the edge of the world
+
+    // Worker thread: the flood-fill lighting and greedy mesher from the last
+    // few lessons, both pure CPU work on chunk data.
+    m_jobs.submit([this, cc] {
+        relightChunk(cc);                          // flood-fill lighting lesson
+        ChunkMeshData mesh = buildChunkMesh(*this, cc);  // greedy mesh + AO
+
+        // GPU upload must run on the render thread (D3D11 / Metal), so post
+        // the finished CPU buffers back and let it create the vertex/index
+        // buffers next frame.
+        m_mainThread.post([this, cc, mesh = std::move(mesh)]() mutable {
+            uploadChunkMesh(cc, std::move(mesh));
+        });
+    });
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Border edits ripple further than six faces if you bake AO</div>
+          <p>The six-face check above is exactly right for hidden-face removal, where a chunk's mesh depends only on
+          its face-adjacent neighbours. But ambient occlusion samples <em>diagonal</em> neighbours, which can live in
+          an edge- or corner-adjacent chunk. If you bake AO, an edit near a chunk corner can change up to seven
+          neighbours' meshes. The simple, robust fix is to dirty every chunk touched by the edited voxel's 3×3×3
+          neighbourhood; the cost is a few extra remeshes on rare corner edits, and the job system absorbs them.</p></div>
+        </div>
+
+        <h2>Putting it together</h2>
+
+        <p>
+          The full loop is now: every frame, if the player clicked, cast one ray with <code>RaycastVoxel</code>;
+          on a hit, break <code>block</code> or place at <code>placeBlock</code> through <code>editBlock</code>;
+          that marks the chunk (and any bordering neighbour) dirty; the job system relights and re-meshes on a
+          worker; and the render thread picks up the new buffers next frame. One exact traversal, and a clean path
+          from a mouse click all the way to updated geometry on screen — with the heavy work kept off the main
+          thread so the world never hitches when you dig.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Fixed-step ray marching is unusable for picking: it tunnels through thin cells, re-tests cells, and can't recover the entry face needed to place a block.</li>
+            <li>The Amanatides &amp; Woo grid DDA (1987) walks every voxel a ray crosses, in order, exactly once, at a cost of <code>O(cells crossed)</code>.</li>
+            <li>Per axis: <code>step = sign(dir)</code>, <code>tDelta = abs(1/dir)</code>, and <code>tMax</code> is the distance to the first boundary from the fractional start; each step crosses the axis with the smallest <code>tMax</code>.</li>
+            <li>On a hit, <code>normal = −step</code> on the stepped axis and <code>placeBlock = block + normal</code> — the empty cell the ray came from, exactly where a placed block belongs.</li>
+            <li>Guard <code>dir[a] == 0</code> by setting <code>tDelta</code> and <code>tMax</code> to infinity (never <code>0 * inf</code>, which is NaN), and remember the start voxel is never reported since we step before testing.</li>
+            <li>Break and place both relight and re-mesh the edited chunk through the job system — and its neighbours whenever the edit lands on a chunk border.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

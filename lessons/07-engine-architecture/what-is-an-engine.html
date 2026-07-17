@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>What a Game Engine Actually Is — Learn C++ &amp; DirectX</title>
+  <title>What a Game Engine Actually Is — Learn C++ Engine Development</title>
   <meta name="description" content="Learn what a game engine really is: reusable runtime systems that separate engine code from game code, and why building your own teaches you the most.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -13,7 +13,7 @@
       <article class="lesson">
         <h1>What a Game Engine Actually Is</h1>
 
-        <p class="lead">You have already drawn textured geometry and flown a camera around a scene with real Direct3D 11 code. That was the hard part. Now we zoom out and ask a bigger question: what is the reusable machine underneath all of that, and how do the professionals structure it? Understanding this shape is what turns a pile of demos into an <strong>engine</strong> — the same idea that powers Unity and Unreal.</p>
+        <p class="lead">You have drawn textured geometry and flown a camera with Direct3D 11 on Windows or Metal on macOS. Now we zoom out: what reusable machine turns those demos into an <strong>engine</strong>?</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
@@ -47,7 +47,7 @@
           <table>
             <thead><tr><th>System</th><th>Responsibility</th><th>You have already touched…</th></tr></thead>
             <tbody>
-              <tr><td>Rendering</td><td>Turns scene data into pixels via the GPU</td><td>Your D3D11 device, swap chain, shaders</td></tr>
+              <tr><td>Rendering</td><td>Turns scene data into pixels via the GPU</td><td>D3D11 or Metal backend, shaders, buffers</td></tr>
               <tr><td>Input</td><td>Reads keyboard, mouse and gamepad state</td><td>The camera controls from last lesson</td></tr>
               <tr><td>Time</td><td>Measures delta time so motion is frame-rate independent</td><td>Your per-frame update timing</td></tr>
               <tr><td>Resources</td><td>Loads and caches meshes, textures, shaders</td><td>Loading a texture from disk</td></tr>
@@ -74,7 +74,7 @@
               <text x="300" y="115" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Engine systems — render, input, time, resources, world</text>
 
               <rect x="120" y="156" width="360" height="44" rx="6" fill="none" stroke="currentColor" stroke-width="2"/>
-              <text x="300" y="183" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Platform — OS window, Direct3D 11, files</text>
+              <text x="300" y="183" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Platform — SDL3, graphics backends, files</text>
 
               <path d="M300 88 L300 64" stroke="currentColor" stroke-width="2" marker-end="url(#a)"/>
               <path d="M300 156 L300 132" stroke="currentColor" stroke-width="2" marker-end="url(#a)"/>
@@ -87,7 +87,7 @@
         </figure>
 
         <ul>
-          <li><strong>Platform layer.</strong> The operating system window, the Direct3D 11 API, the filesystem, the high-resolution timer. This is the ground your engine stands on. It is inherently machine-specific.</li>
+          <li><strong>Platform layer.</strong> SDL3 provides shared windows, events, and input; Direct3D 11 or Metal provides native rendering. The filesystem and clock also live at this boundary, where Windows/macOS differences are contained.</li>
           <li><strong>Engine systems layer.</strong> Your reusable code that wraps the platform in friendlier, game-facing tools: a renderer instead of raw device calls, an input manager instead of scattered key reads. This is what you are building.</li>
           <li><strong>Game layer.</strong> The specific thing you are shipping — its rules, its levels, its characters. It leans entirely on the layer below and never talks to Direct3D directly.</li>
         </ul>
@@ -102,7 +102,7 @@
 #include &lt;memory&gt;
 
 // Each subsystem is its own reusable box with a small interface.
-class Renderer;      // wraps Direct3D 11
+class Renderer;      // wraps the selected graphics backend
 class InputManager;  // wraps keyboard / mouse
 class Clock;         // wraps the high-resolution timer
 class World;         // holds the objects that exist
@@ -123,7 +123,7 @@ private:
 
         <pre><code class="language-cpp" data-file="main.cpp">#include "Engine.h"
 
-// This is GAME code. Notice it never mentions Direct3D directly —
+// This is GAME code. Notice it never mentions a graphics API directly —
 // it only asks the engine to do reusable things.
 int main() {
     Engine engine;
@@ -173,7 +173,7 @@ int main() {
         <ol>
           <li><strong>Reuse.</strong> The same renderer runs your next project with zero changes.</li>
           <li><strong>Testability.</strong> You can test the input system without launching a full game.</li>
-          <li><strong>Replaceability.</strong> Swap the Direct3D 11 renderer for a Direct3D 12 one later, and the game above never notices.</li>
+          <li><strong>Replaceability.</strong> The same game can use Direct3D on Windows and Metal on macOS because it depends on the renderer interface.</li>
           <li><strong>Sanity.</strong> When something breaks, you know <em>which box</em> to open.</li>
         </ol>
 

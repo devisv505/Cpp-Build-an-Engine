@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Entity-Component-System — Learn C++ &amp; DirectX</title>
+  <title>Entity-Component-System — Learn C++ Engine Development</title>
   <meta name="description" content="Learn the Entity-Component-System (ECS) pattern: entities as ids, components as data, systems as logic — and why data-oriented design wins at scale.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -204,9 +204,9 @@ int main() {
 
         <h2>What our engine will do</h2>
 
-        <p><strong>Our engine will use the classic GameObject-Component model, not ECS.</strong> That is a deliberate teaching choice. The GameObject model maps cleanly to how a beginner pictures a game world — "a thing that has a transform, a mesh, and some behaviour" — and it keeps the code readable while you are still learning C++, DirectX, and engine architecture all at once.</p>
+        <p><strong>Our engine will use the classic GameObject-Component model, not ECS.</strong> It maps cleanly to “a thing with a transform, mesh, and behaviour” and keeps the code readable while you learn C++, cross-platform graphics, and engine architecture.</p>
 
-        <p>You are not giving up performance you need. A learning engine rendering a scene of dozens or hundreds of objects will be limited by the GPU and by DirectX draw calls long before component memory layout matters. And nothing here is wasted: in the next lesson we build the <code>Transform</code> and scene hierarchy on top of that GameObject, and the ideas you just learned — separating data from logic, thinking about memory layout — will make you a sharper engine programmer no matter which model you use.</p>
+        <p>You are not giving up performance you need. A learning engine with dozens or hundreds of objects will hit GPU and draw-call limits before component memory layout matters. The same is true for the D3D11 and Metal backends.</p>
 
         <div class="callout">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>

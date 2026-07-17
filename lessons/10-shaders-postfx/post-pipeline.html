@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A Composable Post Stack &amp; Engine Integration — Learn C++ Engine Development</title>
+  <meta name="description" content="Wrap your effects into a reusable PostProcessStack that ping-pongs render targets, so bloom, tone mapping, vignette and FXAA compose cleanly inside the Renderer.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>A Composable Post Stack &amp; Engine Integration</h1>
+
+        <p class="lead">
+          You have written each effect on its own: an off-screen target, a fullscreen pass, tone mapping, a
+          separable blur, and finally bloom. One at a time they are demos. Wired together by hand they are a
+          tangle of intermediate textures nobody can reorder. In this lesson we turn them into <em>engine
+          architecture</em>: a <code>PostProcessStack</code> that owns two ping-pong targets, runs an ordered
+          list of effects, and hands the finished image to the swap chain. Any scene our engine renders now gets
+          the whole chain for free.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The <strong>ping-pong</strong> pattern: two full-resolution targets, each pass reads one and writes the other.</li>
+            <li>A tiny <code>PostEffect</code> interface — <code>Apply(input, output)</code> plus an <code>enabled</code> flag.</li>
+            <li>A <code>PostProcessStack</code> that owns the ping-pong targets and runs an ordered effect list.</li>
+            <li>Two cheap new effects — a radial <strong>vignette</strong> and <strong>FXAA</strong> — plus where distance fog fits.</li>
+            <li>How the <code>Renderer</code> renders the scene into an HDR target and calls the stack each frame, recreating every target on resize.</li>
+          </ul>
+        </div>
+
+        <h2>Why a stack, not a pile of if-statements</h2>
+        <p>
+          A first attempt at chaining effects usually lives inside <code>EndFrame</code>: bind target B, run
+          bloom reading target A; bind target C, run tone map reading B; and on it goes. It works until you want
+          to turn bloom off, or run FXAA before vignette instead of after, or profile the cost of each pass. Then
+          every change means re-threading textures by hand and hoping you did not read and write the same one.
+        </p>
+        <p>
+          The engine answer is to make an effect a <em>thing</em> — an object with one job — and make the
+          ordering <em>data</em>. Each effect reads a texture and writes a texture; it does not care what ran
+          before it or comes after. A container owns the plumbing (the intermediate targets) and walks the list.
+          Reordering becomes reordering a <code>std::vector</code>; toggling becomes flipping a bool.
+        </p>
+
+        <h2>The ping-pong pattern</h2>
+        <p>
+          An effect cannot read and write the same texture in one draw — the GPU is streaming pixels out of it
+          while you ask for pixels back. So we keep <strong>two</strong> full-resolution targets, call them A and
+          B, and bounce between them. Read A, write B. Read B, write A. Read A, write B. Two buffers are all you
+          ever need, no matter how many effects you stack, because a pass only ever touches the frame before it.
+        </p>
+        <p>
+          The very first read is the scene's HDR image. The very last write is the swap-chain back buffer, so the
+          finished picture lands straight on screen with no extra copy. Everything in between ping-pongs.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 820 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A chain of post-process passes from the HDR scene through bloom, tone map, FXAA and vignette to the back buffer, with ping-pong buffers A and B labelled on the arrows and an HDR-to-LDR divider at the tone map step">
+              <defs>
+                <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+                  <path d="M0 0 L7 3 L0 6 Z" fill="#4aa8ff"/>
+                </marker>
+              </defs>
+
+              <!-- HDR / LDR divider -->
+              <line x1="415" y1="14" x2="415" y2="196" stroke="#4aa8ff" stroke-width="1.5" stroke-dasharray="5 5" opacity="0.7"/>
+              <text x="205" y="28" text-anchor="middle" font-size="13" fill="currentColor">HDR &mdash; float (RGBA16F)</text>
+              <text x="615" y="28" text-anchor="middle" font-size="13" fill="currentColor">LDR &mdash; tone-mapped</text>
+
+              <!-- pass boxes -->
+              <g stroke="#4aa8ff" stroke-width="1.6" fill="none">
+                <rect x="10"  y="88" width="110" height="52" rx="7"/>
+                <rect x="150" y="88" width="110" height="52" rx="7"/>
+                <rect x="290" y="88" width="110" height="52" rx="7"/>
+                <rect x="430" y="88" width="110" height="52" rx="7"/>
+                <rect x="570" y="88" width="110" height="52" rx="7"/>
+                <rect x="710" y="88" width="100" height="52" rx="7"/>
+              </g>
+              <g text-anchor="middle" fill="currentColor">
+                <text x="65"  y="110" font-size="13">Scene</text>
+                <text x="65"  y="128" font-size="11" opacity="0.75">HDR</text>
+                <text x="205" y="118" font-size="13">Bloom</text>
+                <text x="345" y="110" font-size="13">Tone</text>
+                <text x="345" y="128" font-size="13">map</text>
+                <text x="485" y="118" font-size="13">FXAA</text>
+                <text x="625" y="118" font-size="13">Vignette</text>
+                <text x="760" y="110" font-size="13">Back</text>
+                <text x="760" y="128" font-size="13">buffer</text>
+              </g>
+
+              <!-- flow arrows -->
+              <g stroke="#4aa8ff" stroke-width="1.8" marker-end="url(#ah)">
+                <line x1="120" y1="114" x2="150" y2="114"/>
+                <line x1="260" y1="114" x2="290" y2="114"/>
+                <line x1="400" y1="114" x2="430" y2="114"/>
+                <line x1="540" y1="114" x2="570" y2="114"/>
+                <line x1="680" y1="114" x2="710" y2="114"/>
+              </g>
+
+              <!-- buffer labels above each arrow -->
+              <g text-anchor="middle" fill="currentColor" font-size="11" opacity="0.8">
+                <text x="135" y="102">hdr</text>
+                <text x="275" y="102">A</text>
+                <text x="415" y="102">B</text>
+                <text x="555" y="102">A</text>
+                <text x="695" y="102">show</text>
+              </g>
+
+              <text x="410" y="176" text-anchor="middle" font-size="12" fill="currentColor" opacity="0.85">A and B are the two full-resolution ping-pong targets the stack owns.</text>
+            </svg>
+          </div>
+          <figcaption>Each pass reads the previous image and writes the next; only the buffer being written flips between A and B. Tone mapping is where HDR float becomes displayable LDR — every pass after it works on the tone-mapped image.</figcaption>
+        </figure>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Two buffers is the whole trick</div>
+            <p>Beginners sometimes allocate one target per effect. You never need more than two, because a pass reads only the immediately previous result. The ping-pong scheme also <em>guarantees</em> the input and output are different textures on every pass, which is exactly what the GPU requires.</p>
+          </div>
+        </div>
+
+        <h2>A PostEffect interface</h2>
+        <p>
+          Every effect boils down to the same shape: take a readable image, produce a written image. That is one
+          virtual method. We add an <code>enabled</code> flag so the stack can skip a pass without anyone
+          rewiring targets, and a name for logging and tooling.
+        </p>
+
+        <pre><code class="language-cpp" data-file="PostEffect.h">#pragma once
+
+class ShaderResource; // a readable GPU texture (an SRV on D3D11, MTL::Texture on Metal)
+class RenderTarget;   // a writable GPU texture you can also sample back afterwards
+
+// One step of the post pipeline: read `input`, write the result into `output`.
+class PostEffect {
+public:
+    virtual ~PostEffect() = default;
+
+    // A fullscreen pass: sample `input`, draw the effect into `output`.
+    virtual void Apply(ShaderResource* input, RenderTarget* output) = 0;
+
+    virtual const char* Name() const = 0;
+
+    bool enabled = true;   // the A/B and profiling switch
+};</code></pre>
+
+        <p>
+          <code>ShaderResource</code> and <code>RenderTarget</code> are the engine-level wrappers from the render
+          targets lesson: a <code>RenderTarget</code> owns a texture with both a render-target view (to write) and
+          a shader-resource view (to read), and gives you back a <code>ShaderResource*</code> through
+          <code>AsShaderResource()</code>. The interface names no D3D11 or Metal type, so the same effect list
+          compiles on both backends.
+        </p>
+
+        <h2>The PostProcessStack</h2>
+        <p>
+          The stack owns the two ping-pong targets and the ordered list. <code>Add</code> appends an effect;
+          list order <em>is</em> pipeline order. <code>Process</code> takes the scene's HDR image and the back
+          buffer, and threads every enabled effect between them.
+        </p>
+
+        <pre><code class="language-cpp" data-file="PostProcessStack.h">#pragma once
+#include &lt;memory&gt;
+#include &lt;vector&gt;
+#include "PostEffect.h"
+#include "RenderTarget.h"
+#include "CopyEffect.h"   // a one-line passthrough that just returns the sampled color
+
+class Renderer;
+
+class PostProcessStack {
+public:
+    void Initialize(Renderer* renderer, int width, int height);
+    void Resize(int width, int height);
+
+    // Effects run in the order you add them.
+    void Add(std::unique_ptr&lt;PostEffect&gt; effect) {
+        m_effects.push_back(std::move(effect));
+    }
+
+    // Run every enabled effect: scene HDR in, back buffer out.
+    void Process(ShaderResource* sceneHDR, RenderTarget* backBuffer);
+
+private:
+    Renderer*    m_renderer = nullptr;
+    RenderTarget m_targets[2];        // the two full-res ping-pong buffers (A, B)
+    int          m_width  = 0;
+    int          m_height = 0;
+
+    std::vector&lt;std::unique_ptr&lt;PostEffect&gt;&gt; m_effects;
+    CopyEffect   m_blit;              // used when nothing is enabled
+};</code></pre>
+
+        <p>
+          <code>Resize</code> is where the targets are born and reborn. Both are full-resolution and HDR-capable.
+          <code>Initialize</code> just remembers the renderer and calls <code>Resize</code> once for the initial
+          size.
+        </p>
+
+        <pre><code class="language-cpp" data-file="PostProcessStack.cpp">#include "PostProcessStack.h"
+#include "Renderer.h"
+
+void PostProcessStack::Initialize(Renderer* renderer, int width, int height) {
+    m_renderer = renderer;
+    Resize(width, height);           // build both targets at the starting size
+}
+
+void PostProcessStack::Resize(int width, int height) {
+    m_width  = width;
+    m_height = height;
+
+    // Both ping-pong targets are full-resolution HDR floats. Values become LDR
+    // once tone mapping runs, but they keep living in a float texture until the
+    // very last pass writes the 8-bit back buffer.
+    for (RenderTarget&amp; rt : m_targets)
+        rt.Recreate(m_renderer, width, height, TextureFormat::RGBA16F);
+}</code></pre>
+
+        <p>
+          Now the heart of it. Collect the enabled effects, then walk them: the last one writes the back buffer,
+          all the others ping-pong. Notice <code>w ^= 1</code> — a one-bit flip between index 0 and 1 — and that
+          the next input is always the target we just wrote.
+        </p>
+
+        <pre><code class="language-cpp" data-file="PostProcessStack.cpp">void PostProcessStack::Process(ShaderResource* sceneHDR, RenderTarget* backBuffer) {
+    // Collect the effects switched on this frame.
+    std::vector&lt;PostEffect*&gt; active;
+    for (auto&amp; e : m_effects)
+        if (e-&gt;enabled) active.push_back(e.get());
+
+    // Nothing on? Copy the scene straight to the back buffer and bail.
+    if (active.empty()) {
+        m_blit.Apply(sceneHDR, backBuffer);
+        return;
+    }
+
+    ShaderResource* input = sceneHDR;   // the first read is the scene
+    int             w     = 0;          // index of the next target to write (A)
+
+    for (size_t i = 0; i &lt; active.size(); ++i) {
+        const bool last = (i + 1 == active.size());
+
+        // The last effect writes the swap-chain back buffer; the rest
+        // ping-pong between targets A and B.
+        RenderTarget* output = last ? backBuffer : &amp;m_targets[w];
+        active[i]-&gt;Apply(input, output);
+
+        if (!last) {
+            input = m_targets[w].AsShaderResource(); // read what we just wrote
+            w ^= 1;                                  // flip A &lt;-&gt; B for next time
+        }
+    }
+}</code></pre>
+
+        <p>
+          Trace it with bloom, tone map, FXAA, vignette all on. Bloom reads the scene, writes A. Tone map reads
+          A, writes B. FXAA reads B, writes A. Vignette is last: it reads A and writes the back buffer. Four
+          passes, two targets, and no pass ever reads the texture it is writing.
+        </p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">An effect may own its own targets</div>
+            <p>The stack manages only the two full-resolution ping-pong buffers. Bloom needs more than that — a chain of half-, quarter-, eighth-resolution targets for its downsample-blur-upsample. Those live <em>inside</em> <code>BloomEffect</code>. From the stack's point of view bloom is still one HDR-in, HDR-out pass; it just does extra work behind its own <code>Apply</code>.</p>
+          </div>
+        </div>
+
+        <h2>What an Apply actually does</h2>
+        <p>
+          Every effect's <code>Apply</code> follows the same recipe you built in the fullscreen-pass lesson: bind
+          the output as the render target, bind the input as texture <code>t0</code>, set the shared fullscreen
+          vertex shader plus this effect's pixel shader, and draw three vertices. Here is the vignette effect in
+          full on the Direct3D 11 backend so the shape is concrete.
+        </p>
+
+        <pre><code class="language-cpp" data-file="VignetteEffect.cpp">void VignetteEffect::Apply(ShaderResource* input, RenderTarget* output) {
+    ID3D11DeviceContext* ctx = m_renderer-&gt;Context();
+
+    // 1) Draw into `output`. A fullscreen pass needs no depth buffer.
+    output-&gt;BindAsTarget(ctx, /*withDepth*/ false);
+
+    // 2) Feed the previous image in as texture t0, with a clamp sampler on s0.
+    ID3D11ShaderResourceView* srv = input-&gt;SRV();
+    ctx-&gt;PSSetShaderResources(0, 1, &amp;srv);
+    ctx-&gt;PSSetSamplers(0, 1, m_sampler.GetAddressOf());
+
+    // 3) Our parameters (inner, outer, strength) go in constant buffer b0.
+    UpdateConstantBuffer(ctx, m_params);
+    ctx-&gt;PSSetConstantBuffers(0, 1, m_cb.GetAddressOf());
+
+    // 4) Bind the shared fullscreen VS + this effect's PS, then draw the triangle.
+    m_renderer-&gt;BindFullscreenPipeline(m_pixelShader.Get());
+    ctx-&gt;Draw(3, 0);
+
+    // 5) Unbind t0 so the NEXT pass may bind this texture as its render target.
+    ID3D11ShaderResourceView* none = nullptr;
+    ctx-&gt;PSSetShaderResources(0, 1, &amp;none);
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Unbind the input before it becomes an output</div>
+            <p>Step 5 is not optional. Because A and B swap roles, the texture you sampled this pass is the texture you write next pass. If it is still bound as <code>t0</code> when it becomes a render target, D3D11 silently unbinds it and floods the debug output with hazard warnings; Metal's validation layer errors outright. One <code>nullptr</code> at the end of each <code>Apply</code> keeps the ping-pong clean.</p>
+          </div>
+        </div>
+
+        <h2>Two cheap effects: vignette and FXAA</h2>
+
+        <h3>Vignette</h3>
+        <p>
+          A vignette darkens the image toward the corners — a subtle frame that pulls the eye to the center. It
+          is one line of real work: measure how far a pixel is from the screen center and fade it out past a
+          radius. HLSL first (the primary dialect for our Windows backend).
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Vignette.ps.hlsl">Texture2D    SceneTex : register(t0);
+SamplerState Samp     : register(s0);
+
+cbuffer VignetteCB : register(b0)
+{
+    float uInner;    // radius where darkening begins   (~0.35)
+    float uOuter;    // radius that is fully dark        (~0.75)
+    float uStrength; // 0 = off, 1 = full vignette
+    float _pad;      // round the cbuffer up to 16 bytes
+};
+
+float4 main(float2 uv : TEXCOORD0) : SV_Target
+{
+    float3 col  = SceneTex.Sample(Samp, uv).rgb;
+
+    // 0 at the center, about 0.707 out at the corners.
+    float dist  = length(uv - 0.5);
+
+    // smoothstep(outer, inner, dist): 1 in the middle, easing to 0 past the edge.
+    float mask  = smoothstep(uOuter, uInner, dist);
+
+    // Blend by strength so the effect stays data-driven and toggleable.
+    col *= lerp(1.0, mask, uStrength);
+    return float4(col, 1.0);
+}</code></pre>
+
+        <p>
+          Because <code>uInner &lt; uOuter</code>, the reversed <code>smoothstep(uOuter, uInner, dist)</code>
+          returns 1 near the center and falls smoothly to 0 at the edges — exactly the mask we want. An even
+          cheaper approximation drops the smoothstep entirely: <code>col *= 1.0 - dot(d, d) * uStrength</code>
+          where <code>d = uv - 0.5</code>, a parabolic falloff that costs a multiply-add. In Metal Shading
+          Language the body is identical — <code>smoothstep</code>, <code>length</code>, and <code>mix</code>
+          (Metal's name for <code>lerp</code>) all exist; only the entry-point signature changes, taking a
+          <code>texture2d&lt;float&gt;</code> and a <code>sampler</code> as parameters.
+        </p>
+
+        <h3>FXAA</h3>
+        <p>
+          FXAA (Fast Approximate Anti-Aliasing) smooths jagged edges as a post pass, with no extra geometry
+          samples. It runs on the tone-mapped LDR image on purpose: its edge test is based on perceived
+          brightness (luma), so it wants gamma-encoded color, not linear HDR. The idea is small — find edges by
+          local luma contrast, then blur <em>along</em> the edge to soften the stair-step. Here is the gist; the
+          production version is Timothy Lottes' FXAA 3.11, which you drop straight into this shader slot.
+        </p>
+
+        <pre><code class="language-hlsl" data-file="FXAA.ps.hlsl">Texture2D    SceneTex : register(t0);
+SamplerState Samp     : register(s0);
+
+cbuffer FXAAConfig : register(b0)
+{
+    float2 uInvScreen; // 1.0 / (width, height) -- one texel in UV space
+    float2 _pad;
+};
+
+static const float EDGE_THRESHOLD = 0.125;  // relative contrast that counts as an edge
+static const float EDGE_MIN       = 0.0312; // absolute floor, so dark noise is ignored
+
+float Luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }
+
+float4 main(float2 uv : TEXCOORD0) : SV_Target
+{
+    float2 t = uInvScreen;
+
+    // Luma of this pixel and its four neighbours.
+    float lC = Luma(SceneTex.Sample(Samp, uv).rgb);
+    float lN = Luma(SceneTex.Sample(Samp, uv + float2( 0.0, -t.y)).rgb);
+    float lS = Luma(SceneTex.Sample(Samp, uv + float2( 0.0,  t.y)).rgb);
+    float lE = Luma(SceneTex.Sample(Samp, uv + float2( t.x,  0.0)).rgb);
+    float lW = Luma(SceneTex.Sample(Samp, uv + float2(-t.x,  0.0)).rgb);
+
+    float lMin = min(lC, min(min(lN, lS), min(lE, lW)));
+    float lMax = max(lC, max(max(lN, lS), max(lE, lW)));
+    float contrast = lMax - lMin;
+
+    // Flat area: no edge here, leave the pixel exactly as it is.
+    if (contrast &lt; max(EDGE_MIN, lMax * EDGE_THRESHOLD))
+        return SceneTex.Sample(Samp, uv);
+
+    // Edge found. Estimate the luma gradient, then blur perpendicular to it
+    // (that is, ALONG the edge). Full FXAA does a longer directional search;
+    // this two-tap blend is the essence of it.
+    float2 grad = float2(lE - lW, lS - lN);
+    float2 dir  = normalize(float2(-grad.y, grad.x) + 1e-5);
+    float3 a = SceneTex.Sample(Samp, uv - dir * t).rgb;
+    float3 b = SceneTex.Sample(Samp, uv + dir * t).rgb;
+    return float4(0.5 * (a + b), 1.0);
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Keep every effect toggleable</div>
+            <p>The <code>enabled</code> flag is not just a convenience — it is your profiling and art-direction tool. Flip bloom off and read the frame time to learn its exact cost. A/B FXAA on and off to judge whether the shimmer is gone. Wire the flags to keys or an ImGui panel and tune the look live: <code>m_post.Find("Bloom")-&gt;enabled = false;</code>.</p>
+          </div>
+        </div>
+
+        <h3>Where distance fog fits</h3>
+        <p>
+          Depth-based distance fog can go in either camp. The cheapest home is inside your scene shaders: a
+          fragment already knows its own depth, so you <code>lerp</code> its color toward a fog color by
+          view-space distance right there. As a post pass it is still doable — you sample the depth target you
+          already keep for the depth buffer, reconstruct linear distance from the stored depth, and blend. Note
+          that a fog <code>PostEffect</code> then needs a <em>second</em> bound texture (the depth SRV) beyond its
+          <code>input</code>, which is the one case where an effect reads more than the previous color image. Bind
+          it as <code>t1</code> in that effect's <code>Apply</code> and the stack is none the wiser.
+        </p>
+
+        <h2>Wiring it into the Renderer</h2>
+        <p>
+          Two changes make the whole thing live. First, <code>BeginFrame</code> stops binding the back buffer and
+          binds the HDR scene target instead — the scene now renders into float. Second, <code>EndFrame</code>
+          hands that target to the stack, which paints the back buffer. The game code between them does not
+          change at all.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">#include &lt;SDL3/SDL.h&gt;
+
+// --- new members in Renderer.h ---
+//   RenderTarget      m_sceneHDR;    // the scene renders here, in float HDR
+//   RenderTarget      m_backBuffer;  // wraps the swap chain's back buffer (LDR)
+//   PostProcessStack  m_post;
+//   bool              m_vsync = true;
+
+bool Renderer::Initialize(SDL_Window* window, bool vsync) {
+    // ... create device, swap chain, wrap m_backBuffer as before ...
+    m_vsync = vsync;
+    int w = 0;
+    int h = 0;
+    if (!SDL_GetWindowSizeInPixels(window, &amp;w, &amp;h) ||
+        w &lt;= 0 || h &lt;= 0) {
+        return false;
+    }
+
+    m_sceneHDR.Recreate(this, w, h, TextureFormat::RGBA16F);  // HDR + a depth buffer
+    m_post.Initialize(this, w, h);
+
+    // Order is the pipeline. Bloom stays HDR; tone map crosses to LDR;
+    // FXAA and vignette clean up the LDR image.
+    m_post.Add(std::make_unique&lt;BloomEffect&gt;(this, /*threshold*/ 1.0f, /*intensity*/ 0.6f));
+    m_post.Add(std::make_unique&lt;ToneMapEffect&gt;(this, /*exposure*/ 1.2f));
+    m_post.Add(std::make_unique&lt;FXAAEffect&gt;(this));
+    m_post.Add(std::make_unique&lt;VignetteEffect&gt;(this, /*inner*/ 0.35f, /*outer*/ 0.75f, /*strength*/ 0.6f));
+    return true;
+}
+
+void Renderer::BeginFrame(const std::array&lt;float, 4&gt;&amp; clear) {
+    // The scene draws into the HDR target now, NOT the back buffer.
+    m_sceneHDR.BindAsTarget(m_context.Get(), /*withDepth*/ true);
+    m_sceneHDR.Clear(m_context.Get(), clear.data());
+}
+
+void Renderer::EndFrame() {
+    // Hand the finished HDR scene to the stack; it writes the back buffer.
+    m_post.Process(m_sceneHDR.AsShaderResource(), &amp;m_backBuffer);
+    m_swapChain-&gt;Present(m_vsync ? 1 : 0, 0);
+}
+
+void Renderer::Resize(int w, int h) {
+    m_backBuffer.Reset();
+    m_swapChain-&gt;ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0);
+    m_backBuffer.WrapSwapChain(m_device.Get(), m_swapChain.Get()); // rebuild the RTV
+
+    m_sceneHDR.Recreate(this, w, h, TextureFormat::RGBA16F);  // HDR scene target
+    m_post.Resize(w, h);                                      // both ping-pong targets
+}</code></pre>
+
+        <p><code>SDL_GetWindowSizeInPixels</code> continues the same high-DPI rule established by the Window and Renderer lessons. The post-processing targets, depth target, viewport, and swap-chain back buffer must all use the same physical pixel dimensions.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">On resize, recreate everything — and keep formats straight</div>
+            <p>A single missed target is a stale-size bug: the swap chain grows, one intermediate stays small, and the image smears. <code>Resize</code> must rebuild the back buffer, the HDR scene target, and both ping-pong targets. And mind the formats — the scene and ping-pong targets are <code>RGBA16F</code> so HDR values survive until tone mapping; only the back buffer is 8-bit <code>UNORM</code>. Tone-mapped LDR values simply ride along in the float ping-pong targets until the final pass writes those 8 bits. Feed HDR bloom an 8-bit buffer by mistake and every bright pixel clips to white before it can glow.</p>
+          </div>
+        </div>
+
+        <h2>Order is the whole design</h2>
+        <p>
+          The list order encodes real dependencies, and it is worth saying why this one is right:
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pass</th><th>Space</th><th>Why here</th></tr></thead>
+            <tbody>
+              <tr><td>Bloom</td><td>HDR</td><td>Glow comes from truly bright values; it must run before tone mapping compresses them.</td></tr>
+              <tr><td>Tone map</td><td>HDR &rarr; LDR</td><td>The one conversion from unbounded float to a displayable 0&ndash;1 range.</td></tr>
+              <tr><td>FXAA</td><td>LDR</td><td>Edge detection reads perceptual luma, so it needs the tone-mapped image.</td></tr>
+              <tr><td>Vignette</td><td>LDR</td><td>A final artistic darkening on the finished picture.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Swap two rows and you can see the design in the result: tone-map before bloom and the glow never
+          blooms; FXAA before tone-map and it anti-aliases the wrong brightness. The stack lets you try exactly
+          that in seconds — reorder the <code>Add</code> calls — which is the point of making order into data.
+        </p>
+
+        <p>
+          That is the module. You began with a flat textured cube and finished with a composable HDR pipeline
+          that any scene inherits automatically. In the next module you turn this engine into a Minecraft-style
+          voxel sandbox — and the first time you place a glowstone block, the very stack you built here catches
+          its brightness and blooms it, no new plumbing required.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Post effects ping-pong between just <strong>two</strong> full-resolution targets: read A write B, read B write A; the final pass writes the swap-chain back buffer.</li>
+            <li>A <code>PostEffect</code> is one virtual <code>Apply(input, output)</code> plus an <code>enabled</code> flag — reordering and toggling become data, not rewiring.</li>
+            <li><code>PostProcessStack</code> owns the two targets and an ordered list; <code>Process</code> threads every enabled effect and guarantees input never equals output.</li>
+            <li>Unbind each effect's input texture after drawing, or it will still be bound when the ping-pong makes it the next output.</li>
+            <li>Vignette is a reversed <code>smoothstep</code> radial falloff; FXAA is luma edge-detect-then-blur on the LDR image (drop in reference FXAA 3.11 for production).</li>
+            <li><code>BeginFrame</code> binds the HDR scene target; <code>EndFrame</code> calls <code>Process</code>; <code>Resize</code> recreates <em>every</em> target and keeps HDR float until after tone mapping.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

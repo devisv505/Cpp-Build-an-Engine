@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tying It Together: the Engine Loop — Learn C++ &amp; DirectX</title>
+  <title>Tying It Together: the Engine Loop — Learn C++ Engine Development</title>
   <meta name="description" content="Assemble Renderer, Input, Time and a Scene of GameObjects into one main loop that renders a spinning cube — a real engine skeleton.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -13,16 +13,17 @@
       <article class="lesson">
         <h1>Tying It Together: the Engine Loop</h1>
 
-        <p class="lead">You have built every piece separately: a window, a Renderer, an Input system, a Time clock, GameObjects with Components, a Mesh, a Material, and a Camera. This is the lesson where they finally click together. We'll write the <code>Application</code> that owns all the subsystems and runs one clean frame loop — and by the end you'll have a spinning cube drawn by a real, if small, engine.</p>
+        <p class="lead">You have built every piece separately: typed startup configuration, a window, a Renderer, an Input system, a Time clock, GameObjects with Components, a Mesh, a Material, and a Camera. This is the lesson where they finally click together. We'll write the <code>Application</code> that owns all the subsystems and runs one clean frame loop — and by the end you'll have a spinning cube drawn by a real, if small, engine.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
             <li>How the <code>Application</code> owns the Renderer, Input, Time and the active Scene.</li>
-            <li>The anatomy of one frame: poll input, update the scene by delta time, then render.</li>
+            <li>The anatomy of one frame: snapshot Input, process SDL3 events, update by delta time, then render.</li>
             <li>How the Scene walks every GameObject and Component each frame.</li>
             <li>How the Renderer finds the active Camera and draws each mesh with its world matrix.</li>
-            <li>A complete <code>main()</code> that ties it all together into a spinning cube.</li>
+            <li>Why YAML is loaded once before the loop and ordinary C++ values are read during frames.</li>
+            <li>A complete <code>Application::Run()</code> that ties it all together into a spinning cube.</li>
           </ul>
         </div>
 
@@ -39,7 +40,7 @@
           <div class="figure-box">
             <svg viewBox="0 0 600 140" fill="none" stroke="#4aa8ff" stroke-width="2">
               <rect x="16" y="45" width="120" height="50" rx="8"/>
-              <text x="76" y="75" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Input.Update</text>
+              <text x="76" y="75" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Input + events</text>
               <rect x="176" y="45" width="120" height="50" rx="8"/>
               <text x="236" y="75" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Scene.Update(dt)</text>
               <rect x="336" y="45" width="120" height="50" rx="8"/>
@@ -63,8 +64,8 @@
           <table>
             <thead><tr><th>Owner</th><th>Responsibility</th></tr></thead>
             <tbody>
-              <tr><td><code>Application</code></td><td>Creates the window, owns all subsystems, runs the loop.</td></tr>
-              <tr><td><code>Renderer</code></td><td>Owns the D3D11 device/context/swap chain; draws meshes.</td></tr>
+              <tr><td><code>Application</code></td><td>Owns typed configuration, creates the window, owns all subsystems, and runs the loop.</td></tr>
+              <tr><td><code>Renderer</code></td><td>Owns the selected D3D11 or Metal backend; draws meshes.</td></tr>
               <tr><td><code>Input</code></td><td>Tracks which keys and mouse buttons are down this frame.</td></tr>
               <tr><td><code>Time</code></td><td>Measures delta time between frames.</td></tr>
               <tr><td><code>Scene</code></td><td>Holds the list of <code>GameObject</code>s; updates them all.</td></tr>
@@ -131,15 +132,26 @@ public:
         </div>
 
         <h2>The Renderer: draw everything</h2>
-        <p>Rendering is where the Camera and the meshes meet. The Renderer opens the frame, works out the camera's view-projection matrix once, then draws each GameObject that has both a <code>MeshRenderer</code> and a <code>Transform</code>. For each one it uploads the object's world matrix and the shared view-projection into a constant buffer, binds the material, and issues the draw call.</p>
+        <p>Rendering is where the Camera and the meshes meet. Extend the shared contract from the renderer-abstraction lesson with <code>DrawScene</code>; each backend implements it using its own buffers, shaders, and command API.</p>
 
-        <pre><code class="language-cpp" data-file="Renderer_Draw.cpp">// Per-frame constant buffer layout — must match the HLSL cbuffer exactly.
+        <pre><code class="language-cpp" data-file="Renderer.h">class Scene;
+class Camera;
+
+class Renderer {
+public:
+    // Keep Initialize, BeginFrame, EndFrame and Resize from last lesson.
+    virtual void DrawScene(const Scene&amp; scene, Camera* camera) = 0;
+};</code></pre>
+
+        <p>The renderer opens the frame, works out the camera's view-projection matrix once, then draws each GameObject that has both a <code>MeshRenderer</code> and a <code>Transform</code>. For each one it uploads the object's world matrix and the shared view-projection into a constant buffer, binds the material, and issues the draw call. Here is the Direct3D 11 backend implementation; <code>MetalRenderer::DrawScene</code> performs the equivalent encoder calls.</p>
+
+        <pre><code class="language-cpp" data-file="D3D11Renderer.cpp">// Per-frame constant buffer layout — must match the HLSL cbuffer exactly.
 struct FrameConstants {
     DirectX::XMFLOAT4X4 world;          // this object's model-to-world
     DirectX::XMFLOAT4X4 viewProjection; // shared camera matrix
 };
 
-void Renderer::DrawScene(const Scene&amp; scene, Camera* camera) {
+void D3D11Renderer::DrawScene(const Scene&amp; scene, Camera* camera) {
     using namespace DirectX;
 
     // 1) Compute view-projection once for the whole frame.
@@ -201,20 +213,40 @@ float4 PSMain(VSOutput input) : SV_TARGET
         <h2>The Application: one loop to run them all</h2>
         <p>Now we assemble the owners. The <code>Application</code> holds the subsystems, builds a Scene with a cube and a camera, and runs the loop. The frame ordering is deliberate and worth memorising: <strong>input, then update, then render</strong>. Input must be fresh before update reads it, and update must finish before render draws the result.</p>
 
-        <pre><code class="language-cpp" data-file="main.cpp">#include "Application.h"
-#include "Renderer.h"
-#include "Input.h"
-#include "Time.h"
-#include "Scene.h"
-#include "MeshRenderer.h"
-#include "Camera.h"
-#include "Spinner.h"
+        <pre><code class="language-cpp" data-file="Application.h">class Application {
+    // Keep the public/protected methods from the Application lesson.
+private:
+    // The relevant final member order. Destruction runs bottom to top.
+    EngineConfig m_config;
+    Window m_window;
+    std::unique_ptr&lt;Renderer&gt; m_renderer;
+    Input m_input;
+    Time m_time;
+    bool m_running = false;
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="Application.cpp">#include "Application.h"
+#include "Renderer/Renderer.h"
+#include "Renderer/RendererFactory.h"
+#include "Platform/Input.h"
+#include "Platform/Time.h"
+#include "Scene/Scene.h"
+#include "Scene/MeshRenderer.h"
+#include "Scene/Camera.h"
+#include "Scene/Spinner.h"
+#include "Math/MathUtils.h"
+#include &lt;SDL3/SDL.h&gt;
+#include &lt;memory&gt;
 
 int Application::Run() {
     // --- Subsystems owned for the whole program's lifetime ---
-    m_window.Create(L"My Engine", 1280, 720);
-    m_renderer.Initialize(m_window.Handle(), 1280, 720);
-    m_input.Initialize();
+    const WindowConfig&amp; window = m_config.window;
+    if (!m_window.Create(window.title, window.width, window.height,
+                         window.resizable)) return 1;
+    m_renderer = CreateRenderer();
+    if (!m_renderer ||
+        !m_renderer-&gt;Initialize(m_window.NativeHandle(),
+                                m_config.renderer.vsync)) return 1;
     m_time.Reset();
 
     // --- Build the scene ---
@@ -224,29 +256,57 @@ int Application::Run() {
     GameObject* camObj = scene.CreateObject("MainCamera");
     camObj-&gt;GetComponent&lt;Transform&gt;()-&gt;position = { 0.0f, 1.5f, -5.0f };
     Camera* camera = camObj-&gt;AddComponent&lt;Camera&gt;();
-    camera-&gt;fovYRadians = DirectX::XMConvertToRadians(60.0f);
+    camera-&gt;fovYRadians = DegreesToRadians(60.0f); // shared Math helper
 
     // A cube object: Transform + MeshRenderer + Spinner.
     GameObject* cube = scene.CreateObject("Cube");
     MeshRenderer* mr = cube-&gt;AddComponent&lt;MeshRenderer&gt;();
-    mr-&gt;mesh     = Mesh::CreateCube(m_renderer.Device());
-    mr-&gt;material = Material::Create(m_renderer.Device(), L"cube.hlsl");
+    mr-&gt;mesh     = Mesh::CreateCube(*m_renderer);
+    mr-&gt;material = Material::Create(*m_renderer, "cube");
     cube-&gt;AddComponent&lt;Spinner&gt;()-&gt;speed = 1.2f;
 
-    // --- The frame loop ---
-    while (!m_window.ShouldClose()) {
-        m_window.PumpMessages();          // OS events -&gt; keep window alive
-        float dt = m_time.Tick();         // seconds since last frame
+    // --- One shared SDL3 frame loop ---
+    m_running = true;
+    while (m_running) {
+        // 1) Preserve last frame's state before new SDL events arrive.
+        m_input.BeginFrame();
 
-        m_input.Update();                 // 1. snapshot keyboard/mouse
-        scene.Update(dt);                 // 2. update every GameObject/Component
+        SDL_Event event;
+        while (SDL_PollEvent(&amp;event)) {
+            if (event.type == SDL_EVENT_QUIT ||
+                event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+                m_running = false;
+            }
 
-        m_renderer.BeginFrame(0.1f, 0.1f, 0.12f); // 3a. clear the back buffer
-        m_renderer.DrawScene(scene, camera);      // 3b. draw the world
-        m_renderer.EndFrame();                    // 3c. present the swap chain
+            if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+                m_renderer-&gt;Resize(event.window.data1, event.window.data2);
+            }
+
+            // Input.cpp is the only code that maps SDL scancodes to Key.
+            m_input.ProcessEvent(event);
+        }
+
+        if (!m_running || m_input.IsKeyPressed(Key::Escape)) break;
+
+        m_time.Tick();                    // update the frame clock
+        const float dt = m_time.DeltaTime(); // seconds since last frame
+        scene.Update(dt);                 // 2) update every component
+
+        m_renderer-&gt;BeginFrame(m_config.renderer.clearColor); // 3a) clear
+        m_renderer-&gt;DrawScene(scene, camera);      // 3b) draw the world
+        m_renderer-&gt;EndFrame();                    // 3c) present
     }
+
+    // Releases DXGI or SDL_MetalView while m_window is still alive.
+    m_renderer.reset();
     return 0;
 }</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">No file I/O in the frame loop</div><p><code>main</code> already loaded and validated the YAML document. Frames read <code>m_config</code> in memory; they never reopen, parse, or save the file. If you later add live reload, detect a change outside the loop and swap in a newly validated configuration at a deliberate synchronization point.</p></div></div>
+
+        <p><code>Mesh::CreateCube(Renderer&amp;)</code> and <code>Material::Create(Renderer&amp;, ...)</code> are backend-neutral entry points: the selected implementation creates and caches its D3D11 buffers/HLSL pipeline or Metal buffers/MSL pipeline. Shared Application code never calls <code>Device()</code> or includes a native graphics header.</p>
+
+        <p>Declare <code>m_window</code> before <code>std::unique_ptr&lt;Renderer&gt; m_renderer</code> in <code>Application</code>. C++ destroys members in reverse declaration order, providing a second safety net after the explicit <code>reset()</code>: the renderer releases its DXGI swap chain or <code>SDL_MetalView</code> before <code>Window</code> calls <code>SDL_DestroyWindow</code>.</p>
 
         <div class="callout warn">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
@@ -256,6 +316,17 @@ int Application::Run() {
         <h3>Finding the active camera</h3>
         <p>Here we pass the camera pointer in directly because we know it. In a bigger engine you'd let the Scene find it: iterate the GameObjects, ask each for a <code>Camera</code> component, and use the first one flagged active. That keeps <code>Run()</code> free of hard-coded object knowledge and lets designers add or swap cameras in data. The principle is the same — the Renderer needs exactly one camera's view-projection per frame.</p>
 
+        <h2>The same loop on macOS</h2>
+        <p>No alternate application loop is needed. SDL3 translates Cocoa events into the same <code>SDL_Event</code> values used on Windows, the shared Input and Scene update, and <code>MetalRenderer</code> receives the same <code>BeginFrame</code>, <code>DrawScene</code>, and <code>EndFrame</code> calls. It converts matrices at the backend boundary, encodes commands, presents the drawable, and commits the command buffer.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Loop step</th><th>Windows</th><th>macOS</th></tr></thead><tbody>
+          <tr><td>Events/input</td><td colspan="2">SDL3 → engine <code>Input</code>/<code>Key</code></td></tr>
+          <tr><td>Update</td><td colspan="2">shared Scene and Components</td></tr>
+          <tr><td>Begin frame</td><td>bind/clear D3D render targets</td><td>create Metal command buffer and render pass</td></tr>
+          <tr><td>Draw</td><td>D3D context calls</td><td>Metal encoder calls</td></tr>
+          <tr><td>Present</td><td>DXGI swap chain</td><td>Metal drawable</td></tr>
+        </tbody></table></div>
+
         <h2>What you actually built</h2>
         <p>Step back and look at what that loop represents. You have a data-driven world (the Scene), uniform objects made of composable Components, a subsystem that advances simulation by real time, and a subsystem that turns world state into pixels — with a clean seam between them. That is the same architecture Unity calls GameObjects and MonoBehaviours, and Unreal calls Actors and Components. Yours is smaller, but it is genuinely the same idea, and every feature from here (lighting, multiple meshes, physics) is just another Component or another draw in the same loop.</p>
 
@@ -263,10 +334,10 @@ int Application::Run() {
           <div class="r-title">Recap</div>
           <ul>
             <li>The <code>Application</code> owns the Renderer, Input, Time and the active Scene for the whole program.</li>
-            <li>One frame is always <strong>Input.Update &rarr; Scene.Update(dt) &rarr; Render</strong>, in that order.</li>
+            <li>One frame is always <strong>Input.BeginFrame &rarr; SDL events &rarr; Scene.Update(dt) &rarr; Render</strong>, in that order.</li>
             <li><code>Scene.Update(dt)</code> walks every GameObject, which updates each of its Components; multiply motion by <code>dt</code> for frame-rate independence.</li>
             <li>The Renderer computes the camera's view-projection once, then draws each object using its world matrix uploaded to a constant buffer.</li>
-            <li>Transpose matrices going into HLSL, and match the cbuffer layout to the shader — the two most common bugs.</li>
+            <li>Convert matrices and match parameter layouts at the backend boundary for HLSL or Metal Shading Language.</li>
             <li>This small skeleton mirrors how Unity and Unreal are architected: composable Components running inside one central loop.</li>
           </ul>
         </div>

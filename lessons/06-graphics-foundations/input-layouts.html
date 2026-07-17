@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Input Layouts &amp; Vertex Formats — Learn C++ Engine Development</title>
+  <meta name="description" content="Learn how a D3D11 input layout tells the GPU how to read your vertex bytes and match them to your vertex shader's input semantics.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Input Layouts &amp; Vertex Formats</h1>
+
+        <p class="lead">In the last lesson you wrote your first HLSL shaders and compiled them to bytecode. But the GPU still has no idea what the bytes in your vertex buffer <em>mean</em>. An <strong>input layout</strong> is the contract that maps raw vertex bytes to the inputs your vertex shader expects. Get it right and your triangle appears; get it wrong and you get garbage, a blank screen, or a crash. This is one of the last pieces we need before our engine can draw its first real geometry.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why the GPU needs an input layout to interpret raw vertex bytes.</li>
+            <li>How to describe each field with a <code>D3D11_INPUT_ELEMENT_DESC</code> and pick the right <code>DXGI_FORMAT</code>.</li>
+            <li>How byte offsets work, and why <code>D3D11_APPEND_ALIGNED_ELEMENT</code> saves you from arithmetic mistakes.</li>
+            <li>How to create the layout from your vertex shader bytecode and bind it with <code>IASetInputLayout</code>.</li>
+          </ul>
+        </div>
+
+        <h2>The problem: bytes have no meaning</h2>
+        <p>A vertex buffer on the GPU is just a flat block of memory. Suppose each vertex carries a 3D position and an RGBA color. In C++ we model that with a plain struct:</p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">#include &lt;DirectXMath.h&gt;
+
+// One vertex: a position in space, plus a color.
+struct Vertex
+{
+    DirectX::XMFLOAT3 position;  // 3 floats = 12 bytes
+    DirectX::XMFLOAT4 color;     // 4 floats = 16 bytes
+};                               // total stride = 28 bytes
+</code></pre>
+
+        <p>When you upload an array of these into a vertex buffer, the GPU sees only <strong>28 bytes per vertex</strong> repeated over and over. It does not know that the first 12 bytes are a position or that the next 16 are a color. The input layout is how we tell it.</p>
+
+        <p>On the shader side, your vertex shader declares what it wants using <strong>semantics</strong> — the string tags you met last lesson:</p>
+
+        <pre><code class="language-hlsl" data-file="VertexShader.hlsl">struct VSInput
+{
+    float3 position : POSITION;   // wants a POSITION input
+    float4 color    : COLOR;      // wants a COLOR input
+};
+
+struct VSOutput
+{
+    float4 position : SV_POSITION;
+    float4 color    : COLOR;
+};
+
+VSOutput main(VSInput input)
+{
+    VSOutput output;
+    output.position = float4(input.position, 1.0f);
+    output.color    = input.color;
+    return output;
+}
+</code></pre>
+
+        <p>The input layout is the bridge between these two worlds: it says "the bytes labelled <code>POSITION</code> live at offset 0 and are three 32-bit floats; the bytes labelled <code>COLOR</code> live at offset 12 and are four 32-bit floats."</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Semantics are the matching key</div>
+            <p>The layout and the shader are matched by <strong>semantic name</strong> (like <code>POSITION</code>), not by order. The names must agree exactly, though they are case-insensitive.</p>
+          </div>
+        </div>
+
+        <h2>Describing each field: D3D11_INPUT_ELEMENT_DESC</h2>
+        <p>You describe the layout as an array of <code>D3D11_INPUT_ELEMENT_DESC</code> — one entry per field in your <code>Vertex</code> struct. Here is the full struct with what each member means:</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>SemanticName</code></td><td>Must match the shader semantic, e.g. <code>"POSITION"</code>.</td></tr>
+              <tr><td><code>SemanticIndex</code></td><td>Distinguishes duplicates like <code>TEXCOORD0</code> vs <code>TEXCOORD1</code>. Usually 0.</td></tr>
+              <tr><td><code>Format</code></td><td>The <code>DXGI_FORMAT</code> describing how many components and their bit size/type.</td></tr>
+              <tr><td><code>InputSlot</code></td><td>Which bound vertex buffer this field comes from. Usually 0.</td></tr>
+              <tr><td><code>AlignedByteOffset</code></td><td>Byte offset of this field within one vertex. Or <code>D3D11_APPEND_ALIGNED_ELEMENT</code>.</td></tr>
+              <tr><td><code>InputSlotClass</code></td><td><code>PER_VERTEX_DATA</code> for normal geometry (vs per-instance data).</td></tr>
+              <tr><td><code>InstanceDataStepRate</code></td><td>0 for per-vertex data.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Choosing the right DXGI_FORMAT</h3>
+        <p>The <code>Format</code> tells the GPU how many components a field has and how each is stored. It has nothing to do with color specifically — <code>R</code>, <code>G</code>, <code>B</code>, <code>A</code> are just names for "channel 1, 2, 3, 4". A three-float position and a four-float color map like this:</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>C++ type</th><th>Semantic</th><th>DXGI_FORMAT</th><th>Bytes</th></tr></thead>
+            <tbody>
+              <tr><td><code>XMFLOAT3</code></td><td><code>POSITION</code></td><td><code>DXGI_FORMAT_R32G32B32_FLOAT</code></td><td>12</td></tr>
+              <tr><td><code>XMFLOAT4</code></td><td><code>COLOR</code></td><td><code>DXGI_FORMAT_R32G32B32A32_FLOAT</code></td><td>16</td></tr>
+              <tr><td><code>XMFLOAT2</code></td><td><code>TEXCOORD</code></td><td><code>DXGI_FORMAT_R32G32_FLOAT</code></td><td>8</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Read the format name literally: <code>R32G32B32_FLOAT</code> means "three channels, each a 32-bit float." That is exactly an <code>XMFLOAT3</code>.</p>
+
+        <h3>Offsets, by hand or automatically</h3>
+        <p>The <code>AlignedByteOffset</code> is where the field starts inside one vertex. For our struct, <code>position</code> starts at byte 0 and <code>color</code> starts at byte 12. You can write those numbers yourself — but the moment you reorder or insert a field, every following offset must change, and a wrong number silently misreads memory. Instead, use the special constant <code>D3D11_APPEND_ALIGNED_ELEMENT</code>, which tells Direct3D to compute the offset by appending directly after the previous element:</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">// Describe the layout: one entry per field in Vertex.
+// D3D11_APPEND_ALIGNED_ELEMENT auto-computes the byte offset.
+D3D11_INPUT_ELEMENT_DESC layoutDesc[] =
+{
+    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 0,
+      D3D11_INPUT_PER_VERTEX_DATA, 0 },
+
+    { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,
+      D3D11_APPEND_ALIGNED_ELEMENT,
+      D3D11_INPUT_PER_VERTEX_DATA, 0 },
+};
+</code></pre>
+
+        <p>The first element uses offset <code>0</code> explicitly. The second uses <code>D3D11_APPEND_ALIGNED_ELEMENT</code>, so Direct3D fills in 12 for us. When we later add normals or texture coordinates to our engine's vertex format, we just insert an entry and the offsets stay correct automatically.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 150" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="20" y="45" width="200" height="50" rx="4"/>
+              <rect x="220" y="45" width="260" height="50" rx="4"/>
+              <text x="120" y="75" fill="#4aa8ff" stroke="none" font-size="14" text-anchor="middle">POSITION (12 B)</text>
+              <text x="350" y="75" fill="#4aa8ff" stroke="none" font-size="14" text-anchor="middle">COLOR (16 B)</text>
+              <text x="20" y="120" fill="currentColor" stroke="none" font-size="12">offset 0</text>
+              <text x="205" y="120" fill="currentColor" stroke="none" font-size="12">offset 12</text>
+              <text x="465" y="120" fill="currentColor" stroke="none" font-size="12">offset 28</text>
+            </svg>
+          </div>
+          <figcaption>One 28-byte vertex. The layout maps each named region to a shader input.</figcaption>
+        </figure>
+
+        <h2>Creating the layout from shader bytecode</h2>
+        <p>Here is the part people often find surprising: <code>CreateInputLayout</code> needs your <strong>compiled vertex shader bytecode</strong>. Why? Because Direct3D validates your layout against the shader's actual input signature at creation time. If your layout promises a <code>COLOR</code> but the shader never declares one, or the formats are incompatible, creation fails right there instead of drawing garbage later.</p>
+
+        <p>Assume from last lesson you have the VS blob (<code>vsBlob</code>) from <code>D3DCompileFromFile</code> or a loaded <code>.cso</code> file, and an <code>ID3D11Device</code>. We use a <code>Microsoft::WRL::ComPtr</code> to manage the COM object's lifetime, as we set up earlier in this module:</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">#include &lt;d3d11.h&gt;
+#include &lt;wrl/client.h&gt;
+using Microsoft::WRL::ComPtr;
+
+ComPtr&lt;ID3D11InputLayout&gt; inputLayout;
+
+HRESULT hr = device-&gt;CreateInputLayout(
+    layoutDesc,                       // our element descriptions
+    ARRAYSIZE(layoutDesc),            // how many elements (2 here)
+    vsBlob-&gt;GetBufferPointer(),       // the compiled VS bytecode...
+    vsBlob-&gt;GetBufferSize(),          // ...and its size
+    inputLayout.GetAddressOf());      // receives the created layout
+
+if (FAILED(hr))
+{
+    // Almost always a mismatch between layoutDesc and the shader's inputs.
+    // Check semantic names and formats against your VSInput struct.
+    return hr;
+}
+</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Use the right shader's bytecode</div>
+            <p><code>CreateInputLayout</code> must be given the <strong>vertex</strong> shader blob — not the pixel shader. The layout is validated against the vertex shader's input signature only. Passing the wrong blob is a common cause of a failing <code>HRESULT</code>.</p>
+          </div>
+        </div>
+
+        <h2>Binding it before you draw</h2>
+        <p>Creating the layout once at startup is not enough — you must bind it to the Input Assembler (IA) stage before each draw, alongside the vertex buffer and primitive topology. The layout, the buffer's stride, and the topology all work together to feed vertices to your shader:</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">// Per-frame draw setup on the immediate context.
+UINT stride = sizeof(Vertex);   // 28 bytes — MUST match the layout
+UINT offset = 0;
+
+context-&gt;IASetInputLayout(inputLayout.Get());
+context-&gt;IASetVertexBuffers(0, 1, vertexBuffer.GetAddressOf(),
+                            &amp;stride, &amp;offset);
+context-&gt;IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+// Bind the shaders we compiled last lesson.
+context-&gt;VSSetShader(vertexShader.Get(), nullptr, 0);
+context-&gt;PSSetShader(pixelShader.Get(), nullptr, 0);
+
+// Draw our 3 vertices as one triangle.
+context-&gt;Draw(3, 0);
+</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Stride must equal your struct size</div>
+            <p>The <code>stride</code> you pass to <code>IASetVertexBuffers</code> tells the IA how many bytes to step per vertex. Always use <code>sizeof(Vertex)</code> so it can never drift out of sync with your struct. A wrong stride reads each vertex from the wrong place and warps your geometry.</p>
+          </div>
+        </div>
+
+        <h2>Why this matters for our engine</h2>
+        <p>Right now we have a single hard-coded vertex format. But a real engine draws meshes with positions, normals, texture coordinates, and more. Every one of those formats needs a matching input layout, and each layout is tied to a shader signature. When we build our <strong>Mesh</strong> and <strong>Material</strong> components later, the input layout will be created and cached next to the shader it belongs to — so a mesh always knows exactly how to describe its own vertices to the GPU. The pattern you learned here scales directly to that design.</p>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">A blank screen is usually a mismatch</div>
+            <p>If your triangle does not appear, suspect the layout first. Enable the D3D11 debug layer and read the output window — it will tell you plainly when a semantic name, format, or stride disagrees with your shader. Debugging silently is far harder than reading its warnings.</p>
+          </div>
+        </div>
+
+        <h2>macOS — describe vertices with <code>MTLVertexDescriptor</code></h2>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::VertexDescriptor* layout = MTL::VertexDescriptor::alloc()-&gt;init();
+
+auto* position = layout-&gt;attributes()-&gt;object(0);
+position-&gt;setFormat(MTL::VertexFormatFloat3);
+position-&gt;setOffset(offsetof(Vertex, position));
+position-&gt;setBufferIndex(0);
+
+auto* color = layout-&gt;attributes()-&gt;object(1);
+color-&gt;setFormat(MTL::VertexFormatFloat3);
+color-&gt;setOffset(offsetof(Vertex, color));
+color-&gt;setBufferIndex(0);
+
+layout-&gt;layouts()-&gt;object(0)-&gt;setStride(sizeof(Vertex));</code></pre>
+        <p>A Direct3D input layout matches semantic names in compiled HLSL. Metal matches numeric attribute indices in the vertex function. In both cases, offsets, formats, and stride must describe the exact C++ <code>Vertex</code> memory layout.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A vertex buffer is just raw bytes; the input layout tells the GPU how to interpret each vertex and connect it to your shader.</li>
+            <li>You describe each field with a <code>D3D11_INPUT_ELEMENT_DESC</code>, matching by semantic name and choosing a <code>DXGI_FORMAT</code> like <code>R32G32B32_FLOAT</code> for a position or <code>R32G32B32A32_FLOAT</code> for a color.</li>
+            <li>Use <code>D3D11_APPEND_ALIGNED_ELEMENT</code> so byte offsets are computed automatically and stay correct when the format changes.</li>
+            <li><code>CreateInputLayout</code> validates the layout against your compiled vertex shader bytecode, catching mismatches early.</li>
+            <li>Bind with <code>IASetInputLayout</code> and pass <code>sizeof(Vertex)</code> as the stride before you <code>Draw</code>. Next up: feeding transforms into shaders with constant buffers.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

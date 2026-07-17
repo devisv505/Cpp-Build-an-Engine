@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>A Material &amp; Shader System — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Build reusable Shader and Material classes in C++ and Direct3D 11 to decouple your engine's meshes from how they are drawn.">
+  <title>A Material &amp; Shader System — Learn C++ Engine Development</title>
+  <meta name="description" content="Build reusable Shader and Material abstractions backed by Direct3D 11/HLSL on Windows and Metal/MSL on macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -378,6 +378,31 @@ cubeMesh.Draw(context);   // same mesh, a completely different look</code></pre>
           position, rotation and scale. That's the Transform component, and it's next.
         </p>
 
+        <h2>Materials with Metal on macOS</h2>
+        <p>The shared <code>Material</code> still stores a color, texture reference, and shader reference. The Metal backend replaces the D3D objects with an <code>MTL::RenderPipelineState</code>, <code>MTL::Texture</code>, <code>MTL::SamplerState</code>, and parameter buffer.</p>
+
+        <pre><code class="language-shader" data-file="Lit.metal">struct MaterialConstants { float4 baseColor; };
+
+fragment float4 fragmentMain(
+    VertexOut in [[stage_in]],
+    constant MaterialConstants&amp; material [[buffer(1)]],
+    texture2d&lt;float&gt; colorMap [[texture(0)]],
+    sampler linearSampler [[sampler(0)]]) {
+    return colorMap.sample(linearSampler, in.uv) * material.baseColor;
+}</code></pre>
+
+        <pre><code class="language-cpp" data-file="MetalMaterial.cpp">encoder-&gt;setRenderPipelineState(m_pipeline);
+encoder-&gt;setFragmentBytes(&amp;m_constants, sizeof(m_constants), 1);
+encoder-&gt;setFragmentTexture(m_texture ? m_texture : m_whiteTexture, 0);
+encoder-&gt;setFragmentSamplerState(m_sampler, 0);</code></pre>
+
+        <div class="table-wrap"><table><thead><tr><th>Material resource</th><th>Windows</th><th>macOS</th></tr></thead><tbody>
+          <tr><td>Shader program</td><td>HLSL vertex/pixel shaders</td><td>MSL functions + pipeline state</td></tr>
+          <tr><td>Parameters</td><td>constant buffer</td><td>buffer or <code>setFragmentBytes</code></td></tr>
+          <tr><td>Texture</td><td>shader resource view</td><td><code>MTL::Texture</code></td></tr>
+          <tr><td>Sampler</td><td><code>ID3D11SamplerState</code></td><td><code>MTL::SamplerState</code></td></tr>
+        </tbody></table></div>
+
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
@@ -385,7 +410,7 @@ cubeMesh.Draw(context);   // same mesh, a completely different look</code></pre>
             <li>A <code>Shader</code> bundles a vertex shader, pixel shader and input layout; its <code>Bind()</code> arms all three in one call.</li>
             <li>A <code>Material</code> references a shared shader and stores parameters — a colour and an optional texture SRV.</li>
             <li>Material <code>Bind()</code> maps parameters into a 16-byte-aligned constant buffer at slot <code>b1</code>, then binds the texture and sampler.</li>
-            <li>Register numbers in HLSL must match the slots you set on the context; we keep <code>b0</code> free for the upcoming Transform.</li>
+            <li>Resource slots must match in C++ and the shader: HLSL registers on Windows and Metal buffer/texture/sampler indices on macOS.</li>
           </ul>
         </div>
 

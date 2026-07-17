@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clearing the Screen with Direct3D 11 &amp; Metal — Learn C++ Engine Development</title>
+  <meta name="description" content="Extend the SDL3 renderer from Lesson 39 to resize, clear, and present with Direct3D 11 on Windows or Metal on macOS.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Clearing the Screen</h1>
+
+        <p class="lead">Lesson 39 stopped after connecting SDL's window to the selected native graphics backend. This lesson completes one visible frame: acquire or bind the current color target, clear it to dark blue, and present it. The application calls the same <code>Resize</code> and <code>RenderFrame</code> methods on Windows and macOS.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1 2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What this lesson adds to the renderer initialized in Lesson 39</li>
+            <li>How D3D11 clears a persistent render-target view</li>
+            <li>How Metal encodes a clear into a per-frame drawable</li>
+            <li>How SDL pixel-size events resize both renderer backends</li>
+            <li>How the same application loop drives either implementation</li>
+          </ul>
+        </div>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Continue the Lesson 39 project</div><p>Do not create a second window, renderer, or platform loop. Keep the CMake file, <code>MetalCpp.cpp</code>, initialization code, and shutdown order from Lesson 39. Add only the methods and loop changes shown here.</p></div></div>
+
+        <h2>One frame, two native implementations</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Frame job</th><th>Direct3D 11</th><th>Metal</th></tr></thead>
+          <tbody>
+            <tr><td>Obtain color target</td><td>Use the current <code>ID3D11RenderTargetView</code></td><td>Ask <code>CAMetalLayer</code> for a drawable</td></tr>
+            <tr><td>Describe the clear</td><td><code>ClearRenderTargetView</code></td><td>Render-pass attachment with <code>LoadActionClear</code></td></tr>
+            <tr><td>Submit work</td><td>Immediate context</td><td>Command buffer and render encoder</td></tr>
+            <tr><td>Show the result</td><td><code>IDXGISwapChain::Present</code></td><td><code>presentDrawable</code> then <code>commit</code></td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>The shared renderer contract</h2>
+        <p>Add these two methods to either platform header. <code>Initialize</code> and <code>Shutdown</code> remain exactly as they were in Lesson 39:</p>
+
+        <pre><code class="language-cpp">class Renderer
+{
+public:
+    bool Initialize(SDL_Window* window); // Lesson 39
+    bool Resize(int pixelWidth, int pixelHeight);
+    void RenderFrame();
+    void Shutdown();                     // Lesson 39
+
+    // Keep the private members from your platform's Lesson 39 header.
+};</code></pre>
+
+        <p>The method names express engine work. No Direct3D or Metal type leaks into the shared application loop.</p>
+
+        <h2>Windows — resize, clear, and present</h2>
+        <p>The D3D11 render-target view refers to the swap chain's current back buffer. Before resizing the buffers, unbind and release that view; afterward, recreate it with the <code>CreateRenderTarget</code> helper from Lesson 39.</p>
+
+        <pre><code class="language-cpp" data-file="src/D3D11Renderer.cpp">bool Renderer::Resize(int pixelWidth, int pixelHeight)
+{
+    if (pixelWidth &lt;= 0 || pixelHeight &lt;= 0)
+        return true;
+
+    context-&gt;OMSetRenderTargets(0, nullptr, nullptr);
+    SafeRelease(renderTargetView);
+
+    const HRESULT result = swapChain-&gt;ResizeBuffers(
+        0,
+        static_cast&lt;UINT&gt;(pixelWidth),
+        static_cast&lt;UINT&gt;(pixelHeight),
+        DXGI_FORMAT_UNKNOWN,
+        0);
+
+    if (FAILED(result))
+        return false;
+
+    return CreateRenderTarget();
+}
+
+void Renderer::RenderFrame()
+{
+    constexpr float clearColor[4] =
+        { 0.04f, 0.08f, 0.16f, 1.0f };
+
+    context-&gt;OMSetRenderTargets(
+        1, &amp;renderTargetView, nullptr);
+    context-&gt;ClearRenderTargetView(
+        renderTargetView, clearColor);
+
+    // 1 waits for vertical sync and provides basic frame pacing.
+    swapChain-&gt;Present(1, 0);
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Why ResizeBuffers can fail</div><p>DXGI cannot replace a buffer while your code or the device context still references it. Unbind the old target and release the render-target view before <code>ResizeBuffers</code>. The local back-buffer pointer in <code>CreateRenderTarget</code> is already released in Lesson 39.</p></div></div>
+
+        <h2>macOS — resize, encode, and present</h2>
+        <p>The <code>CAMetalLayer</code> borrowed from the SDL Metal view provides a fresh drawable for each frame. SDL3 automatically updates that layer's drawable size when the window's pixel size changes. The Metal implementation still accepts the shared <code>Resize</code> call, but SDL remains the single owner of layer sizing.</p>
+
+        <p>Add the methods below to the same ordinary C++ file, <code>MetalRenderer.cpp</code>, created in Lesson 39:</p>
+
+        <pre><code class="language-cpp" data-file="src/MetalRenderer.cpp">#include &lt;Foundation/Foundation.hpp&gt;
+
+bool Renderer::Resize(int pixelWidth, int pixelHeight)
+{
+    if (pixelWidth &lt;= 0 || pixelHeight &lt;= 0)
+        return true;
+
+    // SDL3 updates the SDL-owned Metal layer automatically. This backend
+    // only confirms that its presentation surface is still available.
+    return layer != nullptr;
+}
+
+void Renderer::RenderFrame()
+{
+    // Metal creates autoreleased temporary objects every frame.
+    NS::AutoreleasePool* pool =
+        NS::AutoreleasePool::alloc()-&gt;init();
+
+    CA::MetalDrawable* drawable = layer-&gt;nextDrawable();
+    if (drawable == nullptr)
+    {
+        pool-&gt;release();
+        return; // normal while minimized or temporarily unavailable
+    }
+
+    MTL::CommandBuffer* commandBuffer =
+        commandQueue-&gt;commandBuffer();
+    if (commandBuffer == nullptr)
+    {
+        pool-&gt;release();
+        return;
+    }
+
+    MTL::RenderPassDescriptor* pass =
+        MTL::RenderPassDescriptor::renderPassDescriptor();
+
+    MTL::RenderPassColorAttachmentDescriptor* color =
+        pass-&gt;colorAttachments()-&gt;object(0);
+    color-&gt;setTexture(drawable-&gt;texture());
+    color-&gt;setLoadAction(MTL::LoadActionClear);
+    color-&gt;setStoreAction(MTL::StoreActionStore);
+    color-&gt;setClearColor(MTL::ClearColor(
+        0.04, 0.08, 0.16, 1.0));
+
+    MTL::RenderCommandEncoder* encoder =
+        commandBuffer-&gt;renderCommandEncoder(pass);
+    if (encoder == nullptr)
+    {
+        pool-&gt;release();
+        return;
+    }
+
+    encoder-&gt;endEncoding();
+
+    commandBuffer-&gt;presentDrawable(drawable);
+    commandBuffer-&gt;commit();
+    pool-&gt;release();
+}</code></pre>
+
+        <p>The empty encoder is intentional. The render pass's load action clears the whole color attachment before any geometry exists. Lesson 41 adds a pipeline and draw call.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">The layer is still borrowed</div><p>These methods use the <code>layer</code> pointer from Lesson 39 but do not change its ownership. Shutdown still destroys <code>metalView</code> and never calls <code>release</code> on the layer itself.</p></div></div>
+
+        <h2>Update the shared SDL3 loop</h2>
+        <p>Replace the placeholder loop from Lesson 39 with this one. SDL supplies physical-pixel dimensions in the resize event, so the application does not need separate Windows and Retina branches.</p>
+
+        <pre><code class="language-cpp" data-file="src/main.cpp">int pixelWidth = 0;
+int pixelHeight = 0;
+if (!SDL_GetWindowSizeInPixels(
+        window, &amp;pixelWidth, &amp;pixelHeight))
+{
+    std::cerr &lt;&lt; "Pixel-size query failed: "
+              &lt;&lt; SDL_GetError() &lt;&lt; '\n';
+    renderer.Shutdown();
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 1;
+}
+
+bool running = true;
+bool canRender = pixelWidth &gt; 0 &amp;&amp; pixelHeight &gt; 0;
+
+// Apply the current size once; later events handle every change.
+if (canRender &amp;&amp; !renderer.Resize(pixelWidth, pixelHeight))
+{
+    renderer.Shutdown();
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 1;
+}
+
+while (running)
+{
+    SDL_Event event;
+    while (SDL_PollEvent(&amp;event))
+    {
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            running = false;
+        }
+        else if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+        {
+            pixelWidth = event.window.data1;
+            pixelHeight = event.window.data2;
+            canRender = pixelWidth &gt; 0 &amp;&amp; pixelHeight &gt; 0;
+
+            if (canRender &amp;&amp;
+                !renderer.Resize(pixelWidth, pixelHeight))
+            {
+                running = false;
+            }
+        }
+    }
+
+    if (running &amp;&amp; canRender)
+        renderer.RenderFrame();
+}</code></pre>
+
+        <p>Keep the shutdown immediately after this loop:</p>
+
+        <pre><code class="language-cpp">renderer.Shutdown();
+SDL_DestroyWindow(window);
+SDL_Quit();</code></pre>
+
+        <p>This order is required on macOS because <code>Renderer::Shutdown</code> destroys the SDL Metal view attached to the still-living window. It is also a clean ownership order on Windows.</p>
+
+        <h2>Checkpoint and troubleshooting</h2>
+        <p>Build and run from CLion. The whole drawable area should remain dark blue on Windows or macOS while you move and resize the window. Closing it should exit with code <code>0</code>.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Symptom</th><th>Likely fix</th></tr></thead>
+          <tbody>
+            <tr><td>D3D window clears once, then fails after resizing</td><td>Unbind and release the old view before <code>ResizeBuffers</code>, then call <code>CreateRenderTarget</code>.</td></tr>
+            <tr><td>D3D clear crashes after a failed resize</td><td>Check the <code>Resize</code> return value as shown and stop rendering when recreation fails.</td></tr>
+            <tr><td>Metal window stays blank</td><td>Keep the code in <code>MetalRenderer.cpp</code>; confirm <code>SDL_WINDOW_METAL</code>, a non-null drawable, <code>endEncoding</code>, and <code>commit</code>.</td></tr>
+            <tr><td>Metal memory grows every frame</td><td>Keep the per-frame <code>NS::AutoreleasePool</code> around drawable, pass, encoder, and command-buffer work.</td></tr>
+            <tr><td>Retina output is soft or partly filled</td><td>Use <code>SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED</code> data, not logical values from <code>SDL_GetWindowSize</code>.</td></tr>
+            <tr><td>Minimizing causes errors</td><td>Keep <code>canRender</code> false while either drawable dimension is zero.</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Lesson 39 initializes native presentation; Lesson 40 adds resize, clear, and present.</li>
+            <li>D3D11 clears a render-target view and presents its swap chain.</li>
+            <li>Metal obtains a drawable, encodes a clear pass, presents, and commits a command buffer.</li>
+            <li>One SDL pixel-size event feeds the same <code>Resize(width, height)</code> interface on both platforms.</li>
+            <li>Renderer code differs; application, input, scene, and game-loop logic remain shared.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

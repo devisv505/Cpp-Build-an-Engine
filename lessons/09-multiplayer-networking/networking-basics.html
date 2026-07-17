@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Networking Fundamentals for Games — Learn C++ &amp; DirectX</title>
+  <title>Networking Fundamentals for Games — Learn C++ Engine Development</title>
   <meta name="description" content="Learn how game networking works: IP, ports, packets, client-server vs P2P, authoritative servers, TCP vs UDP, latency, and the core netcode loop.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -138,7 +138,7 @@
         <p>Here's that loop as pseudocode, mapped onto MiniEngine's existing <code>Update</code> structure. It's illustrative, not the real socket code (that starts next lesson), but it shows exactly where networking slots into the engine you already have.</p>
 
         <pre><code class="language-cpp" data-file="NetLoop.cpp">// Illustrative sketch of the authoritative loop.
-// Real UDP socket calls (Winsock) arrive in the next lesson.
+// Real UDP socket calls (Winsock2 on Windows, BSD sockets on macOS) arrive next.
 
 struct InputCommand {
     uint32_t sequence;   // lets us detect loss / order

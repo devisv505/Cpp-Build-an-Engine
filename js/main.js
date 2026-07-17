@@ -2,7 +2,7 @@
    main.js — builds all shared chrome from curriculum.js so every
    lesson page only needs to supply its <article> content.
    Handles: header, sidebar, progress, TOC, prev/next, theme,
-   code enhancement (headers + copy), and C++/HLSL syntax highlighting.
+   code enhancement (headers + copy), and C++/shader syntax highlighting.
    ===================================================================== */
 (function () {
   "use strict";
@@ -100,7 +100,7 @@
       (isLesson ? '<button class="icon-btn menu-toggle" id="menu-btn" aria-label="Menu">' + ICON.menu + '</button>' : '') +
       '<a class="brand" href="' + ROOT + 'index.html">' +
         '<span class="logo">C++</span>' +
-        '<span>Learn C++ &amp; DirectX <span class="brand-sub">· Build an Engine</span></span>' +
+        '<span>Learn C++ <span class="brand-sub">· Build a Cross-Platform Engine</span></span>' +
       '</a>' +
       '<div class="header-spacer"></div>' +
       '<div class="header-actions">' +
@@ -385,9 +385,10 @@
   }
 
   var LANG_LABEL = {
-    cpp: "C++", "c++": "C++", c: "C", hlsl: "HLSL", shader: "HLSL",
+    cpp: "C++", "c++": "C++", c: "C", hlsl: "HLSL", shader: "GPU Shader",
     bash: "Shell", sh: "Shell", powershell: "PowerShell", ps: "PowerShell",
-    console: "Console", text: "Text", cmake: "CMake", ini: "Config", xml: "XML"
+    console: "Console", text: "Text", cmake: "CMake", ini: "Config", xml: "XML",
+    yaml: "YAML", yml: "YAML"
   };
 
   function enhanceCode(scope) {

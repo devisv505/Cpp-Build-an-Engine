@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Index Buffers &amp; Drawing a Cube — Learn C++ Engine Development</title>
+  <meta name="description" content="Reuse vertices with an index buffer, define a cube with 8 vertices and 36 indices, and render it with DrawIndexed and your MVP matrix.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Index Buffers &amp; Drawing a Cube</h1>
+
+        <p class="lead">
+          Last lesson you built a Model-View-Projection matrix and pushed a single triangle into 3D space.
+          A cube has flat faces made of triangles too — but if you naively list every triangle you end up
+          repeating the same corners over and over. In this lesson you'll learn <strong>indexed drawing</strong>:
+          define each corner of the cube exactly once, then reference those corners by number. This is the same
+          trick every real engine uses to keep mesh data small, and it's how our future <code>Mesh</code> component
+          will store geometry.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why indexed drawing lets you reuse vertices instead of duplicating them.</li>
+            <li>How to define a cube as 8 unique vertices and a list of 36 indices (12 triangles).</li>
+            <li>How to create an index buffer with <code>D3D11_BIND_INDEX_BUFFER</code> and bind it with <code>IASetIndexBuffer</code>.</li>
+            <li>How to issue a <code>DrawIndexed</code> call and combine it with your MVP so a full cube renders.</li>
+          </ul>
+        </div>
+
+        <h2>Why bother with indices?</h2>
+        <p>
+          A cube has 6 faces. Each face is a flat square, and the GPU only draws triangles, so every face is
+          made of 2 triangles. That's <strong>12 triangles</strong> total, and each triangle needs 3 vertices —
+          <strong>36 vertices</strong> if we spell them all out. But a cube only has <strong>8 physical corners</strong>.
+          Each corner is shared by three faces, so in a plain vertex list we'd store the same corner position
+          many times over.
+        </p>
+        <p>
+          Indexed drawing splits geometry into two lists. The <strong>vertex buffer</strong> holds each unique
+          corner once. The <strong>index buffer</strong> holds a list of small integers that say "draw a triangle
+          using corners 0, 1 and 2", "now 0, 2 and 3", and so on. The GPU walks the index list and looks up the
+          real vertex data as it goes.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Approach</th><th>Vertices stored</th><th>Bytes (pos = 12B each)</th></tr></thead>
+            <tbody>
+              <tr><td>Non-indexed (36 verts)</td><td>36</td><td>432 bytes</td></tr>
+              <tr><td>Indexed (8 verts + 36 indices)</td><td>8 verts + 36 &times; 2B</td><td>96 + 72 = 168 bytes</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          For a bare cube the saving is modest, but the ratio only grows with real meshes. A character model
+          might share each vertex among six or more triangles; indexing can cut its memory roughly in half and,
+          just as importantly, lets the GPU's post-transform cache skip re-processing a vertex it already handled.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Rule of thumb</div>
+            <p>If a vertex is used by more than one triangle — which is almost always true for solid meshes — use an index buffer. When we write our model loader later, it will build both buffers automatically.</p>
+          </div>
+        </div>
+
+        <h2>Defining the cube</h2>
+        <p>
+          Let's place the cube's 8 corners around the origin, each axis running from <code>-1</code> to <code>+1</code>.
+          We'll give each corner a colour too, so the faces are easy to tell apart. This is the same
+          <code>Vertex</code> layout you've been using — a position plus a colour.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Cube.h">#include &lt;DirectXMath.h&gt;
+#include &lt;array&gt;
+
+using namespace DirectX;
+
+struct Vertex
+{
+    XMFLOAT3 position;  // x, y, z
+    XMFLOAT4 color;     // r, g, b, a
+};
+
+// 8 unique corners of the cube, each from -1 to +1.
+const std::array&lt;Vertex, 8&gt; g_cubeVertices =
+{{
+    { XMFLOAT3(-1, -1, -1), XMFLOAT4(0, 0, 0, 1) },  // 0
+    { XMFLOAT3( 1, -1, -1), XMFLOAT4(1, 0, 0, 1) },  // 1
+    { XMFLOAT3( 1,  1, -1), XMFLOAT4(1, 1, 0, 1) },  // 2
+    { XMFLOAT3(-1,  1, -1), XMFLOAT4(0, 1, 0, 1) },  // 3
+    { XMFLOAT3(-1, -1,  1), XMFLOAT4(0, 0, 1, 1) },  // 4
+    { XMFLOAT3( 1, -1,  1), XMFLOAT4(1, 0, 1, 1) },  // 5
+    { XMFLOAT3( 1,  1,  1), XMFLOAT4(1, 1, 1, 1) },  // 6
+    { XMFLOAT3(-1,  1,  1), XMFLOAT4(0, 1, 1, 1) },  // 7
+}};</code></pre>
+
+        <p>
+          Now the index list. Each row below is one face made of two triangles (six indices). The winding
+          order — the order the three corners are listed — matters: with the default rasterizer state,
+          Direct3D treats <strong>clockwise</strong> triangles as front-facing. We'll wind every face so it
+          faces outward, which pays off next lesson when we enable backface culling.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Cube.h">// 36 indices = 12 triangles = 6 faces.
+// R16_UINT lets each index be a 16-bit unsigned short.
+const std::array&lt;unsigned short, 36&gt; g_cubeIndices =
+{{
+    // front face (z = -1)
+    0, 2, 1,   0, 3, 2,
+    // back face  (z = +1)
+    4, 5, 6,   4, 6, 7,
+    // left face  (x = -1)
+    4, 7, 3,   4, 3, 0,
+    // right face (x = +1)
+    1, 2, 6,   1, 6, 5,
+    // top face   (y = +1)
+    3, 7, 6,   3, 6, 2,
+    // bottom face(y = -1)
+    4, 0, 1,   4, 1, 5,
+}};</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">16-bit vs 32-bit indices</div>
+            <p>An <code>unsigned short</code> (16 bits) can address up to 65,535 vertices — plenty for a cube and most small meshes. If a mesh has more vertices than that, switch to <code>unsigned int</code> and use <code>DXGI_FORMAT_R32_UINT</code> when you bind the buffer. The format you pick must match the integer size of your index array.</p>
+          </div>
+        </div>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 220" fill="none" stroke="currentColor" stroke-width="2">
+              <!-- back square -->
+              <rect x="230" y="40" width="120" height="120" stroke="#4aa8ff"/>
+              <!-- front square -->
+              <rect x="180" y="80" width="120" height="120"/>
+              <!-- connecting edges -->
+              <line x1="180" y1="80" x2="230" y2="40" stroke="#4aa8ff"/>
+              <line x1="300" y1="80" x2="350" y2="40" stroke="#4aa8ff"/>
+              <line x1="180" y1="200" x2="230" y2="160" stroke="#4aa8ff"/>
+              <line x1="300" y1="200" x2="350" y2="160" stroke="#4aa8ff"/>
+              <!-- corner labels -->
+              <circle cx="180" cy="200" r="3" fill="currentColor" stroke="none"/><text x="164" y="214" font-size="14" stroke="none" fill="currentColor">0</text>
+              <circle cx="300" cy="200" r="3" fill="currentColor" stroke="none"/><text x="304" y="214" font-size="14" stroke="none" fill="currentColor">1</text>
+              <circle cx="300" cy="80"  r="3" fill="currentColor" stroke="none"/><text x="306" y="78"  font-size="14" stroke="none" fill="currentColor">2</text>
+              <circle cx="180" cy="80"  r="3" fill="currentColor" stroke="none"/><text x="162" y="78"  font-size="14" stroke="none" fill="currentColor">3</text>
+              <text x="410" y="115" font-size="15" stroke="none" fill="currentColor">8 corners, reused</text>
+              <text x="410" y="138" font-size="15" stroke="none" fill="currentColor">by 12 triangles.</text>
+            </svg>
+          </div>
+          <figcaption>The 8 corners are stored once; the 36 indices weave them into the cube's faces.</figcaption>
+        </figure>
+
+        <h2>Creating the buffers</h2>
+        <p>
+          Creating an index buffer is almost identical to creating a vertex buffer — you fill a
+          <code>D3D11_BUFFER_DESC</code> and a <code>D3D11_SUBRESOURCE_DATA</code>, then call
+          <code>CreateBuffer</code>. The one thing that changes is the bind flag:
+          <code>D3D11_BIND_INDEX_BUFFER</code> instead of <code>D3D11_BIND_VERTEX_BUFFER</code>.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">#include &lt;d3d11.h&gt;
+#include &lt;wrl/client.h&gt;   // Microsoft::WRL::ComPtr
+
+using Microsoft::WRL::ComPtr;
+
+ComPtr&lt;ID3D11Buffer&gt; m_vertexBuffer;
+ComPtr&lt;ID3D11Buffer&gt; m_indexBuffer;
+
+void CreateCubeBuffers(ID3D11Device* device)
+{
+    // --- Vertex buffer (the 8 unique corners) ---
+    D3D11_BUFFER_DESC vbDesc = {};
+    vbDesc.ByteWidth = sizeof(g_cubeVertices);           // 8 * sizeof(Vertex)
+    vbDesc.Usage     = D3D11_USAGE_IMMUTABLE;            // never changes after upload
+    vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA vbData = {};
+    vbData.pSysMem = g_cubeVertices.data();
+
+    HRESULT hr = device-&gt;CreateBuffer(&amp;vbDesc, &amp;vbData, &amp;m_vertexBuffer);
+    if (FAILED(hr)) { /* handle error */ }
+
+    // --- Index buffer (the 36 indices) ---
+    D3D11_BUFFER_DESC ibDesc = {};
+    ibDesc.ByteWidth = sizeof(g_cubeIndices);            // 36 * sizeof(unsigned short)
+    ibDesc.Usage     = D3D11_USAGE_IMMUTABLE;
+    ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;          // the key difference
+
+    D3D11_SUBRESOURCE_DATA ibData = {};
+    ibData.pSysMem = g_cubeIndices.data();
+
+    hr = device-&gt;CreateBuffer(&amp;ibDesc, &amp;ibData, &amp;m_indexBuffer);
+    if (FAILED(hr)) { /* handle error */ }
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">ByteWidth must be the whole buffer</div>
+            <p><code>ByteWidth</code> is the size of the <em>entire</em> buffer in bytes, not the size of one element. Using <code>sizeof(g_cubeIndices)</code> on a <code>std::array</code> is correct because the array stores all elements inline. If you ever switch to a <code>std::vector</code>, use <code>indices.size() * sizeof(unsigned short)</code> instead — <code>sizeof(vec)</code> would give you the size of the vector object, not its contents.</p>
+          </div>
+        </div>
+
+        <h2>Binding and drawing</h2>
+        <p>
+          At draw time you bind both buffers to the <strong>Input Assembler</strong> stage, then call
+          <code>DrawIndexed</code>. Note the format argument to <code>IASetIndexBuffer</code>:
+          <code>DXGI_FORMAT_R16_UINT</code> because our indices are 16-bit. This is where the MVP matrix
+          from the previous lesson comes back in — we update the constant buffer, then let the vertex shader
+          transform each corner.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">void DrawCube(ID3D11DeviceContext* context)
+{
+    // 1. Bind the vertex buffer.
+    UINT stride = sizeof(Vertex);
+    UINT offset = 0;
+    context-&gt;IASetVertexBuffers(0, 1, m_vertexBuffer.GetAddressOf(), &amp;stride, &amp;offset);
+
+    // 2. Bind the index buffer. Format must match the index size (16-bit here).
+    context-&gt;IASetIndexBuffer(m_indexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+
+    // 3. Each three indices form one triangle.
+    context-&gt;IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // 4. Bind shaders, input layout and the MVP constant buffer (from last lesson).
+    context-&gt;VSSetShader(m_vertexShader.Get(), nullptr, 0);
+    context-&gt;PSSetShader(m_pixelShader.Get(),  nullptr, 0);
+    context-&gt;IASetInputLayout(m_inputLayout.Get());
+    context-&gt;VSSetConstantBuffers(0, 1, m_mvpBuffer.GetAddressOf());
+
+    // 5. Draw! 36 indices, starting at index 0, with no base vertex offset.
+    context-&gt;DrawIndexed(36, 0, 0);
+}</code></pre>
+
+        <p>
+          The three arguments to <code>DrawIndexed</code> are: how many indices to read
+          (<code>36</code>), where in the index buffer to start (<code>0</code>), and a value added to every
+          index before the vertex lookup (<code>0</code>). That last argument, the <em>base vertex location</em>,
+          is handy when several meshes share one big buffer — but for a lone cube it stays zero.
+        </p>
+
+        <h3>Where the MVP fits</h3>
+        <p>
+          Nothing about indexing changes your shader. Each of the 8 corners still flows through the same
+          vertex shader once (the GPU caches the result), gets multiplied by the combined
+          world-view-projection matrix, and lands on screen. Here's the vertex shader from last lesson,
+          unchanged, for reference:
+        </p>
+
+        <pre><code class="language-hlsl" data-file="Cube.hlsl">cbuffer MVPBuffer : register(b0)
+{
+    matrix worldViewProj;   // model * view * projection
+};
+
+struct VSInput
+{
+    float3 position : POSITION;
+    float4 color    : COLOR;
+};
+
+struct VSOutput
+{
+    float4 position : SV_POSITION;
+    float4 color    : COLOR;
+};
+
+VSOutput main(VSInput input)
+{
+    VSOutput output;
+    // Transform the corner from model space into clip space.
+    output.position = mul(float4(input.position, 1.0f), worldViewProj);
+    output.color    = input.color;
+    return output;
+}</code></pre>
+
+        <p>
+          Update the constant buffer with your rotating world matrix each frame, call <code>DrawCube</code>,
+          present — and a spinning, multi-coloured cube appears. If the back faces look wrong or the cube seems
+          inside-out, don't worry: that's exactly the problem the <strong>depth buffer and culling</strong>
+          lesson solves next.
+        </p>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't call Draw with an index buffer bound</div>
+            <p>Once you're indexing, use <code>DrawIndexed</code>, not <code>Draw</code>. <code>Draw</code> ignores the index buffer entirely and reads vertices in sequence, so it would try to draw only 8 vertices as raw triangles and produce garbage. Matching the draw call to the buffers you bound is a common early mistake.</p>
+          </div>
+        </div>
+
+        <h2>macOS — indexed drawing in Metal</h2>
+        <pre><code class="language-cpp" data-file="MetalRenderer.cpp">MTL::Buffer* indexBuffer = device-&gt;newBuffer(
+    indices, sizeof(indices), MTL::ResourceStorageModeShared);
+
+encoder-&gt;drawIndexedPrimitives(
+    MTL::PrimitiveTypeTriangle,
+    indexCount,
+    MTL::IndexTypeUInt32,
+    indexBuffer,
+    0);</code></pre>
+        <p>This is Metal's equivalent of binding an index buffer and calling <code>DrawIndexed</code>. Mesh data and index ordering stay shared; only the backend draw command changes.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Indexed drawing stores each unique vertex once and references it by a small integer, saving memory and GPU work.</li>
+            <li>A cube is 8 vertices and 36 indices (12 triangles / 6 faces); winding each face outward prepares us for culling.</li>
+            <li>Create an index buffer just like a vertex buffer but with <code>D3D11_BIND_INDEX_BUFFER</code>, and size <code>ByteWidth</code> to the whole array.</li>
+            <li>Bind it with <code>IASetIndexBuffer</code> (matching <code>R16_UINT</code>/<code>R32_UINT</code> to your index size) and draw with <code>DrawIndexed(36, 0, 0)</code>.</li>
+            <li>The MVP constant buffer and shaders from the previous lesson stay exactly the same — indexing only changes how vertices are fetched.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

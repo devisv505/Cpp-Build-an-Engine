@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Procedural Terrain with Noise — Learn C++ Engine Development</title>
+  <meta name="description" content="Fill chunks with landscapes from a single seed using coherent noise: heightmaps from fractal Perlin/Simplex noise, biomes, and 3D noise for caves and overhangs.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Procedural Terrain with Noise</h1>
+
+        <p class="lead">Your engine can render a chunk of blocks, but right now every one is placed by hand. A real voxel world is built by a <em>function</em>: hand it a chunk coordinate and it fills the chunk with hills, valleys, beaches, and caves — the same landscape every time, from a single integer seed. The tool that makes this possible is <strong>coherent noise</strong>. In this lesson we turn a seed into terrain: a deterministic <code>GenerateChunk</code> that neighbouring chunks can run independently and still stitch together seam-free.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why per-voxel <code>rand()</code> gives unusable white noise, and what makes noise <em>coherent</em></li>
+            <li>How value, Perlin, and Simplex noise differ — and why you should reach for a single-header library</li>
+            <li>How to stack octaves into <strong>fractal Brownian motion (fBm)</strong> for natural, multi-scale terrain</li>
+            <li>How to turn a heightmap into stone/dirt/grass/water/sand columns, add biomes, and carve caves with 3D noise</li>
+            <li>Why feeding <strong>world</strong> coordinates into deterministic noise is what makes chunk borders line up — the #1 terrain bug</li>
+          </ul>
+        </div>
+
+        <h2>Random is not the same as natural</h2>
+
+        <p>The obvious first idea is to give every voxel a random height or a random "solid/air" flag. It fails immediately. A call like <code>rand()</code> produces <strong>white noise</strong>: each value is completely independent of its neighbours, so adjacent columns jump from height 5 to 90 to 12. You get static, not a landscape. Worse, it is not repeatable — walk away and come back and the ground is different.</p>
+
+        <p>What terrain needs is <strong>coherent noise</strong>, which has three properties white noise lacks:</p>
+
+        <ul>
+          <li><strong>Smooth</strong> — nearby inputs give nearby outputs, so the surface flows instead of jittering.</li>
+          <li><strong>Continuous</strong> — defined at every real-numbered point, not just on a grid, so you can sample it at any resolution.</li>
+          <li><strong>Repeatable</strong> — the same input always returns the same output. This is what lets separately generated chunks agree on their shared border.</li>
+        </ul>
+
+        <p>Three families of coherent noise show up in voxel engines. It is worth knowing them by name even though you will not hand-write them:</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Noise</th><th>Idea</th><th>Feel &amp; cost</th></tr></thead><tbody>
+          <tr><td><strong>Value</strong></td><td>Random <em>value</em> at each lattice corner, interpolated between</td><td>Simplest to understand; can look slightly blocky/grid-aligned</td></tr>
+          <tr><td><strong>Gradient (Perlin)</strong></td><td>Random <em>gradient</em> at each corner; interpolate the dot products</td><td>Smoother, no visible grid; the classic terrain choice</td></tr>
+          <tr><td><strong>Simplex / OpenSimplex</strong></td><td>Perlin's successor on a triangular lattice</td><td>Fewer directional artifacts and much cheaper in 3D+</td></tr>
+        </tbody></table></div>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Use a battle-tested implementation</div><p>Hand-rolled Perlin is a rite of passage, but for the engine reach for a proven single header: <code>stb_perlin.h</code> (Perlin noise with ready-made fBm, turbulence, and ridged helpers) or <a>FastNoiseLite</a> (which adds Simplex/OpenSimplex, built-in fBm, and domain warping). Both are seedable, fast, and correct across negative coordinates. We build the mechanics below so it is not a black box — but we ship the library.</p></div>
+        </div>
+
+        <h2>What "coherent" looks like under the hood</h2>
+
+        <p>Here is the smallest coherent noise there is — <strong>value noise</strong> in two dimensions — so the idea is concrete. Imagine an integer grid. At each corner we hash a pseudo-random value in <code>[0, 1)</code>. To sample an arbitrary point, we find the four surrounding corners and blend their values, using a smooth <em>fade</em> curve on the blend factor so the result has no creases where cells meet.</p>
+
+        <pre><code class="language-cpp" data-file="ValueNoise.cpp">#include &lt;cstdint&gt;
+#include &lt;cmath&gt;
+
+// A deterministic hash of integer lattice coordinates -&gt; [0, 1).
+// Same (x, z, seed) always yields the same value: that is coherence.
+static float Hash01(int x, int z, uint32_t seed) {
+    uint32_t h = seed;
+    h ^= uint32_t(x) * 374761393u;
+    h ^= uint32_t(z) * 668265263u;
+    h  = (h ^ (h &gt;&gt; 13)) * 1274126177u;
+    h ^= h &gt;&gt; 16;
+    return float(h) / float(0xFFFFFFFFu);
+}
+
+// Smootherstep: zero 1st and 2nd derivatives at 0 and 1, so cell
+// boundaries do not crease. This is the "fade" curve Perlin uses.
+static float Fade(float t) { return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f); }
+static float Lerp(float a, float b, float t) { return a + (b - a) * t; }
+
+// 2D value noise. Continuous, smooth, repeatable. Returns ~[0, 1].
+float ValueNoise2D(float x, float z, uint32_t seed) {
+    float fx = std::floor(x), fz = std::floor(z);
+    int   x0 = int(fx),       z0 = int(fz);
+    float tx = Fade(x - fx),  tz = Fade(z - fz);
+
+    float c00 = Hash01(x0,     z0,     seed);   // four surrounding
+    float c10 = Hash01(x0 + 1, z0,     seed);   // lattice corners
+    float c01 = Hash01(x0,     z0 + 1, seed);
+    float c11 = Hash01(x0 + 1, z0 + 1, seed);
+
+    return Lerp(Lerp(c00, c10, tx),             // bilinear blend,
+                Lerp(c01, c11, tx), tz);        // smoothed by Fade
+}</code></pre>
+
+        <p>That is the whole trick: a hash pins down repeatable randomness at grid corners, and a smooth interpolation fills the space between. <strong>Perlin noise</strong> replaces the corner <em>values</em> with random <em>gradients</em> and interpolates their dot products, which removes the faint grid you can sometimes see in value noise; <strong>Simplex</strong> does the same on a triangular lattice that scales far better into 3D. All three return a single smooth number for any point. From here on we treat noise as one such function — <code>noise2D(x, z)</code> and <code>noise3D(x, y, z)</code>, each returning roughly <code>[-1, 1]</code> — and let FastNoiseLite provide it.</p>
+
+        <h2>Stacking octaves: fractal Brownian motion</h2>
+
+        <p>A single octave of noise gives smooth, rolling hills — but real terrain has detail at every scale: mountain ranges, individual hills, and boulder-sized bumps all at once. We get that by summing several copies of the same noise at different scales. Each successive copy (an <strong>octave</strong>) is sampled at a higher frequency and added with a smaller amplitude. This sum is called <strong>fractal Brownian motion</strong>, or fBm.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 640 250" fill="none" stroke="currentColor" stroke-width="2" role="img" aria-label="Three octaves of noise summing into a jagged terrain silhouette">
+              <text x="12" y="30" fill="currentColor" stroke="none" font-size="12">octave 1 · low freq, high amp</text>
+              <path d="M170 30 Q 225 8 280 30 T 390 30 T 500 30 T 610 30" stroke="#4aa8ff"/>
+              <text x="70" y="72" fill="currentColor" stroke="none" font-size="20">+</text>
+              <text x="12" y="88" fill="currentColor" stroke="none" font-size="12">octave 2 · ×2 freq, ×0.5 amp</text>
+              <path d="M170 88 Q 197 76 224 88 T 278 88 T 332 88 T 386 88 T 440 88 T 494 88 T 548 88 T 610 88" stroke="#4aa8ff"/>
+              <text x="70" y="132" fill="currentColor" stroke="none" font-size="20">+</text>
+              <text x="12" y="146" fill="currentColor" stroke="none" font-size="12">octave 3 · ×4 freq, ×0.25 amp</text>
+              <path d="M170 146 Q 184 138 198 146 T 226 146 T 254 146 T 282 146 T 310 146 T 338 146 T 366 146 T 394 146 T 422 146 T 450 146 T 478 146 T 506 146 T 534 146 T 562 146 T 590 146 T 610 146" stroke="#4aa8ff"/>
+              <text x="70" y="196" fill="currentColor" stroke="none" font-size="20">=</text>
+              <text x="12" y="205" fill="currentColor" stroke="none" font-size="12">fBm terrain</text>
+              <path d="M170 232 L 200 210 L 224 218 L 252 196 L 282 205 L 310 180 L 340 194 L 368 205 L 396 188 L 424 210 L 452 200 L 486 220 L 524 206 L 566 224 L 610 214 L 610 244 L 170 244 Z" fill="#4aa8ff" fill-opacity="0.15" stroke="#4aa8ff"/>
+            </svg>
+          </div>
+          <figcaption>Each octave doubles the frequency (lacunarity) and halves the amplitude (gain). Summed, they produce broad shapes with fine detail on top.</figcaption>
+        </figure>
+
+        <p>The loop is short. Two knobs drive it: <strong>lacunarity</strong> multiplies the frequency each octave (≈2, so detail gets twice as fine), and <strong>gain</strong> (a.k.a. persistence) multiplies the amplitude each octave (≈0.5, so each layer is half as loud). We track the total amplitude so we can normalize the sum back to <code>[-1, 1]</code>.</p>
+
+        <pre><code class="language-cpp" data-file="fbm.h">#pragma once
+
+// Fractal Brownian motion: stack octaves of a coherent noise field.
+// 'noise' is any callable returning ~[-1, 1] for a single octave.
+template &lt;class NoiseFn&gt;
+float fbm2D(NoiseFn noise, float x, float z,
+            int octaves, float frequency,
+            float lacunarity, float gain) {
+    float sum = 0.0f, amplitude = 1.0f, ampSum = 0.0f;
+
+    for (int o = 0; o &lt; octaves; ++o) {
+        sum       += amplitude * noise(x * frequency, z * frequency);
+        ampSum    += amplitude;      // remember total for normalization
+        frequency *= lacunarity;     // each octave: finer detail...
+        amplitude *= gain;           // ...contributing less
+    }
+    return sum / ampSum;             // normalized back to ~[-1, 1]
+}</code></pre>
+
+        <p>Dividing by <code>ampSum</code> matters: without it, adding octaves would push the range past 1 and the terrain scale would drift as you changed the octave count. With it, <code>octaves</code> controls <em>only</em> how much fine detail appears, not the overall height. Here is the full parameter set and what each one does:</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Typical</th><th>Effect</th></tr></thead><tbody>
+          <tr><td><code>seed</code></td><td>any int</td><td>Selects <em>which</em> world you get; identical seed → identical terrain</td></tr>
+          <tr><td><code>frequency</code></td><td>0.005–0.02</td><td>Base horizontal scale. Lower = wider, gentler features</td></tr>
+          <tr><td><code>amplitude</code></td><td>16–64 blocks</td><td>How tall hills and mountains rise (applied after fBm)</td></tr>
+          <tr><td><code>octaves</code></td><td>3–6</td><td>Layers of detail. More = rougher; diminishing returns past ~6</td></tr>
+          <tr><td><code>lacunarity</code></td><td>2.0</td><td>Frequency multiplier per octave</td></tr>
+          <tr><td><code>gain</code></td><td>0.5</td><td>Amplitude multiplier per octave (persistence)</td></tr>
+        </tbody></table></div>
+
+        <h2>From heightmap to voxel columns</h2>
+
+        <p>Now the payoff. For every world column <code>(x, z)</code> we compute one surface height, then fill the voxels beneath it. fBm returns roughly <code>[-1, 1]</code>, so we center it on a base height and scale by an amplitude:</p>
+
+        <pre><code class="language-cpp" data-file="heightmap.cpp">float e      = fbm2D(noise2D, wx, wz, 4, 0.008f, 2.0f, 0.5f); // -1..1
+int   height = baseHeight + int(e * amplitude);  // e.g. 64 + e*24</code></pre>
+
+        <p>Then, walking a column from the bottom up, each voxel's block id follows a simple layering rule:</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 620 300" fill="none" stroke="currentColor" stroke-width="1.5" role="img" aria-label="A smooth height curve sampled per column into stacked grass, dirt, stone, sand and water voxels">
+              <!-- voxel grid lines -->
+              <g stroke="currentColor" stroke-opacity="0.12">
+                <line x1="60" y1="90" x2="400" y2="90"/><line x1="60" y1="120" x2="400" y2="120"/>
+                <line x1="60" y1="150" x2="400" y2="150"/><line x1="60" y1="180" x2="400" y2="180"/>
+                <line x1="60" y1="210" x2="400" y2="210"/><line x1="60" y1="240" x2="400" y2="240"/>
+              </g>
+              <!-- columns: grass (green), dirt (brown), stone (grey); sand+water at the shore -->
+              <g stroke="currentColor" stroke-opacity="0.25">
+                <rect x="60"  y="210" width="34" height="15" fill="#5aa469"/><rect x="60"  y="225" width="34" height="45" fill="#8a6d4b"/>
+                <rect x="94"  y="180" width="34" height="15" fill="#5aa469"/><rect x="94"  y="195" width="34" height="30" fill="#8a6d4b"/><rect x="94" y="225" width="34" height="45" fill="#7d8590"/>
+                <rect x="128" y="150" width="34" height="15" fill="#5aa469"/><rect x="128" y="165" width="34" height="45" fill="#8a6d4b"/><rect x="128" y="210" width="34" height="60" fill="#7d8590"/>
+                <rect x="162" y="120" width="34" height="15" fill="#5aa469"/><rect x="162" y="135" width="34" height="45" fill="#8a6d4b"/><rect x="162" y="180" width="34" height="90" fill="#7d8590"/>
+                <rect x="196" y="105" width="34" height="15" fill="#5aa469"/><rect x="196" y="120" width="34" height="45" fill="#8a6d4b"/><rect x="196" y="165" width="34" height="105" fill="#7d8590"/>
+                <rect x="230" y="105" width="34" height="15" fill="#5aa469"/><rect x="230" y="120" width="34" height="45" fill="#8a6d4b"/><rect x="230" y="165" width="34" height="105" fill="#7d8590"/>
+                <rect x="264" y="120" width="34" height="15" fill="#5aa469"/><rect x="264" y="135" width="34" height="45" fill="#8a6d4b"/><rect x="264" y="180" width="34" height="90" fill="#7d8590"/>
+                <rect x="298" y="150" width="34" height="15" fill="#5aa469"/><rect x="298" y="165" width="34" height="45" fill="#8a6d4b"/><rect x="298" y="210" width="34" height="60" fill="#7d8590"/>
+                <rect x="332" y="195" width="34" height="15" fill="#d9c48a"/><rect x="332" y="210" width="34" height="60" fill="#7d8590"/>
+                <rect x="366" y="210" width="34" height="15" fill="#d9c48a"/><rect x="366" y="225" width="34" height="45" fill="#7d8590"/>
+              </g>
+              <!-- water fills air below sea level -->
+              <g fill="#4aa8ff" fill-opacity="0.35" stroke="none">
+                <rect x="332" y="180" width="34" height="15"/>
+                <rect x="366" y="180" width="34" height="30"/>
+              </g>
+              <!-- sea level -->
+              <line x1="60" y1="180" x2="400" y2="180" stroke="#4aa8ff" stroke-dasharray="5 4" stroke-width="1.5"/>
+              <text x="405" y="184" fill="#4aa8ff" stroke="none" font-size="11">sea level</text>
+              <!-- the continuous heightmap, sampled per column -->
+              <polyline points="77,210 111,180 145,150 179,120 213,105 247,105 281,120 315,150 349,195 383,210"
+                        stroke="#4aa8ff" stroke-width="2.5" fill="none"/>
+              <text x="405" y="105" fill="currentColor" stroke="none" font-size="12">height(x, z)</text>
+              <text x="405" y="120" fill="currentColor" stroke="none" font-size="12">from fBm</text>
+              <!-- legend -->
+              <rect x="430" y="150" width="12" height="12" fill="#5aa469" stroke="none"/><text x="448" y="160" fill="currentColor" stroke="none" font-size="11">grass</text>
+              <rect x="430" y="168" width="12" height="12" fill="#8a6d4b" stroke="none"/><text x="448" y="178" fill="currentColor" stroke="none" font-size="11">dirt</text>
+              <rect x="430" y="204" width="12" height="12" fill="#7d8590" stroke="none"/><text x="448" y="214" fill="currentColor" stroke="none" font-size="11">stone</text>
+              <rect x="430" y="222" width="12" height="12" fill="#d9c48a" stroke="none"/><text x="448" y="232" fill="currentColor" stroke="none" font-size="11">sand</text>
+            </svg>
+          </div>
+          <figcaption>One height value per column, discretized into voxels: a grass cap, a few dirt blocks, stone below. Where the surface dips under sea level it becomes sand, and the empty space above it fills with water.</figcaption>
+        </figure>
+
+        <p>The rule reads directly off that picture: the topmost solid block is the surface (grass, or sand at the shoreline), the next few are dirt, and everything deeper is stone. Any air below sea level becomes water. We will write it out in full in <code>GenerateChunk</code> below.</p>
+
+        <h2>Determinism and world coordinates: the seam bug</h2>
+
+        <p>Every chunk is generated on its own, often on a different thread, with no knowledge of its neighbours. The only thing that keeps their shared edges continuous is that both chunks sample <em>the same noise function at the same world position</em> and get the same answer. That gives us a hard rule.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Never feed local coordinates to noise</div><p>If you sample <code>noise2D(lx, lz)</code> with the chunk-local <code>0..CHUNK-1</code> coordinates, every chunk generates the <em>same</em> hill and the world tiles like wallpaper — and the heights jump discontinuously at every border. This visible cliff at chunk boundaries is the single most common terrain bug. Always convert to world coordinates first: <code>wx = chunkOrigin.x + lx</code>, then sample <code>noise2D(wx, wz)</code>.</p></div>
+        </div>
+
+        <p>Determinism buys you more than seamless borders. Because <code>GenerateChunk</code> is a <strong>pure function</strong> of <code>(seed, chunkCoord)</code> — no globals, no clock, no <code>rand()</code> state — the same chunk regenerates identically forever. That is what lets you (a) generate chunks on worker threads safely, which we do in the job-system lesson, and (b) skip saving untouched chunks entirely: you can rebuild them from the seed instead of writing them to disk.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Keep generation pure</div><p>Seed every noise field once from the world seed and read only from the chunk coordinate. No shared mutable state, no time, no I/O. A pure <code>GenerateChunk</code> is automatically thread-safe, reproducible for saves, and trivial to unit-test: assert that two calls with the same input produce byte-identical chunks.</p></div>
+        </div>
+
+        <h2>Biomes: a second, slower noise picks the palette</h2>
+
+        <p>A world of identical grass hills is dull. Biomes add variety by layering a <em>second</em> noise field, sampled at a much lower frequency so regions are large and change gradually. Classic Minecraft uses two — <strong>temperature</strong> and <strong>humidity</strong> — and looks up a biome from the pair. The biome then changes both the terrain shape (amplitude, octaves) and the block palette.</p>
+
+        <pre><code class="language-cpp" data-file="Biomes.h">#pragma once
+#include "BlockRegistry.h"   // Blocks::Air, Stone, Dirt, Grass, Sand, Water...
+
+struct Biome {
+    int   baseHeight;        // sea-ish level the terrain centers on
+    int   amplitude;         // how tall its hills climb
+    int   octaves;
+    float frequency, lacunarity, gain;
+    BlockId surface, subsurface, filler;  // grass/dirt/stone, sand/sand/stone...
+};
+
+// A small hand-authored set. Real engines interpolate between many more.
+inline const Biome kPlains   { 64, 14, 4, 0.008f, 2.0f, 0.5f, Blocks::Grass, Blocks::Dirt, Blocks::Stone };
+inline const Biome kDesert   { 66,  8, 3, 0.006f, 2.0f, 0.5f, Blocks::Sand,  Blocks::Sand, Blocks::Stone };
+inline const Biome kMountains{ 80, 52, 5, 0.010f, 2.0f, 0.5f, Blocks::Grass, Blocks::Dirt, Blocks::Stone };</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Blend, don't switch, for smooth borders</div><p>Picking a biome with a hard <code>if</code> makes a mountain slam straight into a desert at a one-block cliff. Production worlds sample the neighbourhood and <em>interpolate</em> the numeric parameters (amplitude, base height) between biomes, so shape transitions are gradual even where the palette flips. We keep the hard switch here for clarity; treat blending as the next refinement.</p></div>
+        </div>
+
+        <h2>Caves and overhangs: 3D density noise</h2>
+
+        <p>A heightmap can only describe one surface per column — it can never carve a cave or hang an overhang, because "solid below the height, air above" has no room for a hole in the middle. For that we need genuine 3D noise. We sample <code>noise3D(x, y, z)</code> and treat it as a <strong>density field</strong>: wherever the density crosses a threshold, we scoop the voxel out to air, even deep inside the rock.</p>
+
+        <pre><code class="language-cpp" data-file="caves.cpp">// After a voxel has been classified as solid rock, maybe carve it.
+// noise3D returns ~[-1, 1]; a high threshold carves a small fraction
+// of space, giving sparse, connected pockets rather than swiss cheese.
+float d = noise3D(wx * CAVE_FREQ, wy * CAVE_FREQ, wz * CAVE_FREQ);
+if (d &gt; CAVE_THRESHOLD)          // e.g. CAVE_FREQ = 0.04, THRESHOLD = 0.6
+    block = Blocks::Air;         // hollowed out -&gt; a cave or an overhang</code></pre>
+
+        <p>Raise the threshold for rarer, smaller caves; lower it and you flood the world with holes. Because this is a 3D field, the same mechanism naturally produces overhangs and floating arches near the surface — geometry a pure heightmap simply cannot express. A popular alternative for long, winding tunnels is <strong>worm caves</strong>: trace a random walk (a "worm") through the world and carve a tube of blocks around its path. Density noise gives blobby caverns; worms give corridors; most engines use both.</p>
+
+        <h2>Putting it together: GenerateChunk</h2>
+
+        <p>Now assemble everything into the one function the rest of the engine calls. We assume the earlier lessons' cubic <code>Chunk</code> (edge <code>CHUNK</code>) with a <code>SetBlock(lx, ly, lz, id)</code>, a 3D <code>ChunkCoord</code>, and the block ids from the registry. The generator owns four independently seeded noise fields so terrain, caves, temperature, and humidity never accidentally correlate. Each is set to <code>SetFrequency(1.0f)</code> so <em>our</em> multipliers fully control scale.</p>
+
+        <pre><code class="language-cpp" data-file="TerrainGenerator.h">#pragma once
+#include "FastNoiseLite.h"
+#include "fbm.h"
+#include "Biomes.h"
+#include "Chunk.h"
+
+constexpr int   CHUNK          = 32;      // cubic chunk edge (from lesson 1)
+constexpr int   SEA_LEVEL      = 62;
+constexpr int   BEDROCK        = 0;       // lowest solid world layer
+constexpr float BIOME_FREQ     = 0.0008f; // very low -&gt; large biomes
+constexpr float CAVE_FREQ      = 0.04f;
+constexpr float CAVE_THRESHOLD = 0.6f;
+
+struct ChunkCoord { int x, y, z; };
+
+class TerrainGenerator {
+public:
+    explicit TerrainGenerator(int seed) {
+        // Four fields, four seeds. Same world seed -&gt; same world.
+        Configure(m_height, seed);
+        Configure(m_cave,   seed + 1);
+        Configure(m_temp,   seed + 2);
+        Configure(m_humid,  seed + 3);
+    }
+
+    void GenerateChunk(ChunkCoord coord, Chunk&amp; chunk) const;
+
+private:
+    static void Configure(FastNoiseLite&amp; n, int seed) {
+        n.SetSeed(seed);
+        n.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
+        n.SetFrequency(1.0f);   // we scale coordinates ourselves
+    }
+
+    // fBm surface height, delegating single-octave sampling to m_height.
+    float Height(int wx, int wz, const Biome&amp; b) const {
+        auto sample = [this](float x, float z) { return m_height.GetNoise(x, z); };
+        return fbm2D(sample, float(wx), float(wz),
+                     b.octaves, b.frequency, b.lacunarity, b.gain);
+    }
+
+    const Biome&amp; SelectBiome(int wx, int wz) const {
+        float t = m_temp .GetNoise(wx * BIOME_FREQ, wz * BIOME_FREQ); // -1..1
+        float h = m_humid.GetNoise(wx * BIOME_FREQ, wz * BIOME_FREQ);
+        if (t &gt; 0.4f &amp;&amp; h &lt; 0.0f) return kDesert;
+        if (t &lt; -0.2f)            return kMountains;
+        return kPlains;
+    }
+
+    FastNoiseLite m_height, m_cave, m_temp, m_humid;
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="TerrainGenerator.cpp">#include "TerrainGenerator.h"
+
+void TerrainGenerator::GenerateChunk(ChunkCoord coord, Chunk&amp; chunk) const {
+    const int ox = coord.x * CHUNK;   // this chunk's world origin
+    const int oy = coord.y * CHUNK;
+    const int oz = coord.z * CHUNK;
+
+    for (int lx = 0; lx &lt; CHUNK; ++lx)
+    for (int lz = 0; lz &lt; CHUNK; ++lz) {
+        const int wx = ox + lx;       // WORLD coords -- never local!
+        const int wz = oz + lz;
+
+        // One height + one biome per column (independent of y).
+        const Biome&amp; biome = SelectBiome(wx, wz);
+        const int height = biome.baseHeight
+                         + int(Height(wx, wz, biome) * biome.amplitude);
+
+        for (int ly = 0; ly &lt; CHUNK; ++ly) {
+            const int wy = oy + ly;
+            BlockId block = Blocks::Air;
+
+            if (wy &lt; height) {
+                // Layered palette from the surface down.
+                if (wy == height - 1)
+                    block = (height &lt;= SEA_LEVEL + 1) ? Blocks::Sand   // beach
+                                                      : biome.surface;  // grass
+                else if (wy &gt;= height - 4)
+                    block = biome.subsurface;                           // dirt
+                else
+                    block = biome.filler;                               // stone
+            } else if (wy &lt; SEA_LEVEL) {
+                block = Blocks::Water;    // air below the sea fills with water
+            }
+
+            // Carve caves &amp; overhangs from solid rock only.
+            if (block == biome.filler || block == biome.subsurface) {
+                float d = m_cave.GetNoise(wx * CAVE_FREQ,
+                                          wy * CAVE_FREQ,
+                                          wz * CAVE_FREQ);
+                if (d &gt; CAVE_THRESHOLD &amp;&amp; wy &gt; BEDROCK)
+                    block = Blocks::Air;
+            }
+
+            chunk.SetBlock(lx, ly, lz, block);
+        }
+    }
+}</code></pre>
+
+        <p>Read the flow once more: convert to world space first, take one height and biome per column, fill the column with the layered palette, flood the low air with water, then carve caves from the rock. Nothing here touches a clock, a global counter, or a neighbouring chunk — so the same <code>(seed, coord)</code> always yields the same blocks, and two chunks that share an edge compute identical heights along it.</p>
+
+        <p>Note that terrain generation is entirely CPU-side and <strong>renderer-agnostic</strong>: this exact code runs identically on Windows and macOS. Only afterward does the chunk go through the meshing and upload path from the earlier module lessons — Direct3D 11 buffers on Windows, Metal buffers on macOS — with no platform-specific logic in the generator itself.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Watch float precision far from the origin</div><p>Because we key everything to world coordinates, a player who walks millions of blocks out will be sampling noise at huge <code>x</code>/<code>z</code> values, where 32-bit float steps between adjacent integers grow and terrain can get subtly warped. It rarely bites within a normal play area, but if you plan for effectively infinite worlds, sample noise in <code>double</code> or periodically re-origin the world.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Per-voxel <code>rand()</code> is white noise — useless for terrain. You need <strong>coherent noise</strong>: smooth, continuous, and repeatable.</li>
+            <li>Value, Perlin (gradient), and Simplex are the three families; understand the mechanics but ship a proven single header like FastNoiseLite or <code>stb_perlin.h</code>.</li>
+            <li><strong>fBm</strong> sums octaves at rising frequency (lacunarity ≈ 2) and falling amplitude (gain ≈ 0.5), normalized by total amplitude, to get multi-scale terrain.</li>
+            <li>A heightmap fills each column — stone, then dirt, a surface cap, water below sea level — while a low-frequency biome field varies amplitude and palette, and 3D density noise carves caves and overhangs.</li>
+            <li>Always sample noise at <strong>world</strong> coordinates (<code>chunkOrigin + local</code>); local coordinates tile the world and crack every chunk border — the #1 terrain bug.</li>
+            <li>Keep <code>GenerateChunk</code> a pure function of <code>(seed, coord)</code>: it stays thread-safe for the job system, reproducible for saving, and seam-free by construction.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Model, View &amp; Projection — Learn C++ Engine Development</title>
+  <meta name="description" content="Build world, view and projection matrices with DirectXMath, combine them, transpose for HLSL, and see your geometry render in true 3D perspective.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Model, View &amp; Projection</h1>
+
+        <p class="lead">Until now our triangle has floated flat on the screen because we sent its vertices straight to the GPU with no transformation. In this lesson we build the three matrices every real engine uses — <strong>model</strong> (world), <strong>view</strong> and <strong>projection</strong> — combine them, and feed the result to the vertex shader through the constant buffer you set up last lesson. By the end, your geometry sits in a real 3D world with perspective, exactly the foundation Unity and Unreal use to place and view every object.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What the model, view and projection matrices each do, conceptually.</li>
+            <li>How to build them with DirectXMath (<code>XMMatrixLookAtLH</code>, <code>XMMatrixPerspectiveFovLH</code>).</li>
+            <li>How to combine and upload them through a constant buffer.</li>
+            <li>Why you must transpose matrices before HLSL sees them — the #1 gotcha.</li>
+            <li>How to transform a vertex with <code>mul(pos, worldViewProj)</code> in the vertex shader.</li>
+          </ul>
+        </div>
+
+        <h2>The three spaces</h2>
+        <p>Getting a vertex from where you authored it to a pixel on screen is a journey through several coordinate spaces. Each matrix is one leg of that journey:</p>
+        <ul>
+          <li><strong>Model (world) matrix</strong> — places an object into the shared world. It bundles the object's position, rotation and scale. This is precisely what a <em>Transform component</em> will produce in our engine.</li>
+          <li><strong>View matrix</strong> — moves the whole world so the camera sits at the origin looking down +Z. It is the camera's inverse transform.</li>
+          <li><strong>Projection matrix</strong> — applies perspective, so distant things shrink, and maps everything into the GPU's clip space.</li>
+        </ul>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 120" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="10" y="40" width="110" height="40" rx="6"/>
+              <text x="65" y="65" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Model space</text>
+              <rect x="170" y="40" width="110" height="40" rx="6"/>
+              <text x="225" y="65" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">World space</text>
+              <rect x="330" y="40" width="110" height="40" rx="6"/>
+              <text x="385" y="65" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">View space</text>
+              <rect x="490" y="40" width="100" height="40" rx="6"/>
+              <text x="540" y="65" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Clip space</text>
+              <path d="M120 60 H170"/><path d="M162 55 L170 60 L162 65"/>
+              <path d="M280 60 H330"/><path d="M322 55 L330 60 L322 65"/>
+              <path d="M440 60 H490"/><path d="M482 55 L490 60 L482 65"/>
+              <text x="145" y="30" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">×World</text>
+              <text x="305" y="30" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">×View</text>
+              <text x="465" y="30" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">×Proj</text>
+            </svg>
+          </div>
+          <figcaption>A vertex travels through three matrices to reach clip space, where the GPU takes over.</figcaption>
+        </figure>
+
+        <h2>Building the matrices in C++</h2>
+        <p>DirectXMath gives us clean helpers for all three. Everything lives in the <code>DirectX</code> namespace, so <code>#include &lt;DirectXMath.h&gt;</code> and add <code>using namespace DirectX;</code>. We are using left-handed (LH) variants because our swap chain and depth conventions are left-handed.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+// Called once per frame. 'angle' grows over time so the object spins.
+void Renderer::UpdateMatrices(float angle, float aspectRatio)
+{
+    // 1) MODEL / WORLD: spin around Y, then sit at the origin.
+    XMMATRIX world = XMMatrixRotationY(angle);
+
+    // 2) VIEW: camera at (0, 2, -5) looking at the origin, Y is up.
+    XMVECTOR eye    = XMVectorSet(0.0f, 2.0f, -5.0f, 0.0f);
+    XMVECTOR target = XMVectorSet(0.0f, 0.0f,  0.0f, 0.0f);
+    XMVECTOR up     = XMVectorSet(0.0f, 1.0f,  0.0f, 0.0f);
+    XMMATRIX view   = XMMatrixLookAtLH(eye, target, up);
+
+    // 3) PROJECTION: 60-degree vertical FOV, near 0.1, far 100.
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(
+        XMConvertToRadians(60.0f), // field of view (radians!)
+        aspectRatio,               // width / height of the back buffer
+        0.1f,                      // near plane
+        100.0f);                   // far plane
+
+    // Combine in row-vector order: v' = v * World * View * Proj
+    XMMATRIX worldViewProj = world * view * proj;
+
+    // Hand off to the GPU (see next section).
+    UploadMatrix(worldViewProj);
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Where does aspectRatio come from?</div><p>Pass <code>(float)backBufferWidth / backBufferHeight</code>. Get this wrong and everything looks stretched. Recompute it whenever the window resizes, since your projection depends on it.</p></div>
+        </div>
+
+        <h2>The transpose gotcha</h2>
+        <p>This is the single most common reason a first 3D scene renders as a blank screen, so read it twice. DirectXMath stores an <code>XMMATRIX</code> in <strong>row-major</strong> order in memory. HLSL, by default, interprets matrices as <strong>column-major</strong>. If you upload the raw bytes, HLSL silently reads them transposed and your math is wrong.</p>
+        <p>The fix is one call: transpose the matrix in C++ before uploading. Then the row-major bytes, read column-major by HLSL, reconstruct the matrix you intended.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">// Must be 16-byte aligned; XMMATRIX is 64 bytes, so this struct is fine.
+struct MatrixBuffer
+{
+    XMMATRIX worldViewProj;
+};
+
+void Renderer::UploadMatrix(const XMMATRIX&amp; wvp)
+{
+    // Map the DYNAMIC constant buffer we created last lesson.
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    context-&gt;Map(matrixCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &amp;mapped);
+
+    auto* data = reinterpret_cast&lt;MatrixBuffer*&gt;(mapped.pData);
+    // TRANSPOSE so HLSL's column-major default reads it correctly.
+    data-&gt;worldViewProj = XMMatrixTranspose(wvp);
+
+    context-&gt;Unmap(matrixCB.Get(), 0);
+
+    // Bind to slot b0 for the vertex shader.
+    context-&gt;VSSetConstantBuffers(0, 1, matrixCB.GetAddressOf());
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Forgetting the transpose</div><p>Skip <code>XMMatrixTranspose</code> and your object usually vanishes or collapses to a point — not an error, just nothing on screen. If your first 3D render is blank, check the transpose before anything else.</p></div>
+        </div>
+
+        <h2>Transforming the vertex in HLSL</h2>
+        <p>The vertex shader now declares a matching constant buffer at register <code>b0</code> and multiplies each incoming position by the combined matrix. Because our C++ side uses the row-vector convention, the vector is the <em>first</em> argument to <code>mul</code>.</p>
+
+        <pre><code class="language-hlsl" data-file="VertexShader.hlsl">// Matches the C++ MatrixBuffer struct, bound to slot b0.
+cbuffer MatrixBuffer : register(b0)
+{
+    matrix worldViewProj; // 'matrix' == float4x4
+};
+
+struct VS_INPUT
+{
+    float3 pos   : POSITION;
+    float4 color : COLOR;
+};
+
+struct VS_OUTPUT
+{
+    float4 pos   : SV_POSITION; // clip-space position for the rasterizer
+    float4 color : COLOR;
+};
+
+VS_OUTPUT main(VS_INPUT input)
+{
+    VS_OUTPUT output;
+
+    // Promote to a 4D point (w = 1) then transform to clip space.
+    float4 worldPos = float4(input.pos, 1.0f);
+    output.pos   = mul(worldPos, worldViewProj);
+
+    output.color = input.color; // pass color through unchanged
+    return output;
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Why w = 1?</div><p>Setting the fourth component to <code>1</code> marks this as a <strong>position</strong> (it should be translated), not a direction. The projection matrix writes a meaningful <code>w</code> into <code>SV_POSITION</code>; the GPU then divides x, y, z by w — the perspective divide that makes far objects smaller.</p></div>
+        </div>
+
+        <h2>Choosing the right matrix builders</h2>
+        <p>DirectXMath offers many builders. These are the ones you will reach for constantly:</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Function</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>XMMatrixTranslation(x,y,z)</code></td><td>Move an object in world space.</td></tr>
+            <tr><td><code>XMMatrixRotationRollPitchYaw(...)</code></td><td>Rotate around X, Y, Z (Euler angles).</td></tr>
+            <tr><td><code>XMMatrixScaling(x,y,z)</code></td><td>Resize an object.</td></tr>
+            <tr><td><code>XMMatrixLookAtLH(eye,at,up)</code></td><td>Build a view matrix from a camera pose.</td></tr>
+            <tr><td><code>XMMatrixPerspectiveFovLH(...)</code></td><td>Perspective projection with a field of view.</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>A full model matrix usually multiplies scale, then rotation, then translation: <code>world = scale * rotation * translation</code>. That is exactly the order a Transform component will compose them in later — one reason we are building this muscle memory now.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Animate it</div><p>Feed a growing <code>angle</code> from your frame timer into <code>XMMatrixRotationY</code> and rebuild the matrices each frame. Your triangle will spin — instant proof the pipeline works. A flat triangle can still look convincing, so a spinning one is the honest test.</p></div>
+        </div>
+
+        <p>Right now the triangle is still flat because it only has three coplanar vertices. In the next lesson we add an index buffer and a real cube, and this same MVP pipeline will make it turn believably in space — no new matrix code required.</p>
+
+        <h2>macOS — MVP transforms in Metal</h2>
+        <p>The transform sequence is identical, but Metal shaders normally use column-vector notation:</p>
+        <pre><code class="language-cpp" data-file="Transform.metal">struct Uniforms { float4x4 modelViewProjection; };
+
+vertex VertexOut vertexMain(VertexIn in [[stage_in]],
+                            constant Uniforms&amp; u [[buffer(1)]])
+{
+    VertexOut out;
+    out.position = u.modelViewProjection * float4(in.position, 1.0);
+    return out;
+}</code></pre>
+        <p>Keep one convention inside the engine and transpose or reorder only inside the backend upload function. That prevents Windows and macOS from producing mirrored or transposed scenes.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The <strong>model</strong>, <strong>view</strong> and <strong>projection</strong> matrices move a vertex from object space to clip space.</li>
+            <li>Build them with <code>XMMatrixRotationY</code> / translation, <code>XMMatrixLookAtLH</code>, and <code>XMMatrixPerspectiveFovLH</code>, then combine as <code>world * view * proj</code>.</li>
+            <li>Upload the result through the constant buffer at register <code>b0</code>, and always call <code>XMMatrixTranspose</code> first — DirectXMath is row-major, HLSL defaults to column-major.</li>
+            <li>The vertex shader transforms positions with <code>mul(float4(pos, 1.0f), worldViewProj)</code>.</li>
+            <li>This is the same transform pipeline our engine's camera and Transform components will drive.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

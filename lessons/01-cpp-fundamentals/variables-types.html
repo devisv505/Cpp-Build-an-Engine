@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Variables &amp; Fundamental Types — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Declare and initialize C++ variables, meet the fundamental types int, float, double, bool and char, and see why graphics code lives on float.">
+  <title>Variables &amp; Fundamental Types — Learn C++ Engine Development</title>
+  <meta name="description" content="Declare C++ variables; learn int, short, long, long long, fixed-width integers, float, double, bool and char; and understand cross-platform type sizes.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -20,6 +20,7 @@
           <ul>
             <li>How to declare and initialize a variable, and why initialization matters</li>
             <li>The fundamental types <code>int</code>, <code>float</code>, <code>double</code>, <code>bool</code>, and <code>char</code></li>
+            <li>Integer widths: <code>short</code>, <code>long</code>, <code>long long</code>, and their unsigned variants</li>
             <li>The difference between brace <code>{}</code> and copy <code>=</code> initialization</li>
             <li>How to let the compiler deduce a type with <code>auto</code></li>
             <li>Typical type sizes, <code>sizeof</code>, and why graphics code lives on <code>float</code></li>
@@ -53,7 +54,7 @@ int b{3.9};     // ERROR: brace init won't narrow a double to an int</code></pre
         <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Prefer braces</div><p>Modern C++ style leans toward <code>{}</code> initialization precisely because it catches accidental narrowing. When we build our <code>Transform</code> component later, using braces means the compiler flags a bad assignment before it ever ships.</p></div></div>
 
         <h2>The fundamental types</h2>
-        <p>C++ has a small set of built-in ("fundamental") types. These five cover almost everything you'll do early on:</p>
+        <p>C++ has a small set of built-in ("fundamental") type families. These five are the ones you will use first; shortly we will expand the integer family with <code>short</code>, <code>long</code>, and <code>long long</code>:</p>
 
         <div class="table-wrap"><table>
           <thead><tr><th>Type</th><th>Holds</th><th>Example literal</th><th>Typical size</th></tr></thead>
@@ -74,7 +75,7 @@ int b{3.9};     // ERROR: brace init won't narrow a double to an int</code></pre
         </ul>
 
         <h2>Why graphics code lives on <code>float</code></h2>
-        <p>Here's a habit to lock in early: <strong>almost all graphics math uses <code>float</code>, not <code>double</code></strong>. A GPU is built to chew through millions of 32-bit floats per frame. Vertex positions, colors, matrices, and shader variables are overwhelmingly <code>float</code>. Direct3D's own math library, DirectXMath, is entirely <code>float</code>-based.</p>
+        <p>Here's a habit to lock in early: <strong>almost all graphics math uses <code>float</code>, not <code>double</code></strong>. GPUs process millions of 32-bit values per frame. DirectXMath on Windows and Apple <code>simd</code> on macOS both provide float-based graphics types.</p>
 
         <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Get comfortable with the <code>f</code></div><p>When you write a graphics constant, add the <code>f</code>: <code>0.0f</code>, <code>1.0f</code>, <code>0.5f</code>. It keeps the value a <code>float</code> and avoids needless <code>double</code>-to-<code>float</code> conversions. You'll type it thousands of times building the engine, so it becomes muscle memory fast.</p></div></div>
 
@@ -85,6 +86,44 @@ int b{3.9};     // ERROR: brace init won't narrow a double to an int</code></pre
 unsigned int vertexCount = 3000;  // never negative, so unsigned fits</code></pre>
 
         <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Unsigned wraps around</div><p>Subtracting past zero in an <code>unsigned</code> type doesn't give a negative — it <em>wraps</em> to a huge number. If <code>vertexCount</code> is 0 and you compute <code>vertexCount - 1</code>, you get roughly four billion, not -1. Keep that in mind when looping backward over counts.</p></div></div>
+
+        <h2><code>short</code>, <code>long</code>, and <code>long long</code></h2>
+
+        <p>The integer family has size modifiers. <code>short</code> asks for a smaller integer, while <code>long</code> and <code>long long</code> ask for wider ranges. The word <code>int</code> is optional in these spellings: <code>long</code> and <code>long int</code> are the same type.</p>
+
+        <pre><code class="language-cpp">short smallValue = 32000;
+long worldCounter = 1'000'000L;          // L suffix: long literal
+long long fileSize = 9'000'000'000LL;    // LL suffix: long long literal
+
+unsigned short port = 7777;
+unsigned long flags = 42UL;
+unsigned long long hugeCount = 100ULL;</code></pre>
+
+        <p>Every signed integer type has an unsigned partner. The unsigned version uses the same number of bytes but has no negative values, so its positive range is larger.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Type</th><th>Minimum guaranteed width</th><th>Typical 64-bit Windows</th><th>Typical 64-bit macOS</th></tr></thead>
+          <tbody>
+            <tr><td><code>short</code></td><td>at least 16 bits</td><td>2 bytes</td><td>2 bytes</td></tr>
+            <tr><td><code>int</code></td><td>at least 16 bits</td><td>4 bytes</td><td>4 bytes</td></tr>
+            <tr><td><code>long</code></td><td>at least 32 bits</td><td><strong>4 bytes</strong></td><td><strong>8 bytes</strong></td></tr>
+            <tr><td><code>long long</code></td><td>at least 64 bits</td><td>8 bytes</td><td>8 bytes</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title"><code>long</code> changes size across our platforms</div><p>On the toolchains used in this course, <code>long</code> is normally 4 bytes on 64-bit Windows but 8 bytes on 64-bit macOS. Never use <code>long</code> when a file format, network packet, or GPU structure requires an exact width.</p></div></div>
+
+        <h2>Fixed-width integers for engine code</h2>
+
+        <p>Include <code>&lt;cstdint&gt;</code> when the number of bits is part of the data's contract. The name states the width explicitly, so the layout remains predictable across Windows and macOS:</p>
+
+        <pre><code class="language-cpp">#include &lt;cstdint&gt;
+
+std::int32_t  health = 100;        // exactly 32-bit signed, when provided
+std::uint32_t vertexIndex = 0;     // exactly 32-bit unsigned
+std::int64_t  timestamp = 0;       // exactly 64-bit signed</code></pre>
+
+        <p>Use fixed-width types for serialized data, network messages, binary file formats, and CPU structures shared with shaders. For normal local arithmetic, <code>int</code> is usually the clearest choice. For container sizes and indices, use the container's own <code>size_type</code> or <code>std::size_t</code> instead of forcing the value into a smaller integer.</p>
 
         <h2>Letting the compiler decide with <code>auto</code></h2>
         <p>Sometimes the type is obvious from the value on the right-hand side, and spelling it out is just noise. The <code>auto</code> keyword tells the compiler to <strong>deduce</strong> the type for you:</p>
@@ -97,7 +136,7 @@ auto ready = true;     // deduced as bool</code></pre>
         <p><code>auto</code> shines later when types get long — think iterators or template types — where writing the full name is tedious and error-prone. For simple literals it's a matter of taste, but it's worth recognizing now because you'll see it everywhere in real engine code.</p>
 
         <h2>Measuring types with <code>sizeof</code></h2>
-        <p>The <code>sizeof</code> operator reports how many bytes a type occupies. Knowing this matters in graphics: when we later hand a buffer of vertices to the GPU, we tell Direct3D the exact byte size, and getting it wrong corrupts the whole mesh.</p>
+        <p>The <code>sizeof</code> operator reports how many bytes a type occupies. When we hand vertex buffers to Direct3D or Metal, the backend needs the exact byte count; getting it wrong corrupts the mesh.</p>
 
         <p>Let's put everything together in a small, complete program you can compile and run:</p>
 
@@ -130,7 +169,7 @@ int main()
     return 0;
 }</code></pre>
 
-        <p>On a typical 64-bit Windows setup, this prints something like:</p>
+        <p>On a typical 64-bit Windows or macOS setup, this prints something like:</p>
 
         <pre><code class="language-console">health : 100
 speed  : 5.5
@@ -147,7 +186,7 @@ char   = 1</code></pre>
 
         <p>Notice <code>float</code> and <code>int</code> are both 4 bytes, while <code>double</code> is 8. That size difference is exactly why the GPU prefers <code>float</code>: half the memory and half the bandwidth per number, and for on-screen visuals the extra precision of <code>double</code> is rarely worth the cost.</p>
 
-        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Try it yourself</div><p>Change a value, swap a <code>=</code> for <code>{}</code>, or add <code>unsigned int</code> to the size list and rerun. Poking at working code and watching what changes is the fastest way to make these types feel natural.</p></div></div>
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Try it yourself</div><p>Add <code>short</code>, <code>long</code>, <code>long long</code>, and their unsigned variants to the <code>sizeof</code> list. Compare the output with the platform table above.</p></div></div>
 
         <p>These humble variables are the atoms of everything ahead. A position is three <code>float</code>s, a color is four, a rotation is a handful more — and a component like <code>Transform</code> is really just a tidy bundle of the types you met today. Master how they're declared and sized now, and the engine work later becomes a matter of arranging familiar pieces.</p>
 
@@ -155,7 +194,10 @@ char   = 1</code></pre>
           <div class="r-title">Recap</div>
           <ul>
             <li>A variable declaration is <em>type</em> then <em>name</em>; always initialize it to avoid indeterminate "garbage" values.</li>
-            <li>The core fundamental types are <code>int</code>, <code>float</code>, <code>double</code>, <code>bool</code>, and <code>char</code>.</li>
+            <li>The core fundamental families include integers, floating-point numbers, booleans, and characters.</li>
+            <li><code>short</code>, <code>long</code>, and <code>long long</code> modify the integer range; each also has an unsigned form.</li>
+            <li><code>long</code> is typically 4 bytes on 64-bit Windows and 8 bytes on 64-bit macOS, so its width is not portable.</li>
+            <li>Use <code>&lt;cstdint&gt;</code> types such as <code>std::int32_t</code> and <code>std::uint64_t</code> when an exact data width matters.</li>
             <li>Brace <code>{}</code> initialization is safer than copy <code>=</code> because it rejects narrowing conversions like <code>3.9</code> into an <code>int</code>.</li>
             <li><code>auto</code> lets the compiler deduce a type from the initializer — handy for long or obvious types.</li>
             <li><code>sizeof</code> reports bytes; <code>float</code> is 4 bytes and dominates graphics code, so write literals like <code>1.0f</code>.</li>

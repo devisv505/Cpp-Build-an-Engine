@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Input &amp; Time as Engine Services — Learn C++ &amp; DirectX</title>
-  <meta name="description" content="Wrap Win32 keyboard, mouse and the clock behind clean Input and Time services your game code can query every frame.">
+  <title>Input &amp; Time as Engine Services — Learn C++ Engine Development</title>
+  <meta name="description" content="Build portable SDL3-backed Input and standard C++ Time services so gameplay code behaves the same on Windows and macOS.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
 <body class="lesson-page">
@@ -13,226 +13,366 @@
       <article class="lesson">
         <h1>Input &amp; Time as Engine Services</h1>
 
-        <p class="lead">Your game loop is running and drawing to the screen, but right now nothing responds to the player. In this lesson we build two small but essential engine services: an <strong>Input</strong> class that turns raw Win32 messages into simple questions like &ldquo;is W held down?&rdquo;, and a <strong>Time</strong> class that tells every system how much time passed since the last frame. Getting these abstractions right early is what lets the rest of the engine stay clean and platform-independent.</p>
+        <p class="lead">Our SDL3 window already behaves the same on Windows and macOS. Now we will give gameplay the same portability: an <strong>Input</strong> service receives SDL events and translates them into engine-owned keys such as <code>Key::W</code> and <code>Key::Space</code>, while a <strong>Time</strong> service reports how much time passed between frames. Gameplay will use neither Win32, Cocoa nor SDL names.</p>
 
         <div class="objectives">
           <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
           <ul>
-            <li>Why gameplay code should talk to <em>services</em>, not raw Win32 messages</li>
-            <li>How to record key and mouse state and expose <code>IsKeyDown</code>, <code>IsKeyPressed</code> and mouse delta</li>
-            <li>The &ldquo;current vs. previous frame&rdquo; trick that powers edge-detection</li>
-            <li>How a <code>Time</code> service computes <code>DeltaTime</code>, <code>TotalTime</code> and a frame count</li>
-            <li>Where these services plug into the game loop you built earlier</li>
+            <li>Why gameplay should use an engine <code>Key</code> enum instead of SDL scancodes</li>
+            <li>How one <code>Input</code> service consumes <code>SDL_Event</code> on every desktop platform</li>
+            <li>How pressed, held and released states live for exactly the intended number of frames</li>
+            <li>Why <code>BeginFrame()</code>, event polling and gameplay queries must happen in that order</li>
+            <li>How <code>std::chrono::steady_clock</code> provides portable delta and total time</li>
           </ul>
         </div>
 
-        <h2>Why wrap the platform at all?</h2>
-        <p>Windows delivers input through the message queue. Every key press arrives as a <code>WM_KEYDOWN</code>, every release as <code>WM_KEYUP</code>, and the mouse fires <code>WM_MOUSEMOVE</code> and friends. That is fine for <em>collecting</em> input, but it is a terrible thing to sprinkle throughout gameplay code. If a <code>PlayerController</code> reaches directly into Win32, it becomes impossible to test, impossible to port to another platform, and it can only ask questions at the exact moment a message arrives — not &ldquo;is the key down right now, this frame?&rdquo;</p>
+        <h2>SDL owns the platform translation</h2>
+        <p>Windows delivers keyboard and mouse activity through Win32. macOS delivers it through Cocoa. SDL already translates both systems into the same <code>SDL_Event</code> structures, so our engine does not need a Windows input implementation and a separate macOS input implementation.</p>
 
-        <p>The fix is a classic engine pattern: hide the platform behind a <strong>service</strong>. Gameplay code asks the service simple, frame-oriented questions. The service is the only thing that knows Win32 exists. Unity does this with its <code>Input</code> class; Unreal does it with its input subsystem. We will do the same, just smaller.</p>
+        <p>SDL is still a platform detail, however. If a player controller checks <code>SDL_SCANCODE_W</code>, that controller now depends on SDL. Instead, only <code>Input.cpp</code> knows how SDL scancodes map to the engine's small vocabulary. Gameplay asks about <code>Key::W</code>; a future platform layer or test double can provide that key without changing gameplay.</p>
 
-        <div class="callout tip">
-          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
-          <div class="c-body"><div class="c-title">Think in frames, not events</div><p>Gameplay usually wants &ldquo;is jump held?&rdquo; or &ldquo;was jump pressed this frame?&rdquo;. A service that snapshots state per frame answers both cleanly, without every system subscribing to raw messages.</p></div>
-        </div>
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 720 190" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="18" y="38" width="135" height="44" rx="8"/>
+              <text x="85" y="65" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Win32 events</text>
+              <rect x="18" y="108" width="135" height="44" rx="8"/>
+              <text x="85" y="135" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Cocoa events</text>
+              <rect x="208" y="73" width="125" height="44" rx="8"/>
+              <text x="270" y="100" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">SDL3 events</text>
+              <rect x="388" y="73" width="125" height="44" rx="8"/>
+              <text x="450" y="92" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Input service</text>
+              <text x="450" y="108" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">SDL → Key</text>
+              <rect x="568" y="73" width="135" height="44" rx="8"/>
+              <text x="635" y="100" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Gameplay</text>
+              <path d="M153 60 L204 88"/><path d="M153 130 L204 102"/>
+              <path d="M333 95 L384 95"/><path d="M376 89 L384 95 L376 101"/>
+              <path d="M513 95 L564 95"/><path d="M556 89 L564 95 L556 101"/>
+            </svg>
+          </div>
+          <figcaption>SDL normalizes the operating systems; Input translates SDL into engine concepts.</figcaption>
+        </figure>
 
-        <h2>Current vs. previous state</h2>
-        <p>The single most useful idea here is keeping <strong>two</strong> snapshots of the keyboard: the state <em>this</em> frame and the state <em>last</em> frame. Comparing them lets us answer three different questions from the same data:</p>
+        <h2>Give the engine its own key vocabulary</h2>
+        <p>Start with only the keys the engine currently needs. <code>enum class</code> prevents accidental conversion to an integer, and <code>Count</code> gives our fixed arrays their size. We also define engine mouse buttons for the same reason.</p>
+
+        <pre><code class="language-cpp" data-file="Input.h">#pragma once
+#include &lt;array&gt;
+#include &lt;cstddef&gt;
+#include &lt;cstdint&gt;
+
+// SDL_Event is a union. Forward declaration keeps SDL headers out of
+// every gameplay file that includes Input.h.
+union SDL_Event;
+
+enum class Key : std::uint8_t {
+    W, A, S, D,
+    Up, Down, Left, Right,
+    Space,
+    Escape,
+    Count
+};
+
+enum class MouseButton : std::uint8_t {
+    Left,
+    Middle,
+    Right,
+    Count
+};
+
+class Input {
+public:
+    // Call once at the start of every frame, before SDL_PollEvent().
+    void BeginFrame();
+
+    // The engine/platform loop passes every SDL event here.
+    // Gameplay never calls this and never receives SDL_Event.
+    void ProcessEvent(const SDL_Event&amp; event);
+
+    bool IsKeyDown(Key key) const {
+        return m_keysDown[Index(key)];
+    }
+
+    bool IsKeyPressed(Key key) const {
+        return m_keysPressed[Index(key)];
+    }
+
+    bool IsKeyReleased(Key key) const {
+        return m_keysReleased[Index(key)];
+    }
+
+    bool IsMouseButtonDown(MouseButton button) const {
+        return m_mouseButtonsDown[Index(button)];
+    }
+
+    float MouseDeltaX() const { return m_mouseDeltaX; }
+    float MouseDeltaY() const { return m_mouseDeltaY; }
+
+private:
+    static constexpr std::size_t KeyCount =
+        static_cast&lt;std::size_t&gt;(Key::Count);
+    static constexpr std::size_t MouseButtonCount =
+        static_cast&lt;std::size_t&gt;(MouseButton::Count);
+
+    static constexpr std::size_t Index(Key key) {
+        return static_cast&lt;std::size_t&gt;(key);
+    }
+
+    static constexpr std::size_t Index(MouseButton button) {
+        return static_cast&lt;std::size_t&gt;(button);
+    }
+
+    std::array&lt;bool, KeyCount&gt; m_keysDown{};
+    std::array&lt;bool, KeyCount&gt; m_keysPressed{};
+    std::array&lt;bool, KeyCount&gt; m_keysReleased{};
+    std::array&lt;bool, MouseButtonCount&gt; m_mouseButtonsDown{};
+
+    float m_mouseDeltaX = 0.0f;
+    float m_mouseDeltaY = 0.0f;
+};</code></pre>
+
+        <h2>Pressed, held and released have different lifetimes</h2>
+        <p>A held state survives across frames until a key-up event arrives. Pressed and released are <strong>edges</strong>: they are cleared at the beginning of the next frame. That gives each query a precise meaning:</p>
 
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Question</th><th>Logic</th><th>Use case</th></tr></thead>
+            <thead><tr><th>Query</th><th>When it is true</th><th>Typical use</th></tr></thead>
             <tbody>
-              <tr><td><code>IsKeyDown</code></td><td>down this frame</td><td>continuous movement (hold W to walk)</td></tr>
-              <tr><td><code>IsKeyPressed</code></td><td>down now, up last frame</td><td>one-shot actions (jump, fire, toggle menu)</td></tr>
-              <tr><td><code>IsKeyReleased</code></td><td>up now, down last frame</td><td>charge-and-release, letting go of a button</td></tr>
+              <tr><td><code>IsKeyDown</code></td><td>Every frame from key down until key up</td><td>Walk while W is held</td></tr>
+              <tr><td><code>IsKeyPressed</code></td><td>Only the frame that receives the first key-down transition</td><td>Jump or open a menu once</td></tr>
+              <tr><td><code>IsKeyReleased</code></td><td>Only the frame that receives the key-up transition</td><td>Release a charged action</td></tr>
             </tbody>
           </table>
         </div>
 
-        <p>A Windows virtual-key code (like <code>'W'</code> or <code>VK_SPACE</code>) is just a number from 0 to 255, so a fixed array of booleans is all the storage we need. Each frame we copy &ldquo;current&rdquo; into &ldquo;previous&rdquo;, then keep updating &ldquo;current&rdquo; from incoming messages.</p>
+        <p>Separate edge arrays are slightly more robust than comparing only current and previous snapshots. If a very quick tap produces both key-down and key-up while we drain one frame's event queue, <code>Pressed</code> and <code>Released</code> can both be true for that frame while <code>Down</code> ends false. The tap is not lost.</p>
 
-        <h2>The Input service</h2>
-        <p>Here is a compact but complete sketch. The window procedure calls <code>OnKeyDown</code>/<code>OnKeyUp</code> as messages arrive; the game loop calls <code>NewFrame()</code> exactly once per frame, <em>before</em> pumping messages.</p>
+        <h2>Translate SDL inside Input.cpp</h2>
+        <p>The mapping helpers live in the implementation file, so no SDL key name escapes into gameplay. SDL scancodes describe a key's physical position, which is what movement controls usually want. Text entry is different: names, chat and console commands should later use <code>SDL_EVENT_TEXT_INPUT</code>, not turn scancodes into characters.</p>
 
-        <pre><code class="language-cpp" data-file="Input.h">#pragma once
-#include &lt;array&gt;
-#include &lt;cstdint&gt;
+        <pre><code class="language-cpp" data-file="Input.cpp">#include "Input.h"
 
-// A tiny input service. Gameplay code queries it; only the window
-// layer feeds it raw Win32 events. Nothing else touches the OS.
-class Input {
-public:
-    // Called once per frame, before we process the message queue.
-    // Snapshots "current" into "previous" so edge detection works.
-    void NewFrame() {
-        m_prevKeys = m_keys;          // copy the whole array
-        m_mouseDeltaX = 0;            // deltas are per-frame
-        m_mouseDeltaY = 0;
+#include &lt;SDL3/SDL.h&gt;
+#include &lt;optional&gt;
+
+namespace {
+
+std::optional&lt;Key&gt; ToEngineKey(SDL_Scancode scancode) {
+    switch (scancode) {
+    case SDL_SCANCODE_W:      return Key::W;
+    case SDL_SCANCODE_A:      return Key::A;
+    case SDL_SCANCODE_S:      return Key::S;
+    case SDL_SCANCODE_D:      return Key::D;
+    case SDL_SCANCODE_UP:     return Key::Up;
+    case SDL_SCANCODE_DOWN:   return Key::Down;
+    case SDL_SCANCODE_LEFT:   return Key::Left;
+    case SDL_SCANCODE_RIGHT:  return Key::Right;
+    case SDL_SCANCODE_SPACE:  return Key::Space;
+    case SDL_SCANCODE_ESCAPE: return Key::Escape;
+    default:                   return std::nullopt;
+    }
+}
+
+std::optional&lt;MouseButton&gt; ToEngineMouseButton(Uint8 button) {
+    switch (button) {
+    case SDL_BUTTON_LEFT:   return MouseButton::Left;
+    case SDL_BUTTON_MIDDLE: return MouseButton::Middle;
+    case SDL_BUTTON_RIGHT:  return MouseButton::Right;
+    default:                return std::nullopt;
+    }
+}
+
+} // namespace
+
+void Input::BeginFrame() {
+    // Edges and relative motion last for one frame only.
+    m_keysPressed.fill(false);
+    m_keysReleased.fill(false);
+    m_mouseDeltaX = 0.0f;
+    m_mouseDeltaY = 0.0f;
+}
+
+void Input::ProcessEvent(const SDL_Event&amp; event) {
+    switch (event.type) {
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP: {
+        const auto key = ToEngineKey(event.key.scancode);
+        if (!key) {
+            break; // This engine key is not mapped yet.
+        }
+
+        const std::size_t index = Index(*key);
+        const bool isDown = event.type == SDL_EVENT_KEY_DOWN;
+
+        if (isDown &amp;&amp; !m_keysDown[index]) {
+            m_keysPressed[index] = true;
+        } else if (!isDown &amp;&amp; m_keysDown[index]) {
+            m_keysReleased[index] = true;
+        }
+
+        // Repeated key-down events keep Down true but do not create
+        // another Pressed edge because m_keysDown is already true.
+        m_keysDown[index] = isDown;
+        break;
     }
 
-    // --- Fed by the window procedure (WM_KEYDOWN / WM_KEYUP) ---
-    void OnKeyDown(uint8_t vk) { m_keys[vk] = true;  }
-    void OnKeyUp(uint8_t vk)   { m_keys[vk] = false; }
+    case SDL_EVENT_MOUSE_MOTION:
+        m_mouseDeltaX += event.motion.xrel;
+        m_mouseDeltaY += event.motion.yrel;
+        break;
 
-    // WM_MOUSEMOVE gives absolute client coords; we accumulate a delta.
-    void OnMouseMove(int x, int y) {
-        m_mouseDeltaX += x - m_mouseX;
-        m_mouseDeltaY += y - m_mouseY;
-        m_mouseX = x;
-        m_mouseY = y;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        const auto button = ToEngineMouseButton(event.button.button);
+        if (button) {
+            m_mouseButtonsDown[Index(*button)] =
+                event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        }
+        break;
     }
-    void OnMouseButton(int button, bool down) {
-        if (button &gt;= 0 &amp;&amp; button &lt; 3) m_mouseButtons[button] = down;
+
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        // Do not leave movement stuck if the player Alt-Tabs on Windows
+        // or switches applications with Command-Tab on macOS.
+        for (std::size_t i = 0; i &lt; KeyCount; ++i) {
+            if (m_keysDown[i]) {
+                m_keysReleased[i] = true;
+            }
+            m_keysDown[i] = false;
+        }
+        m_mouseButtonsDown.fill(false);
+        break;
+
+    default:
+        break; // Quit, resize and other events belong to other systems.
+    }
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Key repeat is not another press</div><p>Holding a key can produce repeated SDL key-down events for text editing. The transition check <code>!m_keysDown[index]</code> makes <code>IsKeyPressed</code> true only for the first down event. Held movement still works because <code>IsKeyDown</code> remains true.</p></div>
+        </div>
+
+        <h2>One loop on Windows and macOS</h2>
+        <p>The engine loop owns SDL event polling. It gives every event to <code>Input</code>, then routes non-input events to the systems that own them. Gameplay runs only after the queue is drained, so it observes the complete input state for this frame.</p>
+
+        <pre><code class="language-cpp" data-file="EngineLoop.cpp">Input input;
+Time time;
+bool running = true;
+
+while (running) {
+    input.BeginFrame();                    // 1. clear last frame's edges
+
+    SDL_Event event;
+    while (SDL_PollEvent(&amp;event)) {        // 2. drain the whole event queue
+        input.ProcessEvent(event);         // 3. update this frame's input
+
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+            running = false;
+        }
+
+        if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+            renderer.Resize(event.window.data1, event.window.data2);
+        }
     }
 
-    // --- Queried by gameplay ---
-    bool IsKeyDown(uint8_t vk)     const { return m_keys[vk]; }
-    // Down now, but was up last frame = a fresh press this frame.
-    bool IsKeyPressed(uint8_t vk)  const { return m_keys[vk] &amp;&amp; !m_prevKeys[vk]; }
-    bool IsKeyReleased(uint8_t vk) const { return !m_keys[vk] &amp;&amp; m_prevKeys[vk]; }
+    time.Tick();                           // 4. update the engine clock
+    const float dt = time.DeltaTime();
 
-    bool IsMouseButtonDown(int button) const {
-        return (button &gt;= 0 &amp;&amp; button &lt; 3) &amp;&amp; m_mouseButtons[button];
+    // 5. Gameplay uses only engine concepts.
+    if (input.IsKeyPressed(Key::Space)) {
+        Jump();
     }
-    int MouseDeltaX() const { return m_mouseDeltaX; }
-    int MouseDeltaY() const { return m_mouseDeltaY; }
 
-private:
-    std::array&lt;bool, 256&gt; m_keys{};      // current frame
-    std::array&lt;bool, 256&gt; m_prevKeys{};  // previous frame
-    std::array&lt;bool, 3&gt;   m_mouseButtons{};
-    int m_mouseX = 0, m_mouseY = 0;      // last known position
-    int m_mouseDeltaX = 0, m_mouseDeltaY = 0;
-};</code></pre>
-
-        <p>Wiring it into the window procedure is a handful of cases. The <code>WPARAM</code> already carries the virtual-key code, and <code>lParam</code> packs the mouse position:</p>
-
-        <pre><code class="language-cpp" data-file="WndProc.cpp">// g_input is our single Input instance owned by the engine.
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-    case WM_KEYDOWN:   g_input.OnKeyDown(static_cast&lt;uint8_t&gt;(wParam)); return 0;
-    case WM_KEYUP:     g_input.OnKeyUp(static_cast&lt;uint8_t&gt;(wParam));   return 0;
-    case WM_MOUSEMOVE:
-        g_input.OnMouseMove(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-        return 0;
-    case WM_LBUTTONDOWN: g_input.OnMouseButton(0, true);  return 0;
-    case WM_LBUTTONUP:   g_input.OnMouseButton(0, false); return 0;
-    case WM_DESTROY:     PostQuitMessage(0);              return 0;
+    if (input.IsKeyDown(Key::W)) {
+        MoveForward(5.0f * dt);
     }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+
+    renderer.RenderFrame();                // 6. draw the updated world
 }</code></pre>
 
         <div class="callout warn">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
-          <div class="c-body"><div class="c-title">Call NewFrame at the right moment</div><p>Call <code>NewFrame()</code> <strong>before</strong> you pump messages each frame. If you call it after, you wipe out the &ldquo;previous&rdquo; snapshot that <code>IsKeyPressed</code> depends on, and one-shot actions will fire every frame the key is held. <code>GET_X_LPARAM</code> lives in <code>&lt;windowsx.h&gt;</code>.</p></div>
+          <div class="c-body"><div class="c-title">The order is part of the contract</div><p>Call <code>BeginFrame()</code> <strong>before</strong> <code>SDL_PollEvent()</code>, and query input only <strong>after</strong> polling. Calling it after polling erases the new pressed and released edges. Querying during polling gives systems a partial frame whose result depends on event order.</p></div>
         </div>
 
-        <h2>The Time service</h2>
-        <p>Almost every system needs to know how much real time elapsed since the last frame — that is <strong>delta time</strong>. Multiply movement by delta time and your game runs at the same speed whether the machine renders 60 or 240 frames per second. We measure it with <code>&lt;chrono&gt;</code>, the standard C++ high-resolution clock, so there is no Win32 in this file at all.</p>
+        <h3>What changes between platforms?</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Layer</th><th>Windows</th><th>macOS</th></tr></thead>
+            <tbody>
+              <tr><td>Native event source</td><td>Win32 messages, handled internally by SDL</td><td>Cocoa events, handled internally by SDL</td></tr>
+              <tr><td>Engine receives</td><td><code>SDL_Event</code></td><td><code>SDL_Event</code></td></tr>
+              <tr><td>Movement query</td><td><code>Key::W</code></td><td><code>Key::W</code></td></tr>
+              <tr><td>Focus switch</td><td>Alt-Tab leads to focus-lost cleanup</td><td>Command-Tab leads to focus-lost cleanup</td></tr>
+              <tr><td>Gameplay code</td><td>Identical</td><td>Identical</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>The native source differs, but the engine's frame lifecycle does not. This is the useful boundary: SDL handles platform event delivery, <code>Input</code> owns translation and state, and gameplay owns behavior.</p>
+
+        <h2>The portable Time service</h2>
+        <p>Almost every system needs to know how much real time elapsed since the last frame — that is <strong>delta time</strong>. Multiply movement by delta time and your game runs at the same speed whether the machine renders 60 or 240 frames per second. Standard C++ already provides the right portable clock, so this service needs neither SDL nor operating-system code.</p>
 
         <pre><code class="language-cpp" data-file="Time.h">#pragma once
 #include &lt;chrono&gt;
 #include &lt;cstdint&gt;
 
 // Owns the engine clock. Call Tick() once per frame; everyone else
-// just reads DeltaTime()/TotalTime().
+// reads DeltaTime(), TotalTime() or FrameCount().
 class Time {
 public:
     Time() {
-        auto now = Clock::now();
+        const auto now = Clock::now();
         m_start = now;
         m_lastFrame = now;
     }
 
-    // Advance the clock by one frame.
     void Tick() {
-        auto now = Clock::now();
-        // Duration in seconds as a float — perfect for gameplay math.
-        m_deltaTime = std::chrono::duration&lt;float&gt;(now - m_lastFrame).count();
-        m_totalTime = std::chrono::duration&lt;float&gt;(now - m_start).count();
+        const auto now = Clock::now();
+        m_deltaTime =
+            std::chrono::duration&lt;float&gt;(now - m_lastFrame).count();
+        m_totalTime =
+            std::chrono::duration&lt;float&gt;(now - m_start).count();
         m_lastFrame = now;
         ++m_frameCount;
     }
 
-    float    DeltaTime()  const { return m_deltaTime; }  // seconds since last frame
-    float    TotalTime()  const { return m_totalTime; }  // seconds since startup
-    uint64_t FrameCount() const { return m_frameCount; }
+    float DeltaTime() const { return m_deltaTime; }
+    float TotalTime() const { return m_totalTime; }
+    std::uint64_t FrameCount() const { return m_frameCount; }
 
 private:
-    using Clock = std::chrono::steady_clock; // monotonic: never jumps backwards
+    using Clock = std::chrono::steady_clock;
+
     Clock::time_point m_start;
     Clock::time_point m_lastFrame;
-    float    m_deltaTime = 0.0f;
-    float    m_totalTime = 0.0f;
-    uint64_t m_frameCount = 0;
+    float m_deltaTime = 0.0f;
+    float m_totalTime = 0.0f;
+    std::uint64_t m_frameCount = 0;
 };</code></pre>
 
         <div class="callout">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
-          <div class="c-body"><div class="c-title">Why steady_clock?</div><p>We use <code>steady_clock</code> instead of <code>system_clock</code> because it is monotonic — it cannot be dragged backwards by the user changing the system time or by an NTP sync. Time going negative for a frame would send everything in your engine flying.</p></div>
+          <div class="c-body"><div class="c-title">Why steady_clock?</div><p><code>steady_clock</code> is monotonic: it cannot jump backwards when the user changes the system clock or a network time synchronization occurs. Negative frame time would break movement, animation and simulation.</p></div>
         </div>
-
-        <h2>Plugging into the game loop</h2>
-        <p>Remember the loop skeleton from the game-loop lesson? The two services slot straight in. Notice the order: reset input, drain messages (which feed input), advance time, then update and render using the fresh data.</p>
-
-        <pre><code class="language-cpp" data-file="EngineLoop.cpp">Input g_input;
-Time  g_time;
-
-void RunFrame() {
-    g_input.NewFrame();            // 1. snapshot previous, clear deltas
-
-    MSG msg;
-    while (PeekMessage(&amp;msg, nullptr, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&amp;msg);    // 2. WndProc feeds g_input here
-        DispatchMessage(&amp;msg);
-    }
-
-    g_time.Tick();                 // 3. compute delta time for this frame
-    float dt = g_time.DeltaTime();
-
-    // 4. Gameplay: clean, platform-free, testable.
-    if (g_input.IsKeyPressed(VK_SPACE))
-        Jump();                    // fires exactly once per press
-
-    if (g_input.IsKeyDown('W'))
-        MoveForward(5.0f * dt);    // frame-rate independent movement
-
-    Render();
-}</code></pre>
-
-        <p>Look at how little the gameplay code knows. It never mentions <code>WM_KEYDOWN</code>, never touches <code>chrono</code>, never sees a Windows handle. When we build the component system in the next module, a <code>Transform</code> component can advance its position by <code>velocity * Time::DeltaTime()</code> and read <code>Input</code> without any idea that Windows is underneath. That is exactly the seam that would let us swap in a different platform layer later without rewriting a single line of game logic.</p>
-
-        <figure>
-          <div class="figure-box">
-            <svg viewBox="0 0 600 170" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#4aa8ff" stroke-width="2">
-              <rect x="20" y="60" width="120" height="48" rx="8"/>
-              <text x="80" y="89" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Win32 messages</text>
-              <rect x="240" y="60" width="120" height="48" rx="8"/>
-              <text x="300" y="82" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Input / Time</text>
-              <text x="300" y="99" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">(services)</text>
-              <rect x="460" y="60" width="120" height="48" rx="8"/>
-              <text x="520" y="89" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Gameplay</text>
-              <path d="M140 84 L236 84"/><path d="M228 78 L236 84 L228 90"/>
-              <path d="M360 84 L456 84"/><path d="M448 78 L456 84 L448 90"/>
-            </svg>
-          </div>
-          <figcaption>The services are the only bridge between the platform and your game code.</figcaption>
-        </figure>
 
         <div class="callout danger">
           <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
-          <div class="c-body"><div class="c-title">Don't scatter Win32 into gameplay</div><p>The moment a component calls <code>GetAsyncKeyState</code> or reads the message queue directly, you have punched a hole through the abstraction. Keep every OS call on the platform side of the services, or the whole benefit collapses.</p></div>
+          <div class="c-body"><div class="c-title">Keep platform names behind the boundary</div><p>Gameplay must not use <code>SDL_SCANCODE_W</code>, <code>SDL_GetKeyboardState</code>, <code>GetAsyncKeyState</code> or Cocoa event objects. Add a value to <code>Key</code> and map it once in <code>Input.cpp</code>. That rule keeps the rest of the engine portable and makes input easy to fake in tests.</p></div>
         </div>
 
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
-            <li>Services hide platform details so gameplay code stays clean, testable and portable.</li>
-            <li><code>Input</code> keeps a current and previous key snapshot; <code>NewFrame()</code> copies current into previous each frame before messages are pumped.</li>
-            <li><code>IsKeyDown</code> is for held keys; <code>IsKeyPressed</code>/<code>IsKeyReleased</code> detect the edge using the previous snapshot. Mouse delta is accumulated per frame and reset in <code>NewFrame()</code>.</li>
-            <li><code>Time</code> uses <code>std::chrono::steady_clock</code> to expose <code>DeltaTime</code>, <code>TotalTime</code> and <code>FrameCount</code>; multiply motion by delta time for frame-rate independence.</li>
-            <li>In the loop: <code>NewFrame()</code> &rarr; pump messages &rarr; <code>Tick()</code> &rarr; update &amp; render — gameplay only ever talks to the services.</li>
+            <li>SDL3 normalizes Win32 and Cocoa events, while the engine-owned <code>Key</code> enum keeps SDL out of gameplay.</li>
+            <li><code>Input::ProcessEvent</code> is the only place that maps SDL scancodes and updates input state.</li>
+            <li>Held state persists; pressed and released edges last one frame and are cleared by <code>BeginFrame()</code>.</li>
+            <li>The frame order is <code>BeginFrame()</code> &rarr; drain and route SDL events &rarr; <code>Time::Tick()</code> &rarr; gameplay update &rarr; render.</li>
+            <li><code>SDL_EVENT_WINDOW_FOCUS_LOST</code> clears held controls on both Windows and macOS so keys cannot become stuck.</li>
+            <li><code>Time</code> uses portable <code>std::chrono::steady_clock</code> for delta time, total time and frame count.</li>
           </ul>
         </div>
       </article>

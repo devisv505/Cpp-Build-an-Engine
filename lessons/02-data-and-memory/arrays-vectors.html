@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arrays &amp; std::vector — Learn C++ &amp; DirectX</title>
+  <title>Arrays &amp; std::vector — Learn C++ Engine Development</title>
   <meta name="description" content="Learn C-style fixed arrays and std::vector in C++: indexing, bounds safety, push_back, size, and range-based for loops for engine data.">
   <link rel="stylesheet" href="../../css/styles.css">
 </head>
@@ -209,7 +209,7 @@ int main()
 
         <h2>Which should you use?</h2>
 
-        <p>The recommendation is simple: <strong>reach for <code>std::vector</code> by default.</strong> It's safe, it manages its own memory, it knows its length, and it grows when you need it to. Plain C-style arrays still have their place — small fixed-size lookup tables, or interoperating with C APIs and some parts of the DirectX interface — but for the everyday job of "I have a list of things," the vector is the right tool. Nearly every collection in our engine, from mesh vertices to the list of active game objects, will be a <code>std::vector</code>.</p>
+        <p>The recommendation is simple: <strong>reach for <code>std::vector</code> by default.</strong> It manages memory, knows its length, and grows when needed. Plain arrays still help with small fixed-size tables and C-style API boundaries, including native graphics APIs on Windows and macOS. Most engine collections, from mesh vertices to active game objects, will be vectors.</p>
 
         <div class="recap">
           <div class="r-title">Recap</div>
