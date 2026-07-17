@@ -28,7 +28,7 @@
             <li>Why real engines favour <strong>composition</strong> (components) over deep inheritance trees.</li>
             <li>How to write a <code>Component</code> base class with virtual <code>OnUpdate</code>/<code>OnRender</code> hooks and an <code>owner</code> pointer.</li>
             <li>How a <code>GameObject</code> owns its parts with <code>std::vector&lt;std::unique_ptr&lt;Component&gt;&gt;</code>.</li>
-            <li>How to write templated <code>AddComponent&lt;T&gt;(args...)</code> and <code>GetComponent&lt;T&gt;()</code> using perfect forwarding and <code>dynamic_cast</code>.</li>
+            <li>How to write templated <code>AddComponent&lt;T&gt;(args...)</code> and <code>GetComponent&lt;T&gt;()</code> using perfect forwarding, <code>dynamic_cast</code> and a C++20 concept constraint.</li>
           </ul>
         </div>
 
@@ -99,7 +99,7 @@ public:
 #include &lt;memory&gt;
 #include &lt;string&gt;
 #include &lt;utility&gt;      // std::forward, std::move
-#include &lt;type_traits&gt; // std::is_base_of
+#include &lt;concepts&gt;     // std::derived_from
 #include "Transform.h"
 #include "Component.h"
 
@@ -110,12 +110,9 @@ public:
 
     // Create a component of type T in place, wire up its owner,
     // and hand back a raw pointer so the caller can configure it.
-    template &lt;typename T, typename... Args&gt;
+    // The constraint only accepts T's that derive from Component.
+    template &lt;std::derived_from&lt;Component&gt; T, typename... Args&gt;
     T* AddComponent(Args&amp;&amp;... args) {
-        // Compile-time guard: T must actually be a Component.
-        static_assert(std::is_base_of&lt;Component, T&gt;::value,
-                      "T must derive from Component");
-
         auto comp = std::make_unique&lt;T&gt;(std::forward&lt;Args&gt;(args)...);
         comp-&gt;owner = this;          // let the component find us back
         T* raw = comp.get();          // borrow a non-owning pointer
@@ -124,7 +121,7 @@ public:
     }
 
     // Return the first component of type T, or nullptr if none.
-    template &lt;typename T&gt;
+    template &lt;std::derived_from&lt;Component&gt; T&gt;
     T* GetComponent() {
         for (const auto&amp; c : m_components) {
             // dynamic_cast succeeds only if the real type is a T.
@@ -168,6 +165,15 @@ private:
           valid pointer only when the stored object really is a <code>T</code> (or derived from it), and
           <code>nullptr</code> otherwise. That is exactly how Unity's <code>GetComponent&lt;Rigidbody&gt;()</code>
           behaves.
+        </p>
+        <p>
+          Both templates constrain <code>T</code> with <code>std::derived_from&lt;Component&gt;</code> — the
+          C++20 <strong>concept</strong> we previewed back in the templates lesson. Ask for a type that
+          isn't a <code>Component</code>, say <code>GetComponent&lt;int&gt;()</code>, and the compiler rejects
+          the call on the spot with a "constraints not satisfied" error, instead of letting the mistake
+          surface somewhere inside the template. In pre-C++20 codebases you'll see the same guard written as
+          <code>static_assert(std::is_base_of_v&lt;Component, T&gt;, "...")</code> inside the function body —
+          same protection, just a later and less descriptive error.
         </p>
 
         <div class="callout warn">
@@ -298,7 +304,7 @@ int main() {
             <li>Engines favour <strong>composition</strong>: a GameObject <em>has</em> components instead of inheriting one rigid type.</li>
             <li>The <code>Component</code> base class defines virtual <code>OnUpdate(dt)</code>/<code>OnRender()</code> hooks and an <code>owner</code> back-pointer — with a virtual destructor for safe deletion.</li>
             <li>A <code>GameObject</code> owns one <code>Transform</code> plus <code>std::vector&lt;std::unique_ptr&lt;Component&gt;&gt;</code>, giving clear single ownership.</li>
-            <li><code>AddComponent&lt;T&gt;(args...)</code> uses variadic templates and perfect forwarding; <code>GetComponent&lt;T&gt;()</code> uses <code>dynamic_cast</code> to find a component by type.</li>
+            <li><code>AddComponent&lt;T&gt;(args...)</code> uses variadic templates and perfect forwarding; <code>GetComponent&lt;T&gt;()</code> uses <code>dynamic_cast</code> to find a component by type. Both restrict <code>T</code> to <code>Component</code> subclasses with <code>std::derived_from</code>.</li>
             <li><code>Update</code> and <code>Render</code> simply iterate the components — the same loop your scene and camera will build on next.</li>
           </ul>
         </div>
