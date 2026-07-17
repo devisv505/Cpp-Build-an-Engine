@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Client-Server Game Model — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="How authoritative servers, snapshot interpolation, client-side prediction, and reconciliation make online multiplayer feel instant and smooth.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>The Client-Server Game Model</h1>
+
+        <p class="lead">Last lesson you learned to turn game state into bytes you can send across a wire. But sending bytes is the easy part — the hard part is making a game feel <em>instant and smooth</em> when every packet arrives 30, 80, or 150 milliseconds late. This lesson is the "why it feels good" chapter: the architecture that top competitive games use so that your shots land, your movement is buttery, and cheaters can't just edit memory to win. We'll stay mostly conceptual, with light code, so you understand the shape before we wire it into MiniEngine next lesson.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why the <strong>authoritative server</strong> model is the industry standard, and how the tick loop works.</li>
+            <li>How <strong>snapshot interpolation</strong> renders remote players smoothly despite discrete, laggy packets.</li>
+            <li>How <strong>client-side prediction</strong> makes your own movement feel zero-latency.</li>
+            <li>How <strong>server reconciliation</strong> corrects mispredictions by replaying unacknowledged inputs.</li>
+            <li>What <strong>lag compensation</strong> does so that "I clearly hit them" is actually true.</li>
+          </ul>
+        </div>
+
+        <h2>The authoritative server</h2>
+
+        <p>The naive way to build multiplayer is peer-to-peer: every client tells every other client "here's where I am now." This falls apart fast. Whose version of reality is correct when two players disagree? And nothing stops a cheater from broadcasting "I have 999 health and I'm standing on your head." So virtually every serious online game uses an <strong>authoritative server</strong>: one machine that owns the one true copy of the game world.</p>
+
+        <p>The contract is simple and strict:</p>
+
+        <ul>
+          <li><strong>Clients never change the world directly.</strong> They only send their <em>inputs</em> — "I pressed W and clicked at this angle on tick 412."</li>
+          <li><strong>The server simulates everything.</strong> It gathers inputs from all clients, steps the physics and game rules forward at a fixed rate, and produces the authoritative state.</li>
+          <li><strong>The server broadcasts snapshots.</strong> At a fixed <em>send rate</em>, it ships each client a compact picture of the world (the serialized state from last lesson).</li>
+        </ul>
+
+        <p>Because the server is the referee, a hacked client can lie about its inputs but not about the outcome — the server decides whether that shot connected, whether that door opened, whether you actually have the ammo. This is exactly the <strong>GameObject–Component</strong> world you already built in MiniEngine, except only one copy of it — the server's — is real. Clients run a <em>view</em> of it.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Tick rate vs. send rate</div>
+            <p>The server usually <em>simulates</em> at a high fixed rate (say 60 ticks/second) but <em>sends</em> snapshots less often (say 20/second) to save bandwidth. That gap — big, discrete jumps between snapshots — is the whole reason we need the smoothing tricks below.</p>
+          </div>
+        </div>
+
+        <h3>The server tick loop</h3>
+
+        <p>Conceptually the server runs a loop just like your engine's frame loop, but on a fixed timestep and driven by network input rather than a keyboard:</p>
+
+        <pre><code class="language-cpp" data-file="server_loop.cpp">// Runs at a fixed tick rate on the authoritative server.
+constexpr double kTickRate    = 60.0;             // simulation steps / second
+constexpr double kDt          = 1.0 / kTickRate;  // fixed timestep (seconds)
+constexpr int    kSnapshotEvery = 3;              // send every 3rd tick -> 20 Hz
+
+uint32_t tick = 0;
+while (serverRunning) {
+    // 1. Drain all input packets that arrived since the last tick.
+    for (ClientInput&amp; in : ReceivePendingInputs()) {
+        ApplyInputToPlayer(world, in.clientId, in);   // queue their intent
+        acked[in.clientId] = in.sequence;             // remember last input we saw
+    }
+
+    // 2. Step the one true simulation forward by a fixed dt.
+    world.Update(kDt);   // physics, movement, hit detection, game rules
+
+    // 3. Periodically broadcast an authoritative snapshot to everyone.
+    if (tick % kSnapshotEvery == 0) {
+        Snapshot snap = Serialize(world, tick);       // from the previous lesson
+        for (Client&amp; c : clients)
+            SendSnapshot(c, snap, acked[c.id]);        // include their last-acked input
+    }
+
+    ++tick;
+    SleepUntilNextTick(kDt);   // keep a steady, wall-clock-accurate cadence
+}</code></pre>
+
+        <p>Notice the server tells each client which of <em>their</em> inputs it has processed (<code>acked[c.id]</code>). Hold that thought — reconciliation depends on it.</p>
+
+        <h2>What latency breaks</h2>
+
+        <p>If a client just displayed whatever the last snapshot said, the experience would be miserable in two specific ways:</p>
+
+        <ol>
+          <li><strong>Remote players would teleport.</strong> Snapshots arrive ~20 times a second, but you render 60–144 times a second. Between packets you'd have nothing to show, so other players would stutter and jump.</li>
+          <li><strong>Your own player would feel like mud.</strong> If you had to press W, wait for the packet to reach the server, wait for it to simulate, and wait for the snapshot to come back before you moved, every step would lag by the full round-trip time. At 100 ms ping that's unplayable.</li>
+        </ol>
+
+        <p>The three classic techniques below solve these one at a time. The mental trick that unlocks all of them: <strong>we render remote entities slightly in the past, and predict our own entity slightly in the future.</strong></p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 220" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Client sends inputs to the server, which simulates and returns snapshots.">
+              <!-- Client box -->
+              <rect x="20" y="70" width="130" height="80" rx="8" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="85" y="105" text-anchor="middle" fill="currentColor" font-size="15" font-weight="600">Client</text>
+              <text x="85" y="128" text-anchor="middle" fill="currentColor" font-size="11">inputs + render</text>
+              <!-- Server box -->
+              <rect x="450" y="70" width="130" height="80" rx="8" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="515" y="105" text-anchor="middle" fill="currentColor" font-size="15" font-weight="600">Server</text>
+              <text x="515" y="128" text-anchor="middle" fill="currentColor" font-size="11">authoritative sim</text>
+              <!-- inputs arrow -->
+              <line x1="150" y1="95" x2="448" y2="95" stroke="currentColor" stroke-width="2" marker-end="url(#ah)"/>
+              <text x="300" y="86" text-anchor="middle" fill="currentColor" font-size="12">inputs (per tick)</text>
+              <!-- snapshots arrow -->
+              <line x1="450" y1="128" x2="152" y2="128" stroke="#4aa8ff" stroke-width="2" marker-end="url(#ahb)"/>
+              <text x="300" y="147" text-anchor="middle" fill="#4aa8ff" font-size="12">snapshots (~20 Hz)</text>
+              <!-- other clients -->
+              <text x="515" y="185" text-anchor="middle" fill="currentColor" font-size="11" opacity="0.8">...broadcast to all clients</text>
+              <defs>
+                <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="currentColor"/></marker>
+                <marker id="ahb" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#4aa8ff"/></marker>
+              </defs>
+            </svg>
+          </div>
+          <figcaption>The core loop: clients stream inputs up, the server simulates the one true world and streams authoritative snapshots back down.</figcaption>
+        </figure>
+
+        <h2>Snapshot interpolation (smooth remote players)</h2>
+
+        <p>You cannot render a remote player at "now," because the freshest thing you know about them is the last snapshot — already slightly stale. So instead of chasing the newest snapshot and stuttering, you deliberately buffer snapshots and <strong>render an interpolation delay in the past</strong> (commonly ~100 ms). At any render moment you keep at least two snapshots that <em>straddle</em> your render time, and you blend between them.</p>
+
+        <p>Say snapshot A is stamped at t = 1.00 s and snapshot B at t = 1.05 s, and your render clock (already offset into the past) reads t = 1.03 s. You're 60% of the way from A to B, so you draw each remote entity 60% of the way between its A position and its B position. As long as your buffer stays fed, remote motion is perfectly smooth even though the data underneath is chunky and discrete.</p>
+
+        <pre><code class="language-cpp" data-file="interpolation.cpp">#include &lt;vector&gt;
+#include &lt;algorithm&gt;
+#include "Vec3.h"   // your engine's math type from earlier lessons
+
+struct EntityState { uint32_t id; Vec3 position; /* rotation, etc. */ };
+
+struct Snapshot {
+    double                     time;     // server timestamp for this snapshot
+    std::vector&lt;EntityState&gt;    entities;
+};
+
+// A small ring/queue of the most recent snapshots, oldest first.
+static std::vector&lt;Snapshot&gt; g_buffer;
+
+// How far in the past we render remote entities (~2 snapshots worth).
+constexpr double kInterpDelay = 0.100; // 100 ms
+
+// Look up one entity's position in a snapshot; returns false if absent.
+static bool FindEntity(const Snapshot&amp; s, uint32_t id, Vec3&amp; out) {
+    for (const EntityState&amp; e : s.entities)
+        if (e.id == id) { out = e.position; return true; }
+    return false;
+}
+
+// Interpolate a remote entity's position for the current render time.
+Vec3 InterpolateRemote(uint32_t entityId, double renderNow) {
+    // We want to draw the world as it was kInterpDelay seconds ago.
+    const double renderTime = renderNow - kInterpDelay;
+
+    // Find the two snapshots that straddle renderTime: from &lt;= renderTime &lt;= to.
+    const Snapshot* from = nullptr;
+    const Snapshot* to   = nullptr;
+    for (size_t i = 0; i + 1 &lt; g_buffer.size(); ++i) {
+        if (g_buffer[i].time &lt;= renderTime &amp;&amp; renderTime &lt;= g_buffer[i + 1].time) {
+            from = &amp;g_buffer[i];
+            to   = &amp;g_buffer[i + 1];
+            break;
+        }
+    }
+
+    Vec3 a, b;
+    if (!from || !to) {
+        // Not enough buffered data (or a hitch): fall back to newest known pose.
+        if (!g_buffer.empty() &amp;&amp; FindEntity(g_buffer.back(), entityId, b)) return b;
+        return Vec3{0, 0, 0};
+    }
+
+    // Normalized blend factor in [0, 1] between the two snapshot times.
+    const double span = to->time - from->time;
+    double t = (span &gt; 0.0) ? (renderTime - from->time) / span : 0.0;
+    t = std::clamp(t, 0.0, 1.0);
+
+    if (FindEntity(*from, entityId, a) &amp;&amp; FindEntity(*to, entityId, b))
+        return a + (b - a) * static_cast&lt;float&gt;(t);   // linear interpolation (lerp)
+
+    return b; // entity just spawned and only exists in the newer snapshot
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Why render in the past on purpose?</div>
+            <p>It feels backwards to delay everyone by 100 ms, but that buffer is what guarantees you (almost) always have a snapshot on <em>both</em> sides of your render time. Without it, a single late packet becomes a visible stutter. Delay a little, stay smooth a lot.</p>
+          </div>
+        </div>
+
+        <h2>Client-side prediction (instant local movement)</h2>
+
+        <p>Interpolation is great for <em>other</em> players, but you would never accept a 100 ms delay on your <em>own</em> character. So for the local player we do the opposite: <strong>predict</strong>. The instant you press W, the client applies that input to your local player immediately — using the exact same movement code the server runs — without waiting for confirmation. Your character moves the frame you press the key. It feels like there's no network at all.</p>
+
+        <p>Crucially, the client keeps a history of every input it has sent, each tagged with a sequence number, because it will need to re-apply them in a moment:</p>
+
+        <pre><code class="language-cpp" data-file="prediction.cpp">struct InputCommand {
+    uint32_t sequence;   // ever-increasing id for this input
+    float    dt;         // how long it covered
+    Vec3     move;       // WASD direction, etc.
+};
+
+std::vector&lt;InputCommand&gt; g_pendingInputs;   // sent but not yet acked by server
+Vec3                      g_localPosition;
+
+void OnLocalInput(const InputCommand&amp; cmd) {
+    SendToServer(cmd);                 // (1) tell the authority what we did
+    g_pendingInputs.push_back(cmd);    // (2) remember it for reconciliation
+    // (3) apply it right now with the SAME sim code the server uses:
+    g_localPosition = StepMovement(g_localPosition, cmd);
+}</code></pre>
+
+        <p>Prediction is correct <em>most</em> of the time, because the client and server run identical movement math. But sometimes they disagree — you got knocked back by something you couldn't see yet, or a packet was lost. When that happens, the authoritative snapshot must win. That's reconciliation.</p>
+
+        <h2>Server reconciliation (correcting mispredictions)</h2>
+
+        <p>When a snapshot arrives, it tells you the server's authoritative position for your player <em>and</em> the sequence number of the last input the server actually processed (that <code>acked</code> value from the tick loop). The client does three things:</p>
+
+        <ol>
+          <li><strong>Snap to authority.</strong> Set the local player to the server's position — the truth as of that acked input.</li>
+          <li><strong>Discard confirmed inputs.</strong> Drop every pending input with a sequence &le; the acked one; the server has already accounted for those.</li>
+          <li><strong>Replay the rest.</strong> Re-apply every input the server hasn't seen yet, on top of the authoritative position, using the same <code>StepMovement</code>. This brings your prediction back up to "now."</li>
+        </ol>
+
+        <pre><code class="language-cpp" data-file="reconciliation.cpp">// Called when an authoritative snapshot for the local player arrives.
+void Reconcile(const Vec3&amp; serverPos, uint32_t serverAckedSeq) {
+    // (1) Trust the server: rewind to the authoritative position.
+    g_localPosition = serverPos;
+
+    // (2) Forget inputs the server already applied.
+    g_pendingInputs.erase(
+        std::remove_if(g_pendingInputs.begin(), g_pendingInputs.end(),
+            [&amp;](const InputCommand&amp; c){ return c.sequence &lt;= serverAckedSeq; }),
+        g_pendingInputs.end());
+
+    // (3) Replay everything the server hasn't acknowledged yet.
+    for (const InputCommand&amp; c : g_pendingInputs)
+        g_localPosition = StepMovement(g_localPosition, c);
+    // Result: correct authoritative base + all our still-in-flight moves.
+}</code></pre>
+
+        <p>If your prediction was right, replaying produces the same position you already had, so nothing visibly changes — the common case is invisible. If you mispredicted, you'll see a small correction. Well-tuned games smooth that correction out over a few frames instead of snapping, so it reads as a gentle nudge rather than a jitter.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Prediction and server MUST share code</div>
+            <p>Reconciliation only works if <code>StepMovement</code> is <em>deterministic and identical</em> on client and server. If the two use even slightly different physics or a different fixed timestep, prediction and authority will constantly disagree and the player will rubber-band. Share the exact same simulation code between both builds.</p>
+          </div>
+        </div>
+
+        <h2>A note on lag compensation</h2>
+
+        <p>Interpolation and prediction still leave one honesty problem. Remember you're rendering enemies ~100 ms in the past, plus your own ping. So when you line up a shot and click, the enemy on your screen is where they <em>were</em>, not where the server thinks they are <em>now</em>. Without help, you'd have to lead every target and "obvious" hits would miss.</p>
+
+        <p><strong>Lag compensation</strong> fixes this on the server. Each client's shot is stamped with the client's render time. When the server processes the shot, it <em>rewinds</em> every other player's hitboxes back to where they were at that timestamp — reconstructing the world exactly as the shooter saw it — checks the ray against that rewound state, then returns to the present. You shot at what you saw, and the server agrees. The mild downside is the classic "I ran behind a wall and still got hit," because from the shooter's slightly-past view, you hadn't yet.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Technique</th><th>Fixes</th><th>Applied to</th><th>Runs on</th></tr></thead>
+            <tbody>
+              <tr><td>Authoritative server</td><td>Cheating, disagreements</td><td>The whole world</td><td>Server</td></tr>
+              <tr><td>Snapshot interpolation</td><td>Stuttering remote motion</td><td>Remote entities (past)</td><td>Client</td></tr>
+              <tr><td>Client-side prediction</td><td>Laggy local controls</td><td>Local player (future)</td><td>Client</td></tr>
+              <tr><td>Server reconciliation</td><td>Mispredictions</td><td>Local player</td><td>Client</td></tr>
+              <tr><td>Lag compensation</td><td>Missed "obvious" hits</td><td>Hit detection</td><td>Server</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Put together, these give the illusion every online game sells: instant controls, smooth opponents, fair hits, and one referee that can't be cheated. In the next lesson we'll take the serialization from before and this architecture, and wire a real authoritative loop plus interpolation into MiniEngine so your GameObjects can play together across a network.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The <strong>authoritative server</strong> owns the one true world: clients send inputs, the server simulates at a fixed tick and broadcasts snapshots at a lower send rate.</li>
+            <li><strong>Snapshot interpolation</strong> buffers the last 2+ snapshots and renders remote entities slightly in the past, blending between them for smooth motion.</li>
+            <li><strong>Client-side prediction</strong> applies your own input immediately with the same sim code the server uses, so local controls feel instant.</li>
+            <li><strong>Server reconciliation</strong> snaps to the authoritative state, drops acked inputs, and replays the unacknowledged ones to fix mispredictions invisibly.</li>
+            <li><strong>Lag compensation</strong> rewinds other players' hitboxes to the shooter's view time so hits are fair — at the cost of the occasional "around the corner" death.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

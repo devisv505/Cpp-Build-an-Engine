@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Networking Fundamentals for Games — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn how game networking works: IP, ports, packets, client-server vs P2P, authoritative servers, TCP vs UDP, latency, and the core netcode loop.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Networking Fundamentals for Games</h1>
+
+        <p class="lead">Up to now, MiniEngine has been a single-player world: one machine, one simulation, one player. In this module we teach it to talk over the internet so two or more players can share the same world in real time. Before we touch a single socket, though, we need a mental model of how networked games actually work — what a connection <em>is</em>, why fast games avoid the "reliable" protocol, and who gets to decide the truth. This lesson is that map.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What a network connection is: IP addresses, ports, and packets (datagrams)</li>
+            <li>Client-server vs peer-to-peer, and why the <strong>authoritative server</strong> model stops cheating</li>
+            <li>TCP vs UDP — reliability and ordering vs low latency, and why action games choose UDP</li>
+            <li>The metrics that define a connection's quality: latency, bandwidth, packet loss, and jitter</li>
+            <li>The core game networking loop that we will build MiniEngine's multiplayer around</li>
+          </ul>
+        </div>
+
+        <h2>What is a network connection?</h2>
+        <p>When two programs on different machines talk to each other, they do it by sending small chunks of data across the internet. Three ideas make that possible: addresses, ports, and packets.</p>
+        <ul>
+          <li><strong>IP address</strong> — the "street address" of a machine on a network. IPv4 addresses look like <code>203.0.113.42</code>; the newer IPv6 looks like <code>2001:db8::1</code>. Your router also gives your PC a private address such as <code>192.168.1.20</code>.</li>
+          <li><strong>Port</strong> — a numbered "mailbox" on that machine, from 0 to 65535. One computer runs many programs at once, so the port tells the operating system which program a message belongs to. Your game server might listen on port <code>7777</code>; a web server usually uses <code>443</code>.</li>
+          <li><strong>Packet (datagram)</strong> — data doesn't travel as one long stream; it's chopped into small, individually addressed envelopes. Each packet carries a header (who sent it, where it's going) and a payload (your actual game data). The network delivers them one hop at a time, and they may arrive out of order, late, or not at all.</li>
+        </ul>
+        <p>An address plus a port is called an <strong>endpoint</strong>, and a message is aimed at one: "send these bytes to <code>203.0.113.42</code> port <code>7777</code>." That single sentence is the foundation of everything else in this module.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">A useful analogy</div><p>Think of the IP address as an apartment building, the port as a specific mailbox inside it, and a packet as a postcard. Postcards are cheap and fast, but the postal service never promises they'll arrive, or arrive in the order you mailed them. Hold that thought — it explains UDP.</p></div>
+        </div>
+
+        <h2>Topologies: who talks to whom?</h2>
+        <p>Once machines can send packets, you have to decide how they're wired together. Two arrangements dominate games.</p>
+
+        <h3>Peer-to-peer (P2P)</h3>
+        <p>Every player connects directly to every other player. It's cheap — there's no server to rent — and it can feel snappy because messages take the shortest path. But it scales badly (with 8 players each machine maintains 7 connections), it exposes players' IP addresses to each other, and, worst of all, <em>nobody is in charge</em>. If two peers disagree about where a rocket landed, whose version wins?</p>
+
+        <h3>Client-server</h3>
+        <p>One special machine, the <strong>server</strong>, sits in the middle. Every <strong>client</strong> talks only to the server, never directly to other clients. The server relays and coordinates. This is what we'll build. It scales cleanly, hides players from each other, and — crucially — gives us one place to make decisions.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 240" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A central authoritative server connected to three clients.">
+              <!-- Server -->
+              <rect x="240" y="20" width="120" height="56" rx="8" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="300" y="44" text-anchor="middle" fill="#4aa8ff" font-size="15" font-family="sans-serif" font-weight="bold">SERVER</text>
+              <text x="300" y="62" text-anchor="middle" fill="currentColor" font-size="11" font-family="sans-serif">(owns the truth)</text>
+
+              <!-- Clients -->
+              <rect x="40" y="170" width="110" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <text x="95" y="199" text-anchor="middle" fill="currentColor" font-size="13" font-family="sans-serif">Client A</text>
+
+              <rect x="245" y="170" width="110" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <text x="300" y="199" text-anchor="middle" fill="currentColor" font-size="13" font-family="sans-serif">Client B</text>
+
+              <rect x="450" y="170" width="110" height="48" rx="8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+              <text x="505" y="199" text-anchor="middle" fill="currentColor" font-size="13" font-family="sans-serif">Client C</text>
+
+              <!-- Links -->
+              <line x1="285" y1="76" x2="105" y2="170" stroke="#4aa8ff" stroke-width="1.5"/>
+              <line x1="300" y1="76" x2="300" y2="170" stroke="#4aa8ff" stroke-width="1.5"/>
+              <line x1="315" y1="76" x2="495" y2="170" stroke="#4aa8ff" stroke-width="1.5"/>
+
+              <!-- Labels on links -->
+              <text x="168" y="128" text-anchor="middle" fill="currentColor" font-size="10" font-family="sans-serif">input &#8593; / state &#8595;</text>
+              <text x="432" y="128" text-anchor="middle" fill="currentColor" font-size="10" font-family="sans-serif">input &#8593; / state &#8595;</text>
+            </svg>
+          </div>
+          <figcaption>Client-server: each client exchanges packets only with the authoritative server, never peer-to-peer.</figcaption>
+        </figure>
+
+        <h3>The authoritative server</h3>
+        <p>Here is the single most important idea in the whole module. In an <strong>authoritative server</strong> model, the server owns the one true copy of the game world. Clients do not <em>tell</em> the server what happened — they only send their <strong>inputs</strong> ("I'm pressing forward, I fired at time <code>t</code>"). The server runs the real simulation, decides the outcome, and sends the results back. Clients are, in effect, fancy displays plus input devices.</p>
+        <p>Why go to this trouble? <strong>Cheating.</strong> If a client could say "I have 999 health" or "my bullet hit," a hacker would simply lie. When the server is the sole authority, a modified client can send fake input, but it cannot invent a game state — the server won't accept "I teleported across the map" because the server, not the client, runs the movement code.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Never trust the client</div><p>"Never trust the client" is the golden rule of multiplayer. Anything a client sends can be forged. Every gameplay-critical decision — damage, pickups, collisions, scoring — must be validated or computed on the server. Later lessons on client-side prediction exist precisely because the authoritative model introduces delay we have to hide.</p></div>
+        </div>
+
+        <h2>TCP vs UDP: the two ways to send packets</h2>
+        <p>On top of IP, the operating system offers two transport protocols. Choosing between them is the defining decision of game netcode.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th></th><th>TCP</th><th>UDP</th></tr></thead>
+            <tbody>
+              <tr><td>Connection</td><td>Connection-based (handshake first)</td><td>Connectionless (just send)</td></tr>
+              <tr><td>Reliability</td><td>Guaranteed delivery, auto-resend</td><td>None — packets may be lost</td></tr>
+              <tr><td>Ordering</td><td>Strictly in order</td><td>May arrive out of order</td></tr>
+              <tr><td>Overhead</td><td>Higher (acks, buffering)</td><td>Very low</td></tr>
+              <tr><td>Latency behavior</td><td>Can stall (head-of-line blocking)</td><td>Consistently low</td></tr>
+              <tr><td>Typical use</td><td>Web, chat, downloads, turn-based</td><td>Action games, voice, video</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p><strong>TCP</strong> is the careful courier: it establishes a connection, numbers every byte, resends anything lost, and delivers everything in perfect order. That sounds ideal — until you hit <strong>head-of-line blocking</strong>. If packet #5 goes missing, TCP holds packets #6, #7, #8 hostage in a buffer until #5 is re-sent and arrives. In a shooter, that means the whole game freezes for a moment to redeliver a position update you no longer care about, because a newer one already exists. TCP would rather be late than out of order, and games would rather be current than complete.</p>
+
+        <p><strong>UDP</strong> is the postcard service: fire a datagram at an endpoint and hope. No handshake, no resending, no ordering, no guarantees — but also no stalling. A lost packet is simply gone, and the next fresh update rolls in a fraction of a second later. For a fast-paced game, a slightly newer snapshot is worth far more than a perfectly reconstructed old one.</p>
+
+        <p>So fast-paced multiplayer games use UDP and <strong>build their own lightweight reliability on top</strong> — but only for the messages that truly need it. Position snapshots can be dropped freely (a newer one is coming). But "you picked up the flag" or "you died" must arrive, so the game adds sequence numbers, acknowledgements, and selective resends for just those events. You get UDP's low latency and TCP-like guarantees exactly where you want them — and nowhere you don't. That custom layer is what people mean by a game's "netcode," and we'll build a small version of it later in this module.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Turn-based games can just use TCP</div><p>If MiniEngine were powering a card game or a strategy title where a half-second delay is invisible, TCP would be the pragmatic choice — reliability for free, no custom protocol to write. UDP earns its complexity only when every 10&#8239;ms matters. Match the tool to the game.</p></div>
+        </div>
+
+        <h2>Measuring a connection: the four metrics</h2>
+        <p>You'll see these four numbers everywhere in networking, and they decide how good multiplayer <em>feels</em>.</p>
+        <ul>
+          <li><strong>Latency / ping / round-trip time (RTT)</strong> — how long a packet takes to travel there and back, in milliseconds. "Ping 40" means 40&#8239;ms round trip. Under ~50&#8239;ms feels instant; above ~150&#8239;ms feels sluggish. It's bounded by the speed of light and the number of hops, so you can hide it but never eliminate it.</li>
+          <li><strong>Bandwidth</strong> — how much data the link can carry per second (e.g. 10&#8239;Mbps). Games send small messages frequently, so they're rarely bandwidth-starved, but sending full world state to everyone 60 times a second adds up fast.</li>
+          <li><strong>Packet loss</strong> — the percentage of packets that vanish in transit. Even a healthy connection loses 1&#8211;2%. Our reliability layer exists to survive this.</li>
+          <li><strong>Jitter</strong> — the <em>variation</em> in latency. A steady 60&#8239;ms ping is smooth; a ping bouncing between 20 and 120&#8239;ms is jittery and makes other players teleport and stutter. We smooth jitter with buffering and interpolation.</li>
+        </ul>
+
+        <h2>The core game networking loop</h2>
+        <p>Put the pieces together and you get the heartbeat of every authoritative multiplayer game. It repeats many times per second, forever:</p>
+        <ol>
+          <li><strong>Client samples input</strong> and sends it to the server ("forward held, mouse aimed here, fired").</li>
+          <li><strong>Server receives inputs</strong> from all clients and runs one step of the <em>real</em> simulation — movement, physics, damage, scoring.</li>
+          <li><strong>Server sends the new state back</strong> to every client (positions, health, events).</li>
+          <li><strong>Clients render</strong> the state they received, so everyone sees a consistent world.</li>
+        </ol>
+
+        <p>Here's that loop as pseudocode, mapped onto MiniEngine's existing <code>Update</code> structure. It's illustrative, not the real socket code (that starts next lesson), but it shows exactly where networking slots into the engine you already have.</p>
+
+        <pre><code class="language-cpp" data-file="NetLoop.cpp">// Illustrative sketch of the authoritative loop.
+// Real UDP socket calls (Winsock) arrive in the next lesson.
+
+struct InputCommand {
+    uint32_t sequence;   // lets us detect loss / order
+    float    moveX, moveZ;
+    bool     firePressed;
+};
+
+// ---- Runs on each CLIENT, every frame ----
+void Client::Update(float dt) {
+    InputCommand cmd = SampleLocalInput();   // read keyboard / mouse
+    cmd.sequence = m_nextSeq++;
+    m_socket.SendTo(m_serverEndpoint, Serialize(cmd));   // step 1
+
+    // step 4: apply the latest world snapshot the server sent us
+    while (WorldSnapshot snap; m_socket.Receive(snap)) {
+        ApplySnapshotToScene(snap);          // move GameObjects to authoritative positions
+    }
+}
+
+// ---- Runs on the SERVER, at a fixed tick rate (e.g. 60 Hz) ----
+void Server::Tick(float dt) {
+    // step 2: drain inputs from every connected client
+    for (ClientConn&amp; c : m_clients) {
+        InputCommand cmd;
+        while (c.socket.Receive(cmd)) {
+            c.pendingInput = cmd;            // keep only the freshest input
+        }
+    }
+
+    m_world.Simulate(dt);                    // the ONE true simulation
+
+    // step 3: broadcast the resulting state to everyone
+    WorldSnapshot snap = m_world.Capture();
+    for (ClientConn&amp; c : m_clients) {
+        c.socket.SendTo(c.endpoint, Serialize(snap));
+    }
+}</code></pre>
+
+        <p>Notice the asymmetry: clients send <em>intentions</em>, the server sends <em>facts</em>. That single design choice is what makes the game fair and cheat-resistant. It also creates a problem — the round trip means the client sees the result of its own input a little late. Solving that gracefully (prediction, interpolation, lag compensation) is what the rest of this module builds, one layer at a time, on top of MiniEngine's <code>GameObject</code>&#8211;<code>Component</code> system.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A connection is <strong>IP address + port</strong>; data travels as <strong>packets (datagrams)</strong> that can arrive late, out of order, or not at all.</li>
+            <li><strong>Client-server</strong> beats peer-to-peer for scale and control; an <strong>authoritative server</strong> owns the truth so clients can send input but never forge state — the antidote to cheating.</li>
+            <li><strong>TCP</strong> is reliable and ordered but suffers head-of-line blocking; <strong>UDP</strong> is unreliable and unordered but low-latency, so action games use UDP and add their own selective reliability.</li>
+            <li>Judge a link by <strong>latency, bandwidth, packet loss, and jitter</strong> — latency is the one you can hide but never remove.</li>
+            <li>The core loop: <strong>client sends input &#8594; server simulates &#8594; server sends state &#8594; client renders</strong>. Everything else in this module refines that loop.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Pointers &amp; Modern Memory — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Master unique_ptr, shared_ptr and weak_ptr to manage engine memory safely with RAII — no more manual new/delete or leaks.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Smart Pointers &amp; Modern Memory</h1>
+
+        <p class="lead">Manual memory management with <code>new</code> and <code>delete</code> is the classic way to leak memory and crash an engine. Modern C++ gives us <strong>smart pointers</strong> — small wrapper types that own memory for you and free it automatically. In this lesson we replace raw pointers with <code>std::unique_ptr</code>, <code>std::shared_ptr</code> and <code>std::weak_ptr</code>, the exact tools we'll lean on when our engine stores components, meshes and textures.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why RAII lets an object clean up its own memory — no manual <code>delete</code>.</li>
+            <li>How <code>std::unique_ptr</code> models <strong>sole ownership</strong> with <code>std::make_unique</code>.</li>
+            <li>How <code>std::shared_ptr</code> shares ownership through <strong>reference counting</strong>.</li>
+            <li>How <code>std::weak_ptr</code> breaks reference cycles that would otherwise leak.</li>
+            <li>How to convert a leaky raw-pointer example into safe, modern code.</li>
+          </ul>
+        </div>
+
+        <h2>The problem with raw pointers</h2>
+        <p>When you write <code>new</code>, you promise the program you will call <code>delete</code> exactly once, later, on every path out of the function. Forget it and you leak memory; do it twice and you corrupt the heap; do it and then keep using the pointer and you get a crash. In a real engine that allocates thousands of objects per frame, this bookkeeping is impossible to do by hand.</p>
+
+        <p>Here is a small but realistic leak. Imagine a <code>Mesh</code> resource that we load and use:</p>
+
+        <pre><code class="language-cpp" data-file="raw_pointer.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+struct Mesh {
+    std::string name;
+    explicit Mesh(std::string n) : name(std::move(n)) {
+        std::cout &lt;&lt; "Loaded mesh: " &lt;&lt; name &lt;&lt; "\n";
+    }
+    ~Mesh() {
+        std::cout &lt;&lt; "Freed mesh: " &lt;&lt; name &lt;&lt; "\n";
+    }
+};
+
+void loadLevel() {
+    Mesh* player = new Mesh("player");   // we own this now
+    if (player-&gt;name.empty()) {
+        return;                          // BUG: early return leaks 'player'
+    }
+    // ... use the mesh ...
+    delete player;                       // only runs on the happy path
+}</code></pre>
+
+        <p>The early <code>return</code> skips <code>delete</code>, so the <code>Mesh</code> is never freed and its destructor never runs. Every leaked path like this is a slow drip that eventually exhausts memory. Smart pointers make this class of bug disappear.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">What is RAII?</div>
+            <p><strong>Resource Acquisition Is Initialization</strong> means a resource's lifetime is tied to an object's lifetime. When the object goes out of scope, its destructor runs and releases the resource. Smart pointers are RAII wrappers around heap memory — the whole idea is that cleanup happens automatically.</p>
+          </div>
+        </div>
+
+        <h2>std::unique_ptr — sole ownership</h2>
+        <p>A <code>std::unique_ptr&lt;T&gt;</code> owns a single heap object and frees it automatically when the <code>unique_ptr</code> is destroyed. It is <em>unique</em>: exactly one <code>unique_ptr</code> owns the object at a time, so you never wonder who is responsible for deletion. Always create one with <code>std::make_unique</code>, which allocates and constructs in one step.</p>
+
+        <p>Here is the leaky example rewritten. Notice there is no <code>delete</code> at all:</p>
+
+        <pre><code class="language-cpp" data-file="unique_ptr.cpp">#include &lt;iostream&gt;
+#include &lt;memory&gt;   // std::unique_ptr, std::make_unique
+#include &lt;string&gt;
+
+struct Mesh {
+    std::string name;
+    explicit Mesh(std::string n) : name(std::move(n)) {
+        std::cout &lt;&lt; "Loaded mesh: " &lt;&lt; name &lt;&lt; "\n";
+    }
+    ~Mesh() {
+        std::cout &lt;&lt; "Freed mesh: " &lt;&lt; name &lt;&lt; "\n";
+    }
+};
+
+void loadLevel() {
+    auto player = std::make_unique&lt;Mesh&gt;("player");  // owns the Mesh
+    if (player-&gt;name.empty()) {
+        return;   // safe: unique_ptr frees the Mesh on the way out
+    }
+    // ... use player like a normal pointer: player-&gt;name, *player ...
+}   // player goes out of scope here -&gt; ~Mesh() runs, no matter which path
+
+int main() {
+    loadLevel();
+    return 0;
+}</code></pre>
+
+        <p>No matter how the function exits — normal return, early return, or an exception thrown midway — the <code>unique_ptr</code>'s destructor runs and the <code>Mesh</code> is freed exactly once. You get the same output on every path.</p>
+
+        <p>Because a <code>unique_ptr</code> is the sole owner, you cannot copy it — that would create two owners. You can <strong>move</strong> it to transfer ownership, which is how we hand resources between systems:</p>
+
+        <pre><code class="language-cpp" data-file="move_ownership.cpp">auto a = std::make_unique&lt;Mesh&gt;("terrain");
+// auto b = a;              // ERROR: cannot copy a unique_ptr
+auto b = std::move(a);      // OK: ownership moves from a to b
+// now 'a' is empty (nullptr), 'b' owns the terrain mesh</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Make this your default</div>
+            <p>Reach for <code>std::unique_ptr</code> first — it is the cheapest smart pointer (no overhead versus a raw pointer) and it clearly documents ownership. Our engine will store each entity's components in a <code>std::vector&lt;std::unique_ptr&lt;Component&gt;&gt;</code>, so an entity owns its components and destroying it frees them all.</p>
+          </div>
+        </div>
+
+        <h2>std::shared_ptr — shared ownership</h2>
+        <p>Sometimes several parts of the engine genuinely need to share one object. A single <code>Texture</code> in GPU memory might be referenced by dozens of materials — none of them "the" owner. A <code>std::shared_ptr&lt;T&gt;</code> handles this by keeping a <strong>reference count</strong>: each copy increments it, each destruction decrements it, and when the count hits zero the object is freed. Create one with <code>std::make_shared</code>.</p>
+
+        <pre><code class="language-cpp" data-file="shared_ptr.cpp">#include &lt;iostream&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+
+struct Texture {
+    std::string path;
+    explicit Texture(std::string p) : path(std::move(p)) {
+        std::cout &lt;&lt; "GPU upload: " &lt;&lt; path &lt;&lt; "\n";
+    }
+    ~Texture() {
+        std::cout &lt;&lt; "GPU release: " &lt;&lt; path &lt;&lt; "\n";
+    }
+};
+
+int main() {
+    auto brick = std::make_shared&lt;Texture&gt;("brick.dds");
+    std::cout &lt;&lt; "count = " &lt;&lt; brick.use_count() &lt;&lt; "\n";  // 1
+
+    {
+        auto wallMaterial = brick;   // copy -&gt; shares ownership
+        std::cout &lt;&lt; "count = " &lt;&lt; brick.use_count() &lt;&lt; "\n";  // 2
+    }   // wallMaterial destroyed here -&gt; count drops back to 1
+
+    std::cout &lt;&lt; "count = " &lt;&lt; brick.use_count() &lt;&lt; "\n";  // 1
+    return 0;
+}   // brick destroyed -&gt; count hits 0 -&gt; ~Texture() runs, GPU released</code></pre>
+
+        <p>The <code>Texture</code> is uploaded once and released exactly once, at the moment the last owner disappears. That is exactly the behaviour a resource cache wants.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Shared is not free</div>
+            <p>A <code>shared_ptr</code> carries a small overhead: it allocates a control block for the count, and updating that count is thread-safe (atomic), which costs a little. Do not reach for it by default. Use it only when ownership is <em>genuinely</em> shared; otherwise a <code>unique_ptr</code> plus plain references or raw non-owning pointers is leaner.</p>
+          </div>
+        </div>
+
+        <h2>std::weak_ptr — breaking cycles</h2>
+        <p>Reference counting has one trap: a <strong>cycle</strong>. If object A holds a <code>shared_ptr</code> to B, and B holds a <code>shared_ptr</code> back to A, each keeps the other's count at 1 forever. Neither ever reaches zero, so neither is freed — a leak, even with smart pointers. This happens naturally in scene graphs, where a node points to its children and each child points back to its parent.</p>
+
+        <p>A <code>std::weak_ptr&lt;T&gt;</code> is a non-owning observer of a <code>shared_ptr</code>. It does <em>not</em> raise the reference count, so it cannot keep an object alive. To use the object you call <code>lock()</code>, which returns a <code>shared_ptr</code> if the object still exists, or an empty one if it has been freed. Make the "back" edge weak and the cycle is broken.</p>
+
+        <pre><code class="language-cpp" data-file="scene_graph.cpp">#include &lt;iostream&gt;
+#include &lt;memory&gt;
+#include &lt;vector&gt;
+#include &lt;string&gt;
+
+struct Node {
+    std::string name;
+    std::vector&lt;std::shared_ptr&lt;Node&gt;&gt; children;  // parent OWNS children
+    std::weak_ptr&lt;Node&gt; parent;                  // child OBSERVES parent (no cycle)
+
+    explicit Node(std::string n) : name(std::move(n)) {}
+    ~Node() { std::cout &lt;&lt; "Destroyed: " &lt;&lt; name &lt;&lt; "\n"; }
+};
+
+int main() {
+    auto root  = std::make_shared&lt;Node&gt;("root");
+    auto child = std::make_shared&lt;Node&gt;("child");
+
+    root-&gt;children.push_back(child);   // strong: root keeps child alive
+    child-&gt;parent = root;             // weak: does NOT keep root alive
+
+    // Safely access the parent through the weak_ptr:
+    if (auto p = child-&gt;parent.lock()) {
+        std::cout &lt;&lt; child-&gt;name &lt;&lt; "'s parent is " &lt;&lt; p-&gt;name &lt;&lt; "\n";
+    }
+    return 0;   // both nodes are correctly destroyed, no leak
+}</code></pre>
+
+        <p>If the <code>parent</code> edge were a <code>shared_ptr</code>, <code>root</code> and <code>child</code> would keep each other alive forever and their destructors would never print. With <code>weak_ptr</code> the counts fall to zero cleanly.</p>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Never dereference a weak_ptr directly</div>
+            <p>A <code>weak_ptr</code> has no <code>-&gt;</code> or <code>*</code>, because the object it watches may already be gone. Always call <code>lock()</code> and check the result before use. Treating a dangling reference as valid is exactly the crash smart pointers exist to prevent.</p>
+          </div>
+        </div>
+
+        <h2>Choosing the right pointer</h2>
+        <p>Most ownership questions come down to a single decision. Use this table as a quick guide:</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Situation</th><th>Use</th><th>Why</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>One clear owner</td><td><code>std::unique_ptr</code></td><td>Zero overhead, frees automatically</td></tr>
+              <tr><td>Genuinely shared ownership</td><td><code>std::shared_ptr</code></td><td>Ref-counted; freed when last owner leaves</td></tr>
+              <tr><td>Observe without owning</td><td><code>std::weak_ptr</code></td><td>Breaks cycles; check with <code>lock()</code></td></tr>
+              <tr><td>Borrow, no ownership at all</td><td>reference or raw <code>T*</code></td><td>Cheapest; caller must outlive the callee</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 170" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="unique_ptr owns one object; shared_ptr owners share a count; weak_ptr observes without owning.">
+              <!-- unique -->
+              <rect x="20" y="55" width="110" height="40" rx="6" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="75" y="80" fill="currentColor" font-size="13" text-anchor="middle">unique_ptr</text>
+              <line x1="130" y1="75" x2="185" y2="75" stroke="#4aa8ff" stroke-width="2"/>
+              <polygon points="185,75 176,70 176,80" fill="#4aa8ff"/>
+              <rect x="185" y="55" width="70" height="40" rx="6" stroke="currentColor" stroke-width="2"/>
+              <text x="220" y="80" fill="currentColor" font-size="12" text-anchor="middle">Mesh</text>
+              <text x="137" y="120" fill="currentColor" font-size="11" text-anchor="middle" opacity="0.8">sole owner</text>
+              <!-- shared + weak -->
+              <rect x="330" y="20" width="110" height="34" rx="6" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="385" y="42" fill="currentColor" font-size="12" text-anchor="middle">shared_ptr</text>
+              <rect x="330" y="66" width="110" height="34" rx="6" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="385" y="88" fill="currentColor" font-size="12" text-anchor="middle">shared_ptr</text>
+              <rect x="330" y="112" width="110" height="34" rx="6" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4"/>
+              <text x="385" y="134" fill="currentColor" font-size="12" text-anchor="middle">weak_ptr</text>
+              <rect x="500" y="66" width="80" height="40" rx="6" stroke="currentColor" stroke-width="2"/>
+              <text x="540" y="91" fill="currentColor" font-size="12" text-anchor="middle">Texture</text>
+              <line x1="440" y1="37" x2="500" y2="80" stroke="#4aa8ff" stroke-width="2"/>
+              <line x1="440" y1="83" x2="500" y2="86" stroke="#4aa8ff" stroke-width="2"/>
+              <line x1="440" y1="129" x2="500" y2="92" stroke="currentColor" stroke-width="2" stroke-dasharray="5 4"/>
+              <text x="540" y="128" fill="currentColor" font-size="11" text-anchor="middle" opacity="0.8">count = 2</text>
+            </svg>
+          </div>
+          <figcaption>A <code>unique_ptr</code> is the lone owner; two <code>shared_ptr</code>s keep the count at 2 while a <code>weak_ptr</code> only watches.</figcaption>
+        </figure>
+
+        <p>These patterns are the backbone of the memory model we'll build on. An entity will hold <code>unique_ptr</code>s to the components it owns; a shared resource cache will hand out <code>shared_ptr</code>s to meshes and textures; and back-references in our scene graph will be <code>weak_ptr</code>s so parents and children can point at each other without leaking. From here on, you should rarely write <code>new</code> or <code>delete</code> again.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><strong>RAII</strong> ties a resource's lifetime to an object, so cleanup is automatic — smart pointers apply it to heap memory.</li>
+            <li><code>std::unique_ptr</code> (via <code>std::make_unique</code>) is a zero-overhead <strong>sole owner</strong>; move it to transfer ownership, you can't copy it.</li>
+            <li><code>std::shared_ptr</code> (via <code>std::make_shared</code>) uses a <strong>reference count</strong> and frees the object when the last owner is gone.</li>
+            <li><code>std::weak_ptr</code> observes a <code>shared_ptr</code> without owning it; call <code>lock()</code> to use it safely and to <strong>break reference cycles</strong>.</li>
+            <li>Default to <code>unique_ptr</code>; use <code>shared_ptr</code> only for real shared ownership; use <code>weak_ptr</code> for back-references.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

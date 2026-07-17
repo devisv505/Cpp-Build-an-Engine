@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dynamic Memory: new, delete &amp; the Heap — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn the stack vs the heap, how new and delete work, why runtime-sized data needs heap allocation, and how to avoid leaks and dangling pointers.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Dynamic Memory: new, delete &amp; the Heap</h1>
+
+        <p class="lead">In the last lesson you learned that a pointer just stores an address. Now we ask a deeper question: <strong>where does the data those pointers point to actually live, and who decides how long it stays alive?</strong> Answering that unlocks one of the most important tools in C++: allocating memory yourself, on demand, at runtime. Every mesh, texture and game object our engine loads will live in this kind of memory.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The difference between the <strong>stack</strong> and the <strong>heap</strong>, and when each is used</li>
+            <li>How to allocate and free single values with <code>new</code> and <code>delete</code></li>
+            <li>How to allocate arrays whose size is only known at runtime with <code>new[]</code> and <code>delete[]</code></li>
+            <li>Why heap allocation is necessary for lifetime beyond a scope and runtime-sized data</li>
+            <li>The two classic bugs — <strong>memory leaks</strong> and <strong>dangling pointers</strong> — and how to spot them</li>
+          </ul>
+        </div>
+
+        <h2>Two places memory comes from</h2>
+
+        <p>Every variable your program uses lives somewhere in memory. There are two regions we care about right now: the <strong>stack</strong> and the <strong>heap</strong>. Understanding which is which explains almost every "why did my data disappear?" bug beginners hit.</p>
+
+        <h3>The stack: automatic and fast</h3>
+
+        <p>When you write a normal local variable, it lives on the stack. The stack is a region the compiler manages for you automatically. Each time a function is called, a block of stack space (a <em>stack frame</em>) is reserved for its locals; when the function returns, that block is instantly reclaimed. You never call anything to make this happen.</p>
+
+        <pre><code class="language-cpp" data-file="stack.cpp">#include &lt;iostream&gt;
+
+void demo() {
+    int health = 100;   // lives on the stack
+    int mana   = 50;    // also on the stack
+    std::cout &lt;&lt; health + mana &lt;&lt; '\n';
+}   // &lt;-- health and mana are destroyed here, automatically
+
+int main() {
+    demo();
+    return 0;
+}</code></pre>
+
+        <p>The stack is wonderfully convenient, but it has two hard limits. First, a stack variable dies the moment its <strong>scope</strong> (the <code>{ }</code> block it was declared in) ends. Second, the compiler must know the exact size at compile time. Both of those limits are exactly what the heap frees us from.</p>
+
+        <h3>The heap: manual and flexible</h3>
+
+        <p>The heap (also called the <em>free store</em>) is a large pool of memory you can request pieces of whenever you want, in whatever size you compute at runtime. Memory you take from the heap stays alive until <em>you</em> explicitly hand it back — it ignores scopes entirely. That power is the whole point, and also the responsibility.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">A quick mental model</div>
+            <p>Think of the stack as a stack of plates that's tidied up for you automatically, and the heap as a locker room where you rent a locker for as long as you like — but you must remember to return the key, or that locker stays occupied forever.</p>
+          </div>
+        </div>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="30" y="30" width="230" height="140" rx="8" stroke="#4aa8ff"/>
+              <text x="145" y="55" text-anchor="middle" fill="#4aa8ff" stroke="none" font-size="15" font-weight="bold">STACK</text>
+              <rect x="55" y="70" width="180" height="26" rx="4"/>
+              <rect x="55" y="104" width="180" height="26" rx="4"/>
+              <rect x="55" y="138" width="180" height="20" rx="4" stroke-dasharray="4 4"/>
+              <text x="145" y="88" text-anchor="middle" fill="currentColor" stroke="none" font-size="12">auto, scope-bound</text>
+
+              <rect x="340" y="30" width="230" height="140" rx="8" stroke="#4aa8ff"/>
+              <text x="455" y="55" text-anchor="middle" fill="#4aa8ff" stroke="none" font-size="15" font-weight="bold">HEAP</text>
+              <rect x="365" y="72" width="70" height="34" rx="4"/>
+              <rect x="470" y="90" width="80" height="50" rx="4"/>
+              <rect x="380" y="120" width="50" height="30" rx="4"/>
+              <text x="455" y="165" text-anchor="middle" fill="currentColor" stroke="none" font-size="12">manual, you free it</text>
+            </svg>
+          </div>
+          <figcaption>Stack allocations are neat and automatic; heap allocations are yours to manage.</figcaption>
+        </figure>
+
+        <h2>Allocating one value: new and delete</h2>
+
+        <p>To grab a single object from the heap, use the <code>new</code> keyword. It does two things: it reserves enough memory for the type, and it returns a <strong>pointer</strong> to that memory. When you're finished, you return the memory with <code>delete</code>.</p>
+
+        <pre><code class="language-cpp" data-file="new_delete.cpp">#include &lt;iostream&gt;
+
+int main() {
+    // Ask the heap for one int. `p` is a pointer to it.
+    int* p = new int;      // memory reserved, value uninitialised
+    *p = 42;               // write through the pointer
+
+    // You can also allocate and initialise in one step:
+    int* q = new int(7);   // heap int holding 7
+
+    std::cout &lt;&lt; *p &lt;&lt; ' ' &lt;&lt; *q &lt;&lt; '\n';   // 42 7
+
+    delete p;   // give the memory back to the heap
+    delete q;   // every `new` needs exactly one `delete`
+
+    p = nullptr;   // good habit: null out after delete (explained below)
+    q = nullptr;
+    return 0;
+}</code></pre>
+
+        <p>The golden rule is simple to say and easy to forget: <strong>every <code>new</code> must be matched by exactly one <code>delete</code></strong>. Forget the <code>delete</code> and the memory is lost until the program exits (a leak). Call <code>delete</code> twice on the same pointer and you corrupt the heap (undefined behaviour, often a crash).</p>
+
+        <h2>Allocating arrays: new[] and delete[]</h2>
+
+        <p>The single most common reason beginners reach for the heap is a size that isn't known until the program runs. Suppose the user tells us how many particles to spawn, or a model file reports how many vertices it contains — we can't hard-code that. A stack array needs a compile-time size, but <code>new[]</code> accepts a runtime value.</p>
+
+        <pre><code class="language-cpp" data-file="new_array.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int count;
+    std::cout &lt;&lt; "How many scores? ";
+    std::cin  &gt;&gt; count;                 // known only at runtime
+
+    // Allocate an array of `count` ints on the heap.
+    int* scores = new int[count];
+
+    for (int i = 0; i &lt; count; ++i)
+        scores[i] = i * 10;            // index just like a normal array
+
+    for (int i = 0; i &lt; count; ++i)
+        std::cout &lt;&lt; scores[i] &lt;&lt; ' ';
+    std::cout &lt;&lt; '\n';
+
+    delete[] scores;   // NOTE the [] — required for array allocations
+    scores = nullptr;
+    return 0;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Match the brackets</div>
+            <p>Memory from <code>new[]</code> must be freed with <code>delete[]</code>, and memory from plain <code>new</code> with plain <code>delete</code>. Mixing them (for example <code>delete scores;</code> without the brackets) is undefined behaviour. The compiler will not warn you.</p>
+          </div>
+        </div>
+
+        <h2>Why bother? Lifetime and runtime size</h2>
+
+        <p>There are two situations where the stack simply can't help, and the heap is the answer.</p>
+
+        <h3>1. Data that must outlive the function that created it</h3>
+
+        <p>Imagine a factory function that builds an object and hands it back to the caller. If it lived on the stack, it would be destroyed the instant the function returned, and the caller would receive a pointer to garbage. Heap memory ignores scope, so it survives.</p>
+
+        <pre><code class="language-cpp" data-file="factory.cpp">#include &lt;iostream&gt;
+
+// Returns a pointer to a heap int that survives after we return.
+int* makeCounter(int start) {
+    int* c = new int(start);   // heap: outlives this function
+    return c;                  // caller now owns this memory
+}
+
+int main() {
+    int* counter = makeCounter(10);
+    *counter += 5;
+    std::cout &lt;&lt; *counter &lt;&lt; '\n';   // 15
+
+    delete counter;   // the caller is responsible for freeing it
+    counter = nullptr;
+    return 0;
+}</code></pre>
+
+        <h3>2. Sizes decided at runtime</h3>
+
+        <p>As we saw with <code>new int[count]</code>, the amount of data often depends on user input, a file, or a network message. This is precisely our situation in the engine: when we load a mesh, the vertex and index counts come from the file. We'll allocate exactly the right amount of memory to hold them.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">You've already been using the heap</div>
+            <p>Remember <code>std::vector</code> and <code>std::string</code>? They call <code>new[]</code> and <code>delete[]</code> internally so you don't have to. Learning the raw mechanics here is what lets you understand <em>why</em> those containers exist and trust what they're doing under the hood.</p>
+          </div>
+        </div>
+
+        <h2>The two bugs everyone meets</h2>
+
+        <p>Manual memory management is powerful, but it introduces two failure modes that have haunted C++ programmers for decades. Learn to recognise them now.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Bug</th><th>What happened</th><th>Symptom</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><strong>Memory leak</strong></td><td>You called <code>new</code> but never <code>delete</code>. The memory is never returned.</td><td>Program's memory use climbs over time until it slows or crashes.</td></tr>
+              <tr><td><strong>Dangling pointer</strong></td><td>You <code>delete</code>d the memory but kept using the pointer that referred to it.</td><td>Reads garbage, corrupts data, or crashes — often unpredictably.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <pre><code class="language-cpp" data-file="bugs.cpp">#include &lt;iostream&gt;
+
+void leak() {
+    int* data = new int[1000];   // allocated...
+    // ...function ends without delete[] -- 1000 ints leaked forever
+}
+
+void dangling() {
+    int* p = new int(5);
+    delete p;              // memory returned to the heap
+    // std::cout &lt;&lt; *p;    // BUG: `p` now dangles, *p is undefined behaviour
+    p = nullptr;           // the fix: null it out so misuse is obvious
+    // now `if (p)` is false, and *p would crash loudly instead of silently
+}
+
+int main() {
+    leak();
+    dangling();
+    return 0;
+}</code></pre>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Using memory after delete is undefined behaviour</div>
+            <p>A dangling pointer might appear to work today and crash tomorrow, because the freed memory hasn't been reused <em>yet</em>. These are among the hardest bugs to track down. Two habits tame them: set a pointer to <code>nullptr</code> right after <code>delete</code>, and never <code>delete</code> the same pointer twice. Deleting a <code>nullptr</code> is always safe and does nothing.</p>
+          </div>
+        </div>
+
+        <h2>A glimpse ahead: we'll stop doing this by hand</h2>
+
+        <p>You might already be feeling the tension: matching every <code>new</code> with exactly one <code>delete</code>, along every possible path a function can take, is genuinely hard to get right. Miss one and you leak; do it twice and you crash. Real engines don't manage memory this way by hand.</p>
+
+        <p>In <strong>Module 3</strong> we'll replace almost all raw <code>new</code>/<code>delete</code> with <strong>smart pointers</strong> — <code>std::unique_ptr</code> and <code>std::shared_ptr</code> — which free the memory automatically when it's no longer needed. That's how our engine's components will be owned: a <code>unique_ptr&lt;Mesh&gt;</code> here, a <code>shared_ptr&lt;Texture&gt;</code> there, with the cleanup handled for us. But you need today's raw mechanics first, because a smart pointer is just a thin, safe wrapper around exactly the <code>new</code> and <code>delete</code> you've now learned.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">The rule of thumb going forward</div>
+            <p>Prefer stack variables and <code>std::vector</code> for everyday code; reach for raw <code>new</code>/<code>delete</code> only to understand the machinery. From Module 3 on, prefer smart pointers whenever an object must live on the heap.</p>
+          </div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Local variables live on the <strong>stack</strong>: automatic, fast, but bound to their scope and fixed in size at compile time.</li>
+            <li>The <strong>heap</strong> gives you memory that survives scopes and can be sized at runtime — you request it with <code>new</code>/<code>new[]</code> and return it with <code>delete</code>/<code>delete[]</code>.</li>
+            <li>Every <code>new</code> needs exactly one matching <code>delete</code>; match <code>new[]</code> with <code>delete[]</code>.</li>
+            <li>The heap is essential when data must outlive the function that made it, or when the size is only known at runtime.</li>
+            <li>Forgetting to free leaks memory; using a pointer after <code>delete</code> leaves it <strong>dangling</strong> — set pointers to <code>nullptr</code> after freeing.</li>
+            <li>In Module 3 we'll replace raw <code>new</code>/<code>delete</code> with <strong>smart pointers</strong> that clean up automatically.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

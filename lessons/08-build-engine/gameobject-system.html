@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GameObjects &amp; Components — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build a Unity-style GameObject that owns a Transform and a list of Components, with templated AddComponent and GetComponent.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>GameObjects &amp; Components</h1>
+
+        <p class="lead">
+          Last lesson we built a <code>Transform</code> that knows its position, rotation and scale, and can be
+          parented to another transform. Now we assemble the heart of the engine: the
+          <strong>GameObject</strong>. Just like Unity, a GameObject is mostly an empty shell — a container that
+          <em>owns a Transform</em> and a list of <strong>Components</strong> that give it behaviour. This
+          "composition over inheritance" design is what lets a designer build a spinning enemy, a camera or a
+          glowing pickup from the same small set of reusable parts.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why real engines favour <strong>composition</strong> (components) over deep inheritance trees.</li>
+            <li>How to write a <code>Component</code> base class with virtual <code>OnUpdate</code>/<code>OnRender</code> hooks and an <code>owner</code> pointer.</li>
+            <li>How a <code>GameObject</code> owns its parts with <code>std::vector&lt;std::unique_ptr&lt;Component&gt;&gt;</code>.</li>
+            <li>How to write templated <code>AddComponent&lt;T&gt;(args...)</code> and <code>GetComponent&lt;T&gt;()</code> using perfect forwarding and <code>dynamic_cast</code>.</li>
+          </ul>
+        </div>
+
+        <h2>Composition, not a giant inheritance tree</h2>
+        <p>
+          A tempting first design is to make everything inherit from a base <code>Entity</code>: <code>Player</code>
+          extends <code>Entity</code>, <code>Enemy</code> extends <code>Entity</code>, and so on. That falls apart
+          fast. What about a flying, shooting enemy? A player that can also be a camera target? Deep inheritance
+          forces every combination into one rigid line, and you quickly get "diamond" problems and copy-pasted code.
+        </p>
+        <p>
+          Unity and Unreal solve this with <strong>composition</strong>. A GameObject <em>has</em> behaviours rather
+          than <em>being</em> a specific type. Want it to move? Add a <code>MoverComponent</code>. Want it to draw a
+          mesh? Add a <code>MeshRenderer</code>. Want a camera? Add a <code>CameraComponent</code> (next lesson).
+          The GameObject itself stays tiny and generic — the components carry the logic.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">The mental model</div>
+          <p>A GameObject is a <strong>noun</strong> ("the goblin"); components are its <strong>verbs and adjectives</strong> ("moves", "renders", "is on fire"). You describe an object by the components you bolt onto it.</p></div>
+        </div>
+
+        <h2>The Component base class</h2>
+        <p>
+          Every component shares a common interface so the GameObject can treat them uniformly. We give it two
+          virtual hooks — <code>OnUpdate(float dt)</code> for per-frame logic and <code>OnRender()</code> for
+          drawing — plus a back-pointer to the GameObject that owns it. That <code>owner</code> pointer is how a
+          component reaches its own <code>Transform</code> or finds sibling components.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Component.h">#pragma once
+
+class GameObject; // forward declaration — we only need a pointer here
+
+// Base class for every behaviour that can live on a GameObject.
+class Component {
+public:
+    virtual ~Component() = default; // virtual dtor: safe deletion through base pointer
+
+    // Called once per frame with the frame time in seconds.
+    virtual void OnUpdate(float dt) {}
+
+    // Called during the render pass. Empty by default so
+    // non-visual components (movers, scripts) can ignore it.
+    virtual void OnRender() {}
+
+    // The GameObject that owns this component. Set by AddComponent.
+    GameObject* owner = nullptr;
+};</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Why the virtual destructor matters</div>
+          <p>We store components as <code>unique_ptr&lt;Component&gt;</code> but each one is really a derived type. When the vector is destroyed it deletes through the <em>base</em> pointer. Without <code>virtual ~Component()</code>, the derived destructor would be skipped — a classic memory bug. This is exactly the polymorphism rule from the earlier virtual-functions lesson.</p></div>
+        </div>
+
+        <h2>The GameObject: a Transform plus a bag of components</h2>
+        <p>
+          Now the container itself. It owns exactly one <code>Transform</code> (every object has a place in the
+          world) and a <code>std::vector</code> of components. We use <code>std::unique_ptr</code> so the
+          GameObject has clear, single ownership: when the GameObject dies, its components die with it, and we never
+          leak or double-free.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GameObject.h">#pragma once
+#include &lt;vector&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;utility&gt;      // std::forward, std::move
+#include &lt;type_traits&gt; // std::is_base_of
+#include "Transform.h"
+#include "Component.h"
+
+class GameObject {
+public:
+    explicit GameObject(std::string name = "GameObject")
+        : m_name(std::move(name)) {}
+
+    // Create a component of type T in place, wire up its owner,
+    // and hand back a raw pointer so the caller can configure it.
+    template &lt;typename T, typename... Args&gt;
+    T* AddComponent(Args&amp;&amp;... args) {
+        // Compile-time guard: T must actually be a Component.
+        static_assert(std::is_base_of&lt;Component, T&gt;::value,
+                      "T must derive from Component");
+
+        auto comp = std::make_unique&lt;T&gt;(std::forward&lt;Args&gt;(args)...);
+        comp-&gt;owner = this;          // let the component find us back
+        T* raw = comp.get();          // borrow a non-owning pointer
+        m_components.push_back(std::move(comp)); // vector now owns it
+        return raw;
+    }
+
+    // Return the first component of type T, or nullptr if none.
+    template &lt;typename T&gt;
+    T* GetComponent() {
+        for (const auto&amp; c : m_components) {
+            // dynamic_cast succeeds only if the real type is a T.
+            if (T* hit = dynamic_cast&lt;T*&gt;(c.get()))
+                return hit;
+        }
+        return nullptr;
+    }
+
+    // Per-frame tick: forward to every component.
+    void Update(float dt) {
+        for (const auto&amp; c : m_components)
+            c-&gt;OnUpdate(dt);
+    }
+
+    // Render pass: forward to every component.
+    void Render() {
+        for (const auto&amp; c : m_components)
+            c-&gt;OnRender();
+    }
+
+    Transform&amp; GetTransform()       { return m_transform; }
+    const std::string&amp; GetName() const { return m_name; }
+
+private:
+    std::string m_name;
+    Transform   m_transform; // every GameObject has exactly one
+    std::vector&lt;std::unique_ptr&lt;Component&gt;&gt; m_components;
+};</code></pre>
+
+        <h3>Reading the two templates</h3>
+        <p>
+          <code>AddComponent&lt;T&gt;(args...)</code> is a variadic template. The <code>Args&amp;&amp;...</code>
+          parameters and <code>std::forward</code> are <strong>perfect forwarding</strong>: whatever arguments you
+          pass are handed straight to <code>T</code>'s constructor without extra copies. So
+          <code>AddComponent&lt;MoverComponent&gt;(5.0f)</code> constructs a <code>MoverComponent(5.0f)</code>
+          directly inside the vector.
+        </p>
+        <p>
+          <code>GetComponent&lt;T&gt;()</code> walks the list and uses <code>dynamic_cast</code>, which returns a
+          valid pointer only when the stored object really is a <code>T</code> (or derived from it), and
+          <code>nullptr</code> otherwise. That is exactly how Unity's <code>GetComponent&lt;Rigidbody&gt;()</code>
+          behaves.
+        </p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Never store the raw pointer past the GameObject's life</div>
+          <p><code>AddComponent</code> and <code>GetComponent</code> return <strong>non-owning</strong> raw pointers — fine for reading and configuring right now, but the <code>unique_ptr</code> in the vector is the real owner. If the GameObject is destroyed, that pointer dangles. Never <code>delete</code> it yourself, and never keep it around longer than the GameObject.</p></div>
+        </div>
+
+        <h2>A concrete component</h2>
+        <p>
+          Let's write a tiny <code>MoverComponent</code> that spins its owner every frame. Notice how it reaches the
+          owner's <code>Transform</code> through the <code>owner</code> pointer — no globals, no casting gymnastics.
+        </p>
+
+        <pre><code class="language-cpp" data-file="MoverComponent.h">#pragma once
+#include "Component.h"
+#include "GameObject.h"
+
+// Rotates its owner around the Y axis at a fixed speed.
+class MoverComponent : public Component {
+public:
+    explicit MoverComponent(float degreesPerSecond)
+        : m_speed(degreesPerSecond) {}
+
+    void OnUpdate(float dt) override {
+        // Reach into the GameObject we belong to and nudge its rotation.
+        Transform&amp; t = owner-&gt;GetTransform();
+        t.rotationY += m_speed * dt; // dt keeps motion frame-rate independent
+    }
+
+private:
+    float m_speed;
+};</code></pre>
+
+        <h2>Putting it together</h2>
+        <p>
+          Here is the whole pattern in action: build a GameObject, bolt components onto it, then run a simple
+          update/render loop. This is the skeleton your engine's scene loop will grow from.
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include "GameObject.h"
+#include "MoverComponent.h"
+
+int main() {
+    GameObject enemy("Goblin");
+
+    // Compose behaviour: this goblin spins at 90 degrees/second.
+    enemy.AddComponent&lt;MoverComponent&gt;(90.0f);
+
+    // Later we can ask for it back by type.
+    if (MoverComponent* m = enemy.GetComponent&lt;MoverComponent&gt;())
+        std::cout &lt;&lt; enemy.GetName() &lt;&lt; " has a mover.\n";
+
+    // A fake game loop: 3 frames at ~60 FPS (dt = 1/60 second).
+    const float dt = 1.0f / 60.0f;
+    for (int frame = 0; frame &lt; 3; ++frame) {
+        enemy.Update(dt);   // ticks every component
+        enemy.Render();     // draws every component
+
+        float y = enemy.GetTransform().rotationY;
+        std::cout &lt;&lt; "Frame " &lt;&lt; frame
+                  &lt;&lt; " rotationY = " &lt;&lt; y &lt;&lt; " degrees\n";
+    }
+    return 0;
+}</code></pre>
+
+        <p>
+          Because <code>dt</code> is <sup>1</sup>&frasl;<sub>60</sub> of a second and the speed is 90 deg/s, each
+          frame adds 1.5 degrees. Run it and you'll see the rotation climb 1.5, 3.0, 4.5 — motion that stays the
+          same speed no matter the frame rate. When we render meshes with DirectX later, this same
+          <code>Transform</code> becomes a world matrix fed to the vertex shader.
+        </p>
+
+        <h3>Update vs. Render — why two passes?</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pass</th><th>Runs</th><th>Job</th></tr></thead>
+            <tbody>
+              <tr><td><code>OnUpdate(dt)</code></td><td>Once per frame, before drawing</td><td>Change state: move, rotate, run gameplay logic, read input.</td></tr>
+              <tr><td><code>OnRender()</code></td><td>Once per frame, after all updates</td><td>Submit draw calls using the now-final state.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Splitting the two keeps rendering clean: everything finishes moving <em>first</em>, so no object draws
+          itself halfway between two states. A camera can safely read every transform during render because updates
+          are already done.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="#4aa8ff" stroke-width="2" xmlns="http://www.w3.org/2000/svg">
+              <rect x="20" y="70" width="150" height="60" rx="8"/>
+              <text x="95" y="105" fill="currentColor" stroke="none" text-anchor="middle" font-size="15">GameObject</text>
+              <line x1="170" y1="100" x2="230" y2="45"/>
+              <line x1="170" y1="100" x2="230" y2="100"/>
+              <line x1="170" y1="100" x2="230" y2="155"/>
+              <rect x="230" y="20" width="180" height="46" rx="8"/>
+              <text x="320" y="48" fill="currentColor" stroke="none" text-anchor="middle" font-size="14">Transform</text>
+              <rect x="230" y="77" width="180" height="46" rx="8"/>
+              <text x="320" y="105" fill="currentColor" stroke="none" text-anchor="middle" font-size="14">MoverComponent</text>
+              <rect x="230" y="134" width="180" height="46" rx="8"/>
+              <text x="320" y="162" fill="currentColor" stroke="none" text-anchor="middle" font-size="14">MeshRenderer …</text>
+            </svg>
+          </div>
+          <figcaption>One GameObject owns a single Transform and any number of Components.</figcaption>
+        </figure>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body"><div class="c-title">Don't try to copy a GameObject</div>
+          <p><code>std::unique_ptr</code> is move-only, so a <code>GameObject</code> that holds a <code>vector</code> of them is non-copyable too. Writing <code>GameObject a = b;</code> will fail to compile — and that's a feature. Pass GameObjects by reference or store them in a scene container (we'll build that soon); never copy them around by value.</p></div>
+        </div>
+
+        <h2>How this echoes Unity</h2>
+        <p>
+          If you've touched Unity, this will feel familiar: <code>GameObject.AddComponent&lt;T&gt;()</code>,
+          <code>GetComponent&lt;T&gt;()</code>, a <code>Transform</code> that's always present, and
+          <code>MonoBehaviour</code>'s <code>Update()</code> callback. We've just built the C++ bones of that same
+          idea. In the coming lessons we'll add a scene that owns many GameObjects, then a
+          <code>CameraComponent</code> that produces the view and projection matrices DirectX needs.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Engines favour <strong>composition</strong>: a GameObject <em>has</em> components instead of inheriting one rigid type.</li>
+            <li>The <code>Component</code> base class defines virtual <code>OnUpdate(dt)</code>/<code>OnRender()</code> hooks and an <code>owner</code> back-pointer — with a virtual destructor for safe deletion.</li>
+            <li>A <code>GameObject</code> owns one <code>Transform</code> plus <code>std::vector&lt;std::unique_ptr&lt;Component&gt;&gt;</code>, giving clear single ownership.</li>
+            <li><code>AddComponent&lt;T&gt;(args...)</code> uses variadic templates and perfect forwarding; <code>GetComponent&lt;T&gt;()</code> uses <code>dynamic_cast</code> to find a component by type.</li>
+            <li><code>Update</code> and <code>Render</code> simply iterate the components — the same loop your scene and camera will build on next.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

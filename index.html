@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Learn C++ &amp; DirectX — Build Your Own Game Engine From Scratch</title>
+  <meta name="description" content="A free, hands-on course that teaches C++ from absolute zero and guides you to build your own component-based 3D engine with DirectX 11 — using the same ideas as Unity and Unreal.">
+  <link rel="stylesheet" href="css/styles.css">
+  <style>
+    .landing-main { padding-top: var(--header-h); }
+    /* Content is always plainly visible — no opacity/animation tricks that could
+       leave it hidden in throttled or animation-paused environments. */
+    .cont-note { font-size: 13px; color: var(--text-faint); margin-top: 14px; }
+    .project-cta {
+      display: grid; grid-template-columns: 1.2fr 1fr; gap: 32px; align-items: center;
+      background: linear-gradient(135deg, rgba(124,92,255,0.12), var(--accent-soft) 60%, transparent);
+      border: 1px solid var(--border); border-radius: 16px; padding: 36px;
+    }
+    .project-cta h2 { text-align: left; margin: 12px 0 12px; font-size: 1.7rem; }
+    .project-cta p { color: var(--text-dim); margin: 0 0 22px; }
+    .pc-panel { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 12px; padding: 22px; }
+    .pc-panel .pcp-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+    .pc-panel .pcp-n { font-size: 1.8rem; font-weight: 800; }
+    .pc-panel .pcp-n small { font-size: 1rem; color: var(--text-faint); font-weight: 600; }
+    .pc-panel .pcp-pct { font-size: 13px; color: var(--accent-2); font-weight: 700; }
+    .pc-bar { height: 8px; background: var(--bg-inset); border-radius: 99px; overflow: hidden; }
+    .pc-bar > span { display: block; height: 100%; width: 0; background: var(--accent-grad); border-radius: 99px; transition: width .5s ease; }
+    .pc-panel .pcp-list { list-style: none; padding: 0; margin: 16px 0 0; }
+    .pc-panel .pcp-list li { display: flex; gap: 9px; align-items: center; font-size: 13px; color: var(--text-dim); padding: 5px 0; }
+    .pc-panel .pcp-list .d { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); flex-shrink: 0; }
+    @media (max-width: 760px) { .project-cta { grid-template-columns: 1fr; padding: 26px; } }
+  </style>
+</head>
+<body class="landing">
+  <div id="app">
+    <main class="landing-main">
+      <section class="hero">
+        <span class="kicker">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z"/></svg>
+          Free · From zero to your own engine
+        </span>
+        <h1>Learn <span class="grad">C++ &amp; DirectX</span><br>by building a game engine</h1>
+        <p class="sub">Start with nothing but a fresh PC. Finish with your own component-based 3D engine — rendered in DirectX 11 and architected like Unity and Unreal. Every concept builds toward that one goal.</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" id="start-btn" href="lessons/00-getting-started/what-is-cpp.html">
+            Start the course
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="btn btn-ghost" href="#roadmap">See the roadmap</a>
+        </div>
+        <div class="cont-note" id="cont-note" hidden></div>
+
+        <div class="hero-stats">
+          <div class="stat"><div class="n" id="stat-modules">10</div><div class="l">Modules</div></div>
+          <div class="stat"><div class="n" id="stat-lessons">76</div><div class="l">Lessons</div></div>
+          <div class="stat"><div class="n">1</div><div class="l">Engine you build</div></div>
+          <div class="stat"><div class="n" id="stat-progress">0%</div><div class="l">Your progress</div></div>
+        </div>
+      </section>
+
+      <section class="landing-section" id="roadmap">
+        <h2 class="reveal">The roadmap</h2>
+        <p class="section-sub reveal">Nine modules take you from your very first line of code to a running engine. Follow them in order — each one assumes the last.</p>
+        <div class="roadmap" id="roadmap-grid"></div>
+      </section>
+
+      <section class="landing-section">
+        <div class="project-cta reveal">
+          <div>
+            <span class="kicker" style="margin-bottom:14px">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              Project-based
+            </span>
+            <h2>You don't just learn — you build <span class="grad">MiniEngine</span></h2>
+            <p>Every lesson ends with one concrete build task. Complete all <span id="proj-total">76</span> in order and you'll have a working, component-based DirectX&nbsp;11 engine — with a Unity-style scripting layer and multiplayer networking, written entirely by you.</p>
+            <a class="btn btn-primary" href="tasks.html">
+              Open the Build Tracker
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </a>
+          </div>
+          <div class="pc-panel">
+            <div class="pcp-top">
+              <div class="pcp-n" id="pc-count">0<small> / 68 tasks</small></div>
+              <div class="pcp-pct" id="pc-pct">0%</div>
+            </div>
+            <div class="pc-bar"><span id="pc-bar"></span></div>
+            <ul class="pcp-list">
+              <li><span class="d"></span> Open a Win32 window &amp; drive a game loop</li>
+              <li><span class="d"></span> Bring up Direct3D 11 &amp; render a textured cube</li>
+              <li><span class="d"></span> Build a GameObject–Component scene system</li>
+              <li><span class="d"></span> Add MonoBehaviour-style scripting</li>
+              <li><span class="d"></span> Take it online with multiplayer networking</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="landing-section">
+        <h2 class="reveal">Why this course is different</h2>
+        <p class="section-sub reveal">Most tutorials teach syntax in a vacuum. Here, everything you learn has a job in the engine you're building.</p>
+        <div class="feature-grid" id="features"></div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Learn C++ &amp; DirectX — a self-paced course. Built to be read offline; your progress is saved in your browser.</p>
+      <p style="margin-top:8px;opacity:.8">Use the <kbd>←</kbd> / <kbd>→</kbd> keys inside a lesson to move between pages.</p>
+    </footer>
+  </div>
+
+  <script src="js/curriculum.js"></script>
+  <script src="js/tasks.js"></script>
+  <script src="js/main.js"></script>
+  <script>
+  (function () {
+    var ROOT = "";
+    // ---- Roadmap cards ----
+    var grid = document.getElementById("roadmap-grid");
+    window.CURRICULUM.forEach(function (mod) {
+      var first = mod.dir + "/" + mod.lessons[0].slug + ".html";
+      var chips = "";
+      var show = mod.lessons.slice(0, 3);
+      show.forEach(function (l) { chips += '<span class="chip">' + l.title + '</span>'; });
+      if (mod.lessons.length > 3) chips += '<span class="chip more">+' + (mod.lessons.length - 3) + ' more</span>';
+      var a = document.createElement("a");
+      a.className = "road-card reveal";
+      a.href = first;
+      a.innerHTML =
+        '<div class="rc-top"><div class="rc-num">' + mod.num + '</div>' +
+        '<div><h3>' + mod.title + '</h3><div class="rc-tag">' + mod.tag + ' · ' + mod.lessons.length + ' lessons</div></div></div>' +
+        '<p>' + mod.blurb + '</p>' +
+        '<div class="rc-lessons">' + chips + '</div>';
+      grid.appendChild(a);
+    });
+
+    // ---- Features ----
+    var FEATS = [
+      ["M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5", "Truly from scratch", "No prior programming assumed. We install the tools, explain how code becomes a program, and go from <code>Hello, World</code> upward."],
+      ["M2 3h20v14H2zM8 21h8M12 17v4", "Real DirectX 11", "Not a toy renderer. You'll write genuine Direct3D 11 — swap chains, shaders, buffers, textures and a moving camera."],
+      ["M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z", "Engine architecture", "Learn the GameObject–Component model, scenes, and subsystems the way Unity and Unreal actually structure them."],
+      ["M8 3H5a2 2 0 0 0-2 2v3m0 8v3a2 2 0 0 0 2 2h3m8 0h3a2 2 0 0 0 2-2v-3m0-8V5a2 2 0 0 0-2-2h-3", "Hands-on code", "Every lesson has real, correct, copy-ready code — with a copy button and syntax highlighting built in."],
+      ["M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4 12 14.01l-3-3", "Track your progress", "Mark lessons complete and watch the progress bar fill. Your place is saved locally so you can stop and resume."],
+      ["M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z", "Works offline", "The whole course is plain HTML, CSS and JavaScript. No account, no internet, no build step — just open and learn."]
+    ];
+    var fg = document.getElementById("features");
+    FEATS.forEach(function (f) {
+      var d = document.createElement("div");
+      d.className = "feat reveal";
+      d.innerHTML = '<div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="' + f[0] + '"/></svg></div>' +
+        '<h3>' + f[1] + '</h3><p>' + f[2] + '</p>';
+      fg.appendChild(d);
+    });
+
+    // ---- Progress + continue button ----
+    var progress = {};
+    try { progress = JSON.parse(localStorage.getItem("cppdx-progress")) || {}; } catch (e) {}
+    var done = 0;
+    var firstIncomplete = null;
+    window.LESSONS_FLAT.forEach(function (l) {
+      if (progress[l.id]) done++;
+      else if (!firstIncomplete) firstIncomplete = l;
+    });
+    var pct = Math.round((done / window.LESSON_TOTAL) * 100);
+    document.getElementById("stat-progress").textContent = pct + "%";
+    document.getElementById("stat-lessons").textContent = window.LESSON_TOTAL;
+    document.getElementById("stat-modules").textContent = window.CURRICULUM.length;
+    if (window.TASK_TOTAL) document.getElementById("proj-total").textContent = window.TASK_TOTAL;
+
+    // Task/project progress
+    var tasksDone = {};
+    try { tasksDone = JSON.parse(localStorage.getItem("cppdx-tasks")) || {}; } catch (e) {}
+    if (window.TASKS) {
+      var tn = 0;
+      window.TASKS.forEach(function (t) { if (tasksDone[t.id]) tn++; });
+      var tpct = Math.round((tn / window.TASK_TOTAL) * 100);
+      document.getElementById("pc-count").innerHTML = tn + '<small> / ' + window.TASK_TOTAL + ' tasks</small>';
+      document.getElementById("pc-pct").textContent = tpct + "%";
+      document.getElementById("pc-bar").style.width = tpct + "%";
+    }
+
+    if (done > 0 && firstIncomplete) {
+      var btn = document.getElementById("start-btn");
+      btn.href = firstIncomplete.href;
+      btn.querySelector("svg").previousSibling.textContent = "Continue learning ";
+      var note = document.getElementById("cont-note");
+      note.hidden = false;
+      note.innerHTML = "You've completed <strong>" + done + "</strong> of " + window.LESSON_TOTAL +
+        " lessons. Up next: <strong>" + firstIncomplete.title + "</strong>.";
+    }
+
+    // Entrance animation is pure CSS (see .reveal / @keyframes reveal-in above) —
+    // no JS gates visibility, so content is always shown.
+  })();
+  </script>
+</body>
+</html>

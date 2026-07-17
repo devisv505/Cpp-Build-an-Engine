@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Classes &amp; Objects — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn how C++ classes bundle data and behavior, the difference between a class and an object, member functions, and the this pointer.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Classes &amp; Objects</h1>
+        <p class="lead">Up to now our programs have been loose collections of variables and free functions. That works for tiny examples, but a 3D engine is made of <em>things</em> — a transform, a mesh, a timer, a camera — each with its own data and its own behavior. The C++ tool for modeling a "thing" is the <strong>class</strong>. In this lesson you'll learn how a class bundles data and functions together, and how to stamp out real objects from it. This is the single most important idea behind how Unity and Unreal are built.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The difference between a <strong>class</strong> (the blueprint) and an <strong>object</strong> (a live instance).</li>
+            <li>How to declare <strong>data members</strong> and <strong>member functions</strong> (methods) inside a class.</li>
+            <li>How to create objects and call their methods with the <code>.</code> operator.</li>
+            <li>What the hidden <code>this</code> pointer is and why every method has one.</li>
+            <li>How <code>public</code> and <code>private</code> control what the outside world can touch.</li>
+          </ul>
+        </div>
+
+        <h2>Class vs. object: blueprint vs. building</h2>
+        <p>A <strong>class</strong> is a description — a blueprint. It says "an object of this type will hold these pieces of data and will be able to do these things." Writing a class does not create anything you can use yet, just like a blueprint for a house is not a house you can live in.</p>
+        <p>An <strong>object</strong> (also called an <strong>instance</strong>) is a real, concrete value built from that blueprint. From one class you can create as many objects as you like, and each one carries its own copy of the data. One <code>Vector2</code> class, a thousand <code>Vector2</code> objects — each with its own <code>x</code> and <code>y</code>.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="2" font-family="sans-serif" font-size="13">
+              <rect x="20" y="60" width="130" height="80" rx="8" stroke="#4aa8ff"/>
+              <text x="85" y="45" text-anchor="middle" fill="currentColor" stroke="none" font-weight="bold">class Vector2</text>
+              <text x="85" y="95" text-anchor="middle" fill="currentColor" stroke="none">float x, y;</text>
+              <text x="85" y="120" text-anchor="middle" fill="currentColor" stroke="none">length()</text>
+              <path d="M150 100 L230 60" stroke="#4aa8ff"/>
+              <path d="M150 100 L230 100" stroke="#4aa8ff"/>
+              <path d="M150 100 L230 140" stroke="#4aa8ff"/>
+              <rect x="235" y="40" width="150" height="40" rx="6"/>
+              <text x="310" y="65" text-anchor="middle" fill="currentColor" stroke="none">obj a: (3, 4)</text>
+              <rect x="235" y="82" width="150" height="40" rx="6"/>
+              <text x="310" y="107" text-anchor="middle" fill="currentColor" stroke="none">obj b: (0, 1)</text>
+              <rect x="235" y="124" width="150" height="40" rx="6"/>
+              <text x="310" y="149" text-anchor="middle" fill="currentColor" stroke="none">obj c: (-2, 5)</text>
+              <text x="470" y="105" text-anchor="middle" fill="currentColor" stroke="none">…many objects,</text>
+              <text x="470" y="123" text-anchor="middle" fill="currentColor" stroke="none">one blueprint</text>
+            </svg>
+          </div>
+          <figcaption>One class describes the shape; each object holds its own data.</figcaption>
+        </figure>
+
+        <h2>Declaring your first class</h2>
+        <p>Let's build a small <code>Vector2</code> — a 2D point or direction. This is a type we'll use constantly in the engine for screen positions, UV coordinates, and velocities. Here's the whole thing:</p>
+
+        <pre><code class="language-cpp" data-file="Vector2.cpp">#include &lt;iostream&gt;
+#include &lt;cmath&gt;
+
+// A class declaration: the blueprint for a 2D vector.
+class Vector2 {
+public:                    // everything below is usable from outside
+    // Data members: each object gets its own x and y.
+    float x = 0.0f;
+    float y = 0.0f;
+
+    // Member function (method): computes the vector's length.
+    float length() const {
+        // We can use x and y directly — they belong to this object.
+        return std::sqrt(x * x + y * y);
+    }
+
+    // Another method: shift this vector by another one.
+    void add(const Vector2&amp; other) {
+        x += other.x;
+        y += other.y;
+    }
+};
+
+int main() {
+    // Create an object (an instance) of Vector2.
+    Vector2 position;      // x and y start at 0.0f
+    position.x = 3.0f;     // reach in and set the data members
+    position.y = 4.0f;
+
+    // Call a method with the dot operator.
+    std::cout &lt;&lt; "Length: " &lt;&lt; position.length() &lt;&lt; "\n";  // 5
+
+    Vector2 velocity;
+    velocity.x = 1.0f;
+    velocity.y = -2.0f;
+
+    position.add(velocity);   // position becomes (4, 2)
+    std::cout &lt;&lt; "Now at: " &lt;&lt; position.x &lt;&lt; ", " &lt;&lt; position.y &lt;&lt; "\n";
+    return 0;
+}</code></pre>
+
+        <p>Run it and you'll see <code>Length: 5</code> followed by <code>Now at: 4, 2</code>. Let's unpack what just happened.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't forget the semicolon</div>
+            <p>A class declaration ends with a semicolon after the closing brace: <code>};</code>. This trips up nearly every beginner. If you get a confusing error on the line <em>after</em> your class, a missing <code>;</code> is the usual culprit.</p>
+          </div>
+        </div>
+
+        <h2>Data members and member functions</h2>
+        <p>Inside a class we declare two kinds of things:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Term</th><th>What it is</th><th>In our example</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Data member</strong> (field)</td><td>A variable that belongs to each object</td><td><code>x</code>, <code>y</code></td></tr>
+              <tr><td><strong>Member function</strong> (method)</td><td>A function that operates on an object's data</td><td><code>length()</code>, <code>add()</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The key insight is that a method automatically has access to the object's data members by name. Inside <code>length()</code> we wrote <code>x * x + y * y</code> without saying <em>which</em> object's <code>x</code> — because the method always runs on a specific object, and <code>x</code> means "this object's <code>x</code>." That is what makes a class more than a bag of loose variables: the data and the code that works on it live together.</p>
+
+        <h3>const methods</h3>
+        <p>Notice <code>float length() const</code>. The <code>const</code> after the parameter list promises "this method does not modify the object." <code>length()</code> only reads <code>x</code> and <code>y</code>, so it's marked <code>const</code>. <code>add()</code> changes them, so it is not. Marking read-only methods <code>const</code> is a good habit — the compiler will stop you if you accidentally change data you promised not to, and it lets you call the method on <code>const</code> objects.</p>
+
+        <h2>Creating instances and calling methods</h2>
+        <p>Once the class exists, you create objects just like any other variable — the type name followed by a variable name:</p>
+        <pre><code class="language-cpp">Vector2 position;   // one object
+Vector2 velocity;   // a second, completely independent object</code></pre>
+        <p>To reach the data or behavior of an object, use the <strong>dot operator</strong> <code>.</code>:</p>
+        <ul>
+          <li><code>position.x</code> — access a data member.</li>
+          <li><code>position.length()</code> — call a method on that object.</li>
+        </ul>
+        <p>Because each object owns its data, <code>position.add(velocity)</code> changes only <code>position</code>. <code>velocity</code> is untouched. If you created ten <code>Vector2</code> objects, each would have its own private pair of floats sitting in memory.</p>
+
+        <h2>The <code>this</code> pointer</h2>
+        <p>When you call <code>position.length()</code>, how does the method know it should use <code>position</code>'s data and not <code>velocity</code>'s? Behind the scenes, every non-static member function receives a hidden pointer called <code>this</code>, which points at the object the method was called on. Writing <code>x</code> inside a method is really shorthand for <code>this-&gt;x</code>.</p>
+
+        <pre><code class="language-cpp" data-file="Timer.cpp">class Timer {
+public:
+    float elapsed = 0.0f;   // seconds accumulated so far
+
+    // Advance the timer by dt seconds and return the new total.
+    Timer&amp; tick(float dt) {
+        this-&gt;elapsed += dt;   // 'this' points at the object we called tick on
+        return *this;          // return the object itself, so calls can chain
+    }
+
+    void reset() {
+        elapsed = 0.0f;        // same as this-&gt;elapsed = 0.0f;
+    }
+};
+
+int main() {
+    Timer frameTimer;
+    // Because tick returns *this, we can chain calls:
+    frameTimer.tick(0.016f).tick(0.016f).tick(0.016f);
+    // frameTimer.elapsed is now ~0.048f
+}</code></pre>
+
+        <p>You rarely need to type <code>this-&gt;</code> — plain <code>x</code> works. But it matters in two common cases: when a parameter has the same name as a data member (so you write <code>this-&gt;x = x;</code> to tell them apart), and when you want a method to return the object itself with <code>return *this;</code> so calls can be chained, as in <code>tick(...).tick(...)</code>.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">this is a pointer, so use -&gt;</div>
+            <p><code>this</code> is a pointer to the current object, which is why you write <code>this-&gt;elapsed</code> (arrow) rather than <code>this.elapsed</code> (dot). To hand back the object itself rather than the pointer, dereference it with <code>*this</code>.</p>
+          </div>
+        </div>
+
+        <h2>public vs. private</h2>
+        <p>You've seen the <code>public:</code> label. Members after it are usable from outside the class. C++ also gives you <code>private:</code>, which hides members so only the class's own methods can touch them. This is called <strong>encapsulation</strong>, and it's how you keep an object's internal state consistent — the outside world can only interact through the methods you choose to expose.</p>
+
+        <pre><code class="language-cpp">class Health {
+public:
+    void takeDamage(int amount) {
+        current -= amount;
+        if (current &lt; 0) current = 0;   // clamp — never go negative
+    }
+    int value() const { return current; }
+
+private:
+    int current = 100;   // outside code can't set this to a bad value
+};</code></pre>
+
+        <p>Here nothing outside <code>Health</code> can set <code>current</code> directly to <code>-9999</code>. The only way in is <code>takeDamage()</code>, which enforces the "never below zero" rule. We'll lean on this heavily when we design engine components.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">class vs struct: same tool, different default</div>
+            <p>C++ also has <code>struct</code>. It is almost identical to <code>class</code> — the only real difference is that members are <strong>public by default</strong> in a <code>struct</code> and <strong>private by default</strong> in a <code>class</code>. By convention many engines use <code>struct</code> for plain data holders and <code>class</code> for things with behavior and hidden state.</p>
+          </div>
+        </div>
+
+        <h2>Why this matters for the engine</h2>
+        <p>Component-based engines like Unity and Unreal are, at their core, giant collections of classes. A <code>Transform</code> class holds position, rotation, and scale plus methods to move and rotate. A <code>Mesh</code> class holds vertex data plus a method to draw itself. Our <code>Vector2</code> (and soon a <code>Vector3</code>) will be the tiny building block those larger classes are made of. Every time you write <code>class Something { ... };</code>, you're defining a new type of "thing" your engine can create and manipulate — exactly the mental model you'll use for the rest of this course.</p>
+
+        <p>Right now our objects start with hardcoded default values and we set the data member by member after creation. That's clumsy. In the next lesson we'll fix it with <strong>constructors</strong> — special functions that build an object into a valid state the moment it's created — and their partner, the destructor.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <strong>class</strong> is a blueprint; an <strong>object</strong> (instance) is a concrete value built from it, with its own copy of the data.</li>
+            <li>Classes contain <strong>data members</strong> (variables) and <strong>member functions</strong> / methods (behavior) bundled together.</li>
+            <li>Create an object like a normal variable, then use the <code>.</code> operator to read members and call methods.</li>
+            <li>Every method receives a hidden <code>this</code> pointer to the object it runs on; <code>x</code> means <code>this-&gt;x</code>, and <code>return *this;</code> hands back the object for chaining.</li>
+            <li>Mark read-only methods <code>const</code>, and use <code>private</code> to hide internal state so objects stay valid — the essence of encapsulation.</li>
+            <li>Don't forget the semicolon after the closing <code>}</code> of a class.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

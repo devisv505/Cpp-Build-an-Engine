@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Transform Component &amp; Hierarchy — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build a Unity-style Transform component in C++: position, rotation, scale, local and world matrices, parenting, and dirty-flag caching.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>The Transform Component &amp; Hierarchy</h1>
+
+        <p class="lead">
+          Every object in a game engine needs to answer one question: <em>where am I in the world?</em>
+          The <strong>Transform</strong> is the component that answers it. It is the one component every
+          object always has, and it is what lets a turret follow a tank, a hand follow an arm, and a moon
+          orbit a planet. In this lesson we build a real, working Transform class in modern C++ on top of
+          DirectXMath, then wire objects into a parent–child hierarchy.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Model an object's local-space <strong>position</strong>, <strong>rotation</strong>, and <strong>scale</strong>.</li>
+            <li>Build the local matrix as <code>S * R * T</code> using DirectXMath.</li>
+            <li>Chain transforms through a <strong>parent pointer</strong> to produce a world matrix.</li>
+            <li>Reparent objects safely with <code>SetParent</code>.</li>
+            <li>Add a <strong>dirty flag</strong> so matrices are only recomputed when something actually changes.</li>
+          </ul>
+        </div>
+
+        <h2>Three pieces of data: position, rotation, scale</h2>
+
+        <p>
+          A Transform stores its placement relative to its parent (or to the world, if it has no parent).
+          That placement is always just three things, usually abbreviated <strong>TRS</strong>:
+        </p>
+
+        <ul>
+          <li><strong>Position</strong> — where the origin sits, as a <code>Vector3</code> (x, y, z).</li>
+          <li><strong>Rotation</strong> — the orientation. We store it as a <strong>quaternion</strong> (a <code>Vector4</code>), and offer a friendly Euler-angle setter for humans.</li>
+          <li><strong>Scale</strong> — how much to stretch along each axis, as a <code>Vector3</code> (1,1,1 means "no change").</li>
+        </ul>
+
+        <p>
+          We lean on <strong>DirectXMath</strong>, the math library that ships with DirectX. Its
+          <code>XMFLOAT3</code>/<code>XMFLOAT4</code> types are compact storage, while <code>XMVECTOR</code>
+          and <code>XMMATRIX</code> are the SIMD-accelerated types we compute with.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Why quaternions, not Euler angles?</div>
+            <p>Euler angles (pitch/yaw/roll) are easy to read but suffer from <strong>gimbal lock</strong> and interpolate poorly. Quaternions avoid both. We keep Euler as a convenience <em>input</em> and convert to a quaternion internally.</p>
+          </div>
+        </div>
+
+        <h2>The local matrix: S * R * T</h2>
+
+        <p>
+          To feed a transform to the GPU we collapse those three pieces into a single 4×4 matrix. The order
+          matters: we <strong>scale first, then rotate, then translate</strong>. Doing it the other way would
+          rotate the object around a point far from itself, or scale it after it has already moved.
+        </p>
+
+        <p>
+          DirectXMath uses <strong>row-vector</strong> convention: a point is a row and we transform it as
+          <code>v' = v * M</code>. Because of that, the matrices multiply left-to-right in the order they are
+          applied, so <code>Local = Scale * Rotation * Translation</code>. DirectXMath overloads
+          <code>operator*</code> on <code>XMMATRIX</code> to mean matrix multiply, so the code reads exactly
+          like the formula.
+        </p>
+
+        <h2>The world matrix: walking up the parent chain</h2>
+
+        <p>
+          The local matrix places an object relative to its parent. To get its final <strong>world</strong>
+          placement we combine it with the parent's world matrix. Conceptually: <em>my world = my local,
+          combined with my parent's world</em>. In row-vector order the child's local transform is applied
+          first, so in code that is <code>Local * parent-&gt;GetWorldMatrix()</code>. If there is no parent,
+          the world matrix is simply the local matrix.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 170" fill="none" stroke="currentColor" stroke-width="1.5" font-family="inherit" font-size="13">
+              <rect x="20"  y="65" width="110" height="42" rx="8" stroke="#4aa8ff"/>
+              <text x="75"  y="91" text-anchor="middle" stroke="none" fill="currentColor">Scene root</text>
+              <rect x="180" y="65" width="90" height="42" rx="8"/>
+              <text x="225" y="91" text-anchor="middle" stroke="none" fill="currentColor">Tank</text>
+              <rect x="320" y="65" width="90" height="42" rx="8"/>
+              <text x="365" y="91" text-anchor="middle" stroke="none" fill="currentColor">Turret</text>
+              <rect x="460" y="65" width="110" height="42" rx="8" stroke="#4aa8ff"/>
+              <text x="515" y="91" text-anchor="middle" stroke="none" fill="currentColor">Barrel</text>
+              <path d="M130 86 H180"  stroke="#4aa8ff"/>
+              <path d="M270 86 H320"/>
+              <path d="M410 86 H460"  stroke="#4aa8ff"/>
+              <text x="300" y="35" text-anchor="middle" stroke="none" fill="currentColor">World = Local × Parent's World, all the way up</text>
+            </svg>
+          </div>
+          <figcaption>Each Transform only knows its parent; the world matrix is assembled by walking the chain.</figcaption>
+        </figure>
+
+        <h2>The Transform class</h2>
+
+        <p>
+          Here is the whole component. It stores TRS, builds the two matrices, manages parent/child links,
+          and caches the world matrix behind a <strong>dirty flag</strong> so we skip the math when nothing
+          moved.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Transform.h">#pragma once
+#include &lt;DirectXMath.h&gt;
+#include &lt;vector&gt;
+#include &lt;algorithm&gt;
+
+using namespace DirectX;
+
+class Transform {
+public:
+    // --- Local-space setters (each one invalidates the cached world matrix) ---
+    void SetPosition(const XMFLOAT3&amp; p) { position_ = p; MarkDirty(); }
+    void SetScale(const XMFLOAT3&amp; s)    { scale_    = s; MarkDirty(); }
+    void SetRotation(const XMFLOAT4&amp; q) { rotation_ = q; MarkDirty(); } // quaternion
+
+    const XMFLOAT3&amp; GetPosition() const { return position_; }
+    const XMFLOAT3&amp; GetScale()    const { return scale_; }
+    const XMFLOAT4&amp; GetRotation() const { return rotation_; }
+
+    // Human-friendly rotation: pitch (X), yaw (Y), roll (Z), in radians.
+    void SetEulerAngles(float pitch, float yaw, float roll) {
+        XMVECTOR q = XMQuaternionRotationRollPitchYaw(pitch, yaw, roll);
+        XMStoreFloat4(&amp;rotation_, q);
+        MarkDirty();
+    }
+
+    // Local matrix = Scale * Rotation * Translation (row-vector order).
+    XMMATRIX GetLocalMatrix() const {
+        XMMATRIX S = XMMatrixScaling(scale_.x, scale_.y, scale_.z);
+        XMMATRIX R = XMMatrixRotationQuaternion(XMLoadFloat4(&amp;rotation_));
+        XMMATRIX T = XMMatrixTranslation(position_.x, position_.y, position_.z);
+        return S * R * T; // operator* on XMMATRIX means matrix multiply
+    }
+
+    // World matrix = Local * Parent's World. Cached until something changes.
+    XMMATRIX GetWorldMatrix() const {
+        if (dirty_) {
+            XMMATRIX local = GetLocalMatrix();
+            XMMATRIX world = parent_ ? local * parent_-&gt;GetWorldMatrix() : local;
+            XMStoreFloat4x4(&amp;cachedWorld_, world);
+            dirty_ = false;
+        }
+        return XMLoadFloat4x4(&amp;cachedWorld_);
+    }
+
+    // Reparent this transform, keeping both child lists correct.
+    void SetParent(Transform* newParent) {
+        if (newParent == parent_) return;
+        if (parent_) { // detach from the old parent
+            auto&amp; kids = parent_-&gt;children_;
+            kids.erase(std::remove(kids.begin(), kids.end(), this), kids.end());
+        }
+        parent_ = newParent;
+        if (parent_) parent_-&gt;children_.push_back(this);
+        MarkDirty(); // our world just changed
+    }
+
+private:
+    // Flag ourselves &mdash; and every descendant &mdash; as needing a recompute.
+    void MarkDirty() {
+        if (dirty_) return;              // children were already marked
+        dirty_ = true;
+        for (Transform* child : children_) child-&gt;MarkDirty();
+    }
+
+    XMFLOAT3 position_{ 0.0f, 0.0f, 0.0f };
+    XMFLOAT4 rotation_{ 0.0f, 0.0f, 0.0f, 1.0f }; // identity quaternion
+    XMFLOAT3 scale_{ 1.0f, 1.0f, 1.0f };
+
+    Transform* parent_ = nullptr;
+    std::vector&lt;Transform*&gt; children_;
+
+    mutable bool       dirty_ = true;   // true =&gt; cachedWorld_ is stale
+    mutable XMFLOAT4x4 cachedWorld_;
+};
+</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Why <code>mutable</code>?</div>
+            <p><code>GetWorldMatrix()</code> is logically a read, so callers expect it to be <code>const</code>. But it lazily fills the cache the first time it runs. Marking <code>dirty_</code> and <code>cachedWorld_</code> as <code>mutable</code> lets a <code>const</code> method update them without lying about the object's observable state.</p>
+          </div>
+        </div>
+
+        <h2>Putting it to work: a tank, a turret, a barrel</h2>
+
+        <p>
+          Parenting is the whole point. Move or rotate a parent and every child comes along for free, because
+          each child folds the parent's world matrix into its own. Here we rotate only the turret &mdash; and
+          the barrel, being its child, swings with it automatically.
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">Transform tank;
+tank.SetPosition({ 10.0f, 0.0f, 5.0f });
+
+Transform turret;
+turret.SetParent(&amp;tank);                 // turret rides on the tank
+turret.SetPosition({ 0.0f, 1.5f, 0.0f }); // 1.5 units above the tank's origin
+
+Transform barrel;
+barrel.SetParent(&amp;turret);               // barrel rides on the turret
+barrel.SetPosition({ 0.0f, 0.0f, 2.0f }); // sticks out 2 units in front
+
+// Swing the turret 90 degrees around Y. We touch ONLY the turret...
+turret.SetEulerAngles(0.0f, XMConvertToRadians(90.0f), 0.0f);
+
+// ...yet the barrel's world matrix already reflects the tank's
+// position AND the turret's rotation. No manual bookkeeping.
+XMMATRIX barrelWorld = barrel.GetWorldMatrix();
+</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Lifetime of raw pointers</div>
+            <p>Our <code>Transform*</code> parent and child links are non-owning. If a parent is destroyed while children still point at it, those children hold a dangling pointer. In a full engine the owning <code>GameObject</code> (next lesson) manages lifetimes and detaches children on destruction &mdash; the Transform just references, it never owns.</p>
+          </div>
+        </div>
+
+        <h3>How the dirty flag pays off</h3>
+
+        <p>
+          Computing a world matrix means a multiply per level of the hierarchy, and a busy scene can query
+          thousands of them every frame. Most objects don't move most frames. The dirty flag means we only
+          recompute when a TRS value or a parent link actually changed. When a parent moves, <code>MarkDirty</code>
+          walks down and invalidates every descendant, so nobody keeps using a stale matrix. The early
+          <code>return</code> when a node is already dirty stops us from re-walking a subtree we've already flagged.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Method</th><th>Returns / does</th><th>Cost</th></tr></thead>
+            <tbody>
+              <tr><td><code>GetLocalMatrix()</code></td><td>Fresh <code>S * R * T</code></td><td>Recomputed every call</td></tr>
+              <tr><td><code>GetWorldMatrix()</code></td><td>Local × parent chain</td><td>Cached until dirtied</td></tr>
+              <tr><td><code>SetPosition/Scale/Rotation</code></td><td>Update TRS</td><td>Marks self + children dirty</td></tr>
+              <tr><td><code>SetParent()</code></td><td>Relink hierarchy</td><td>Marks self + children dirty</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          That's the always-present component every engine leans on. In the next lesson we give it an owner:
+          a <strong>GameObject</strong> that holds a Transform plus a list of other components (meshes,
+          materials, scripts), the same architecture Unity and Unreal use. The world matrix we just built is
+          exactly what a renderer will hand to the vertex shader to place geometry on screen.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The <strong>Transform</strong> is the one component every object always owns; it stores position, rotation (a quaternion), and scale.</li>
+            <li>The <strong>local matrix</strong> is <code>Scale * Rotation * Translation</code> &mdash; scale first, translate last.</li>
+            <li>The <strong>world matrix</strong> is the local matrix combined with the parent's world matrix, walking up the chain.</li>
+            <li><code>SetParent</code> keeps both child lists in sync and re-dirties the moved subtree.</li>
+            <li>A <strong>dirty flag</strong> caches the world matrix and invalidates descendants, so we only pay for transforms that actually changed.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

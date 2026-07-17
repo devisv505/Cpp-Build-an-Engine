@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Networking MiniEngine — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build a NetworkSystem subsystem for MiniEngine that sends and receives Transforms over UDP, then finish the course.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Networking MiniEngine</h1>
+
+        <p class="lead">This is it — the finale. You already have a component-based DirectX engine with a
+        GameObject/Component scene, a scripting-style <code>Behaviour</code> system, a UDP socket, packet
+        serialization, and interpolation. In this last lesson we wire all of it together into a
+        <strong>NetworkSystem</strong> subsystem so two copies of MiniEngine can see each other move in real
+        time. Then we point you at where to go next and send you off.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Design a <code>NetworkSystem</code> that owns the UDP socket and runs on a fixed network tick.</li>
+            <li>Serialize the local player's <code>Transform</code> and send it; receive and apply remote Transforms.</li>
+            <li>Slot Send and Receive/Apply into the engine loop in the correct order.</li>
+            <li>Keep it component-based with a <code>NetworkBehaviour</code>, matching the scripting lesson.</li>
+            <li>Know which production libraries and topics to reach for next.</li>
+          </ul>
+        </div>
+
+        <h2>Where networking fits in the engine loop</h2>
+
+        <p>Everything MiniEngine does happens inside one loop per frame. Networking doesn't replace any of
+        that — it slots in at two precise moments. We <strong>send</strong> our local state right after we've
+        read input (so we transmit the freshest intent), and we <strong>receive and apply</strong> remote state
+        right after our own simulation has advanced, just before we draw. That ordering keeps local and remote
+        objects consistent within a frame.</p>
+
+        <figure><div class="figure-box">
+          <svg viewBox="0 0 600 120" fill="none" stroke="#4aa8ff" stroke-width="2">
+            <g font-family="sans-serif" font-size="11" fill="currentColor" stroke="none" text-anchor="middle">
+              <text x="55" y="70">Input</text>
+              <text x="170" y="62">Network</text>
+              <text x="170" y="76">Send</text>
+              <text x="300" y="70">Scene.Update</text>
+              <text x="430" y="62">Network</text>
+              <text x="430" y="76">Recv/Apply</text>
+              <text x="545" y="62">Render</text>
+              <text x="545" y="76">+ Present</text>
+            </g>
+            <rect x="10" y="45" width="90" height="34" rx="6"/>
+            <rect x="125" y="45" width="90" height="34" rx="6"/>
+            <rect x="255" y="45" width="90" height="34" rx="6"/>
+            <rect x="385" y="45" width="90" height="34" rx="6"/>
+            <rect x="500" y="45" width="90" height="34" rx="6"/>
+            <path d="M100 62 h25 M215 62 h40 M345 62 h40 M475 62 h25" stroke-linecap="round"/>
+          </svg>
+        </div><figcaption>One frame of MiniEngine with networking woven in at two points.</figcaption></figure>
+
+        <h2>The NetworkSystem subsystem</h2>
+
+        <p>A subsystem in MiniEngine is a plain object owned by the engine, with an <code>Update</code> that the
+        loop calls. <code>NetworkSystem</code> owns the UDP socket from the Winsock lessons and the address of
+        the peer we're talking to. It exposes two methods instead of one <code>Update</code>, because Send and
+        Receive happen at different points in the frame.</p>
+
+        <p>Recall from the client-server lesson that we send at a fixed <strong>network tick</strong> (say 20 Hz),
+        not every render frame. So <code>Send</code> accumulates elapsed time and only transmits when the tick
+        elapses. <code>Receive</code> drains the socket every frame — packets arrive whenever they arrive.</p>
+
+        <pre><code class="language-cpp" data-file="NetworkSystem.h">#pragma once
+#include &lt;winsock2.h&gt;
+#include &lt;ws2tcpip.h&gt;
+#include &lt;cstdint&gt;
+#include &lt;vector&gt;
+#include "Transform.h"      // your engine's Transform (position, rotation, scale)
+#include "Scene.h"
+
+#pragma comment(lib, "ws2_32.lib")
+
+// One 32-byte packet: a player id + a position + a yaw. Fixed layout, little-endian.
+struct StatePacket {
+    uint32_t playerId;   // who this update is about
+    uint32_t tick;       // sender's tick number, for ordering/interpolation
+    float    x, y, z;    // world position
+    float    yaw;        // facing; add pitch/roll if you need them
+};
+
+class NetworkSystem {
+public:
+    // localId identifies us; peer is the address we send our state to.
+    bool Start(uint16_t bindPort, const char* peerIp, uint16_t peerPort, uint32_t localId);
+    void Stop();
+
+    // Called right after input, before Scene.Update.
+    void Send(const Transform&amp; localPlayer, float dt);
+
+    // Called after Scene.Update, before rendering. Applies remote state to the scene.
+    void ReceiveAndApply(Scene&amp; scene, float dt);
+
+private:
+    SOCKET      m_sock       = INVALID_SOCKET;
+    sockaddr_in m_peerAddr   {};
+    uint32_t    m_localId    = 0;
+    uint32_t    m_tick       = 0;
+    float       m_sendAccum  = 0.0f;
+    const float m_sendRate   = 1.0f / 20.0f; // 20 network ticks per second
+};
+</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Fixed layout on purpose</div><p>We use plain <code>float</code>s and <code>uint32_t</code>s in a flat struct so serialization is trivial. In the serialization lesson you learned this is fragile across machines with different endianness — for a LAN demo it's fine, but production code byte-swaps to a canonical order.</p></div></div>
+
+        <h2>Starting the socket</h2>
+
+        <p>This is the Winsock setup you already wrote, packaged as <code>Start</code>. We create a
+        non-blocking UDP socket, bind it so we can receive, and remember the peer's address for
+        <code>sendto</code>. Non-blocking matters: our game loop must never stall waiting on a packet.</p>
+
+        <pre><code class="language-cpp" data-file="NetworkSystem.cpp">#include "NetworkSystem.h"
+#include &lt;cstring&gt;
+
+bool NetworkSystem::Start(uint16_t bindPort, const char* peerIp,
+                          uint16_t peerPort, uint32_t localId) {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &amp;wsa) != 0) return false;
+
+    m_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (m_sock == INVALID_SOCKET) return false;
+
+    // Bind to our local port so recvfrom() works.
+    sockaddr_in local{};
+    local.sin_family = AF_INET;
+    local.sin_addr.s_addr = INADDR_ANY;
+    local.sin_port = htons(bindPort);
+    if (bind(m_sock, (sockaddr*)&amp;local, sizeof(local)) == SOCKET_ERROR) {
+        return false; // check WSAGetLastError() to see why
+    }
+
+    // Non-blocking: recvfrom returns immediately if no data is waiting.
+    u_long nonBlocking = 1;
+    ioctlsocket(m_sock, FIONBIO, &amp;nonBlocking);
+
+    // Remember where to send our updates.
+    m_peerAddr.sin_family = AF_INET;
+    m_peerAddr.sin_port = htons(peerPort);
+    inet_pton(AF_INET, peerIp, &amp;m_peerAddr.sin_addr);
+
+    m_localId = localId;
+    return true;
+}
+
+void NetworkSystem::Stop() {
+    if (m_sock != INVALID_SOCKET) closesocket(m_sock);
+    m_sock = INVALID_SOCKET;
+    WSACleanup();
+}
+</code></pre>
+
+        <h2>Send: serialize the local Transform</h2>
+
+        <p><code>Send</code> waits for the network tick, fills a <code>StatePacket</code> from the local player's
+        <code>Transform</code>, and fires it off with <code>sendto</code>. Because our packet is a flat POD
+        struct, "serialization" here is a <code>memcpy</code> into a byte buffer — exactly the simplest case from
+        the serialization lesson.</p>
+
+        <pre><code class="language-cpp" data-file="NetworkSystem.cpp">void NetworkSystem::Send(const Transform&amp; localPlayer, float dt) {
+    m_sendAccum += dt;
+    if (m_sendAccum &lt; m_sendRate) return; // not time to send yet
+    m_sendAccum -= m_sendRate;
+
+    StatePacket pkt{};
+    pkt.playerId = m_localId;
+    pkt.tick     = m_tick++;
+    pkt.x        = localPlayer.position.x;
+    pkt.y        = localPlayer.position.y;
+    pkt.z        = localPlayer.position.z;
+    pkt.yaw      = localPlayer.rotation.y;   // Euler yaw for the demo
+
+    // Serialize: copy the fixed-layout struct into a byte buffer.
+    uint8_t buffer[sizeof(StatePacket)];
+    std::memcpy(buffer, &amp;pkt, sizeof(pkt));
+
+    int sent = sendto(m_sock, (const char*)buffer, (int)sizeof(buffer), 0,
+                      (sockaddr*)&amp;m_peerAddr, sizeof(m_peerAddr));
+    if (sent == SOCKET_ERROR) {
+        // A dropped UDP send is normal-ish; log and move on. Never block the loop.
+        // int err = WSAGetLastError();
+    }
+}
+</code></pre>
+
+        <h2>Receive: apply remote Transforms with interpolation</h2>
+
+        <p><code>ReceiveAndApply</code> drains every packet waiting in the socket. For each one, it finds (or
+        needs) a GameObject that represents that remote player and hands the incoming position to that object's
+        interpolation buffer. We don't snap the remote Transform to the packet — that would look jittery.
+        Instead we push the new sample and let the interpolation from the previous lesson smoothly move the
+        object between the last two known states.</p>
+
+        <pre><code class="language-cpp" data-file="NetworkSystem.cpp">void NetworkSystem::ReceiveAndApply(Scene&amp; scene, float dt) {
+    uint8_t buffer[sizeof(StatePacket)];
+    sockaddr_in from{};
+    int fromLen = sizeof(from);
+
+    // Drain the socket: keep reading until there's nothing left this frame.
+    while (true) {
+        int n = recvfrom(m_sock, (char*)buffer, (int)sizeof(buffer), 0,
+                         (sockaddr*)&amp;from, &amp;fromLen);
+        if (n == SOCKET_ERROR) {
+            // WSAEWOULDBLOCK just means "no more packets right now".
+            if (WSAGetLastError() == WSAEWOULDBLOCK) break;
+            break; // any other error: stop draining this frame
+        }
+        if (n != (int)sizeof(StatePacket)) continue; // ignore malformed sizes
+
+        StatePacket pkt{};
+        std::memcpy(&amp;pkt, buffer, sizeof(pkt));
+        if (pkt.playerId == m_localId) continue; // don't apply our own echo
+
+        // Look up the GameObject that mirrors this remote player.
+        GameObject* remote = scene.FindNetworked(pkt.playerId);
+        if (!remote) remote = scene.SpawnNetworkedProxy(pkt.playerId);
+
+        // Hand the sample to that object's NetworkBehaviour for interpolation.
+        if (auto* nb = remote-&gt;GetComponent&lt;NetworkBehaviour&gt;()) {
+            nb-&gt;PushState({ pkt.x, pkt.y, pkt.z }, pkt.yaw, pkt.tick);
+        }
+    }
+
+    // Advance interpolation on every networked object this frame.
+    for (GameObject* go : scene.NetworkedObjects()) {
+        if (auto* nb = go-&gt;GetComponent&lt;NetworkBehaviour&gt;())
+            nb-&gt;Interpolate(dt);
+    }
+}
+</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why drain in a loop</div><p>UDP can deliver several packets between frames. If you called <code>recvfrom</code> once per frame you'd fall behind and lag would grow without bound. The <code>while</code> loop empties the buffer every frame; <code>WSAEWOULDBLOCK</code> is the normal signal that you're caught up.</p></div></div>
+
+        <h2>Keeping it component-based: NetworkBehaviour</h2>
+
+        <p>MiniEngine's whole philosophy — the one you share with Unity and Unreal — is that behavior lives in
+        components. So the networked <em>object</em> shouldn't know about sockets at all. It just carries a
+        <code>NetworkBehaviour</code>, a <code>Behaviour</code> whose job is to buffer remote samples and, each
+        <code>OnUpdate</code>, drive its own GameObject's <code>Transform</code> toward the interpolated target.
+        <code>NetworkSystem</code> feeds it data; the behaviour does the smoothing.</p>
+
+        <pre><code class="language-cpp" data-file="NetworkBehaviour.h">#pragma once
+#include "Behaviour.h"
+#include "Vec3.h"
+#include &lt;cstdint&gt;
+
+// A Behaviour that makes a GameObject follow a networked player's Transform.
+class NetworkBehaviour : public Behaviour {
+public:
+    // NetworkSystem calls this when a fresh packet arrives.
+    void PushState(const Vec3&amp; pos, float yaw, uint32_t tick) {
+        // Shift "current target" into "previous" and store the new sample.
+        m_prevPos = m_targetPos;  m_prevYaw = m_targetYaw;
+        m_targetPos = pos;        m_targetYaw = yaw;
+        m_blend = 0.0f;           // restart the interpolation window
+        m_lastTick = tick;
+    }
+
+    // Advance the blend factor toward the newest sample.
+    void Interpolate(float dt) {
+        // Reach the target over roughly one network interval (~50 ms at 20 Hz).
+        m_blend = std::min(1.0f, m_blend + dt / m_interval);
+    }
+
+    // Standard Behaviour hook: runs inside Scene.Update via the component system.
+    void OnUpdate(float /*dt*/) override {
+        Transform&amp; t = GetTransform();
+        t.position   = Vec3::Lerp(m_prevPos, m_targetPos, m_blend);
+        t.rotation.y = LerpAngle(m_prevYaw, m_targetYaw, m_blend);
+    }
+
+private:
+    Vec3     m_prevPos{}, m_targetPos{};
+    float    m_prevYaw = 0.0f, m_targetYaw = 0.0f;
+    float    m_blend = 1.0f;          // 0 = at prev, 1 = at target
+    float    m_interval = 0.05f;      // one 20 Hz tick
+    uint32_t m_lastTick = 0;
+};
+</code></pre>
+
+        <p>Notice how clean this is: the remote player is just another GameObject with a mesh and a
+        <code>NetworkBehaviour</code>. The renderer draws it exactly like anything else. That's the payoff of the
+        component architecture you built earlier — networking became one more component, not a special case.</p>
+
+        <h2>Wiring it into the engine loop</h2>
+
+        <p>Here's the whole frame, with the two networking calls in place. Compare it to the diagram at the top —
+        it's the same shape, now in code.</p>
+
+        <pre><code class="language-cpp" data-file="Engine.cpp">void Engine::RunFrame(float dt) {
+    input.Poll();                          // 1. read keyboard/mouse
+
+    // 2. Send our freshest local state (throttled to the network tick).
+    net.Send(localPlayer-&gt;transform, dt);
+
+    scene.Update(dt);                      // 3. advance all Behaviours + physics
+
+    // 4. Apply remote state, then interpolate networked objects smoothly.
+    net.ReceiveAndApply(scene, dt);
+
+    renderer.DrawScene(scene);             // 5. DirectX draw calls
+    renderer.Present();                    // 6. flip the swap chain
+}
+</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">This is a sketch, not a netcode stack</div><p>The demo is deliberately minimal: no reliability, no acknowledgements, no client-side prediction of your <em>own</em> movement, no lag compensation. It's enough to see two engines mirror each other on a LAN — and enough to understand the architecture. Real games layer a lot on top, which is exactly what the next section is about.</p></div></div>
+
+        <h2>A quick sanity check</h2>
+
+        <p>Run two copies of MiniEngine on the same machine or LAN, each bound to a different local port and
+        pointed at the other. Move your local player. You should see the remote proxy glide — not teleport —
+        toward your position, about one tick behind. If it teleports, your interpolation window is too short; if
+        it lags badly, you're probably not draining the socket every frame.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Symptom</th><th>Likely cause</th></tr></thead>
+          <tbody>
+            <tr><td>Remote object jitters / snaps</td><td>Interpolation window too short, or applying packets directly to Transform</td></tr>
+            <tr><td>Lag grows over time</td><td><code>recvfrom</code> not looped — draining only one packet per frame</td></tr>
+            <tr><td>Nothing received</td><td>Wrong port, firewall, or forgot to <code>bind</code></td></tr>
+            <tr><td>Loop stalls / stutters</td><td>Socket left blocking — set <code>FIONBIO</code></td></tr>
+          </tbody>
+        </table></div>
+
+        <h2>Where to go from here</h2>
+
+        <p>You've built the skeleton. Production networking is a deep field, and you do <strong>not</strong> want
+        to write a reliable-UDP layer, congestion control, and encryption from scratch. Reach for a battle-tested
+        library instead:</p>
+
+        <ul>
+          <li><strong>ENet</strong> — small, classic reliable-UDP library. The friendliest next step from what you built here.</li>
+          <li><strong>Valve's GameNetworkingSockets</strong> — reliable UDP with encryption and congestion control, extracted from Steam.</li>
+          <li><strong>RakNet / SLikeNet</strong> — long-standing full-featured stacks (object replication, RPCs, NAT support).</li>
+          <li><strong>yojimbo</strong> — Glenn Fiedler's library focused on secure client-server game connections.</li>
+          <li><strong>Steamworks</strong> — if you ship on Steam, its networking, matchmaking, and lobbies do a lot for you.</li>
+        </ul>
+
+        <p>And the topics still ahead of you, once the basics feel comfortable:</p>
+
+        <ul>
+          <li><strong>NAT punchthrough</strong> — letting two players behind home routers connect without a dedicated server.</li>
+          <li><strong>Matchmaking &amp; lobbies</strong> — discovering peers and grouping players into sessions.</li>
+          <li><strong>Security &amp; anti-cheat</strong> — never trust the client; validate movement and actions server-side.</li>
+          <li><strong>Delta compression</strong> — send only what changed since the last acknowledged state to slash bandwidth.</li>
+          <li><strong>Client-side prediction &amp; reconciliation</strong> — hide latency on your own player, not just remote ones.</li>
+        </ul>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">You did it</div><p>Look back at where you started: not knowing what a variable was. You now understand C++, the math behind 3D, DirectX 11 rendering, a component-based GameObject engine with scripting, and real network code — the same architecture Unity and Unreal are built on. That's an enormous distance. MiniEngine is <em>yours</em> now. Give it a name, pick a small game, and go build it.</p></div></div>
+
+        <p>Thank you for going the whole way. From zero to a networked, component-based DirectX engine — that's a
+        genuine achievement. The rest is just more building, and you already know how to build.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><code>NetworkSystem</code> owns the UDP socket and runs on a fixed network tick, exposing separate <code>Send</code> and <code>ReceiveAndApply</code> steps.</li>
+            <li>Send serializes the local player's <code>Transform</code> into a flat <code>StatePacket</code>; receive drains the socket in a loop and applies remote state.</li>
+            <li>The loop order is Input → Send → Scene.Update → Receive/Apply → Render → Present.</li>
+            <li>A <code>NetworkBehaviour</code> keeps networking component-based and interpolates remote objects so they move smoothly.</li>
+            <li>For real projects, use ENet, GameNetworkingSockets, RakNet/SLikeNet, yojimbo, or Steamworks, and study NAT punchthrough, matchmaking, anti-cheat, and delta compression.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

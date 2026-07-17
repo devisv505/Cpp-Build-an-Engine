@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Initializing Direct3D 11 — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Create a D3D11 device, context and swap chain with D3D11CreateDeviceAndSwapChain, then build a render target view from the back buffer.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Initializing Direct3D 11</h1>
+
+        <p class="lead">Last lesson we walked the graphics pipeline conceptually: vertices in, pixels out. Now we make it real. In this lesson you will create the three core objects every Direct3D 11 program owns — the <strong>device</strong>, the <strong>device context</strong>, and the <strong>swap chain</strong> — and connect them to the window you built earlier. This is the boot sequence of our engine's renderer, and every future lesson builds directly on the objects you create here.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What the device, device context and swap chain each do, and why you need all three</li>
+            <li>How to fill in a <code>DXGI_SWAP_CHAIN_DESC</code> field by field</li>
+            <li>How to call <code>D3D11CreateDeviceAndSwapChain</code> and request feature levels</li>
+            <li>How to get the back buffer and wrap it in a render target view</li>
+            <li>How to keep everything alive safely with <code>Microsoft::WRL::ComPtr</code></li>
+          </ul>
+        </div>
+
+        <h2>The three objects you always create</h2>
+        <p>Direct3D 11 splits its work across a few COM objects. When you are starting out, three of them matter:</p>
+        <div class="table-wrap"><table><thead><tr><th>Object</th><th>Interface</th><th>What it is for</th></tr></thead><tbody>
+          <tr><td>Device</td><td><code>ID3D11Device</code></td><td>Creates resources — textures, buffers, shaders, views. Think of it as the factory.</td></tr>
+          <tr><td>Device context</td><td><code>ID3D11DeviceContext</code></td><td>Issues commands — binds resources and draws. Think of it as the worker that uses what the factory made.</td></tr>
+          <tr><td>Swap chain</td><td><code>IDXGISwapChain</code></td><td>Owns the images ("buffers") shown on screen and flips them so the window updates.</td></tr>
+        </tbody></table></div>
+
+        <p>A <strong>swap chain</strong> holds two (or more) images. You draw into the hidden <strong>back buffer</strong> while the monitor displays the <strong>front buffer</strong>; calling <code>Present</code> swaps them. That double buffering is what stops the viewer from seeing a half-drawn frame.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">DXGI vs D3D</div><p>Notice the swap chain interface starts with <code>IDXGI</code>, not <code>ID3D11</code>. DXGI (DirectX Graphics Infrastructure) is the lower layer that manages adapters, outputs and presentation. Direct3D handles the actual rendering. The two cooperate, which is why one function call can create objects from both.</p></div></div>
+
+        <h2>Linking and headers</h2>
+        <p>Before any of this compiles, the linker needs the Direct3D import library. Add <code>d3d11.lib</code> to your linker inputs, or drop a pragma near the top of your file. We also lean on <code>Microsoft::WRL::ComPtr</code>, a smart pointer for COM objects that calls <code>Release()</code> automatically when it goes out of scope — the same idea as <code>std::unique_ptr</code>, but for reference-counted COM interfaces.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.h">#include &lt;d3d11.h&gt;
+#include &lt;dxgi.h&gt;
+#include &lt;wrl/client.h&gt;   // Microsoft::WRL::ComPtr
+
+#pragma comment(lib, "d3d11.lib")   // or add d3d11.lib to the linker settings
+
+// A short alias keeps the code readable.
+using Microsoft::WRL::ComPtr;</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Let ComPtr own lifetimes</div><p>Every raw <code>ID3D11*</code> pointer must eventually be released exactly once. Managing that by hand is a classic source of leaks and crashes. Store these objects in <code>ComPtr</code> members of your renderer class and you never call <code>Release()</code> yourself — destruction is automatic and in the right order.</p></div></div>
+
+        <h2>Describing the swap chain</h2>
+        <p>Instead of a dozen function arguments, Direct3D takes a filled-in description struct. <code>DXGI_SWAP_CHAIN_DESC</code> nests two smaller structs: <code>BufferDesc</code> (the back buffer's size and pixel format) and <code>SampleDesc</code> (multisampling). Let's fill it in for a plain, windowed setup.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">// hwnd is the window handle you created in the Win32 lesson.
+DXGI_SWAP_CHAIN_DESC scd = {};                     // zero everything first
+
+// --- The back buffer image ---
+scd.BufferDesc.Width  = 0;                          // 0 = match the window's client area
+scd.BufferDesc.Height = 0;
+scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // 8 bits each for R,G,B,A
+scd.BufferDesc.RefreshRate.Numerator   = 0;         // 0/0 = let DXGI pick the refresh rate
+scd.BufferDesc.RefreshRate.Denominator = 0;
+
+// --- Multisampling (anti-aliasing). 1 sample = off. ---
+scd.SampleDesc.Count   = 1;
+scd.SampleDesc.Quality = 0;
+
+// --- How the buffer is used and how many there are ---
+scd.BufferUsage  = DXGI_USAGE_RENDER_TARGET_OUTPUT; // we render into it
+scd.BufferCount  = 2;                               // front + back = double buffering
+scd.OutputWindow = hwnd;                            // the window to present into
+scd.Windowed     = TRUE;                            // start windowed, never exclusive fullscreen here
+scd.SwapEffect   = DXGI_SWAP_EFFECT_DISCARD;        // simplest present model</code></pre>
+
+        <p>A few of these deserve a note. Setting <code>Width</code> and <code>Height</code> to <code>0</code> tells DXGI to look up the window's client size for you — handy so the numbers can never disagree with the window. <code>BufferCount = 2</code> gives us one front and one back buffer. And <code>OutputWindow = hwnd</code> is the crucial link between Direct3D and the actual window on screen.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Always zero-initialize the struct</div><p>The <code>= {}</code> that value-initializes <code>scd</code> is not optional. These descriptors have fields we are not touching (<code>Flags</code>, <code>ScanlineOrdering</code>, and so on). Leave them holding garbage stack values and creation may fail with a cryptic <code>E_INVALIDARG</code>, or behave unpredictably. Zero first, then set what you care about.</p></div></div>
+
+        <h2>Feature levels</h2>
+        <p>A <strong>feature level</strong> is Direct3D's way of naming a fixed set of GPU capabilities, independent of the driver version. You hand in an array ordered from most to least desired, and creation picks the highest one the GPU actually supports, reporting it back to you.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">// Ordered best-first. Creation returns the highest one this GPU supports.
+const D3D_FEATURE_LEVEL requested[] = {
+    D3D_FEATURE_LEVEL_11_1,
+    D3D_FEATURE_LEVEL_11_0,
+    D3D_FEATURE_LEVEL_10_1,
+    D3D_FEATURE_LEVEL_10_0,
+};
+D3D_FEATURE_LEVEL obtained = {};   // filled in by the create call</code></pre>
+
+        <h2>Creating everything at once</h2>
+        <p>With the descriptor and feature levels ready, one call builds the device, the context and the swap chain together. We store each result in a <code>ComPtr</code>, and pass their addresses with <code>&amp;</code> (ComPtr exposes the raw double-pointer these out-parameters need).</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">ComPtr&lt;ID3D11Device&gt;        device;
+ComPtr&lt;ID3D11DeviceContext&gt; context;
+ComPtr&lt;IDXGISwapChain&gt;      swapChain;
+
+UINT flags = 0;
+#if defined(_DEBUG)
+flags |= D3D11_CREATE_DEVICE_DEBUG;   // extra validation messages while developing
+#endif
+
+HRESULT hr = D3D11CreateDeviceAndSwapChain(
+    nullptr,                      // default adapter (the primary GPU)
+    D3D_DRIVER_TYPE_HARDWARE,     // use the real GPU, not a software renderer
+    nullptr,                      // no software module (only for D3D_DRIVER_TYPE_SOFTWARE)
+    flags,                        // creation flags (debug layer in debug builds)
+    requested,                    // our feature-level wish list
+    ARRAYSIZE(requested),         // how many entries it has
+    D3D11_SDK_VERSION,            // always this constant
+    &amp;scd,                         // the swap chain descriptor from above
+    &amp;swapChain,                   // out: IDXGISwapChain
+    &amp;device,                      // out: ID3D11Device
+    &amp;obtained,                    // out: the feature level we actually got
+    &amp;context);                    // out: ID3D11DeviceContext
+
+if (FAILED(hr)) {
+    // In a real engine, log hr and bail out cleanly.
+    return false;
+}</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Check every HRESULT</div><p>Almost every Direct3D function returns an <code>HRESULT</code>. Use the <code>SUCCEEDED(hr)</code> and <code>FAILED(hr)</code> macros — a negative code means failure. The debug layer, enabled by <code>D3D11_CREATE_DEVICE_DEBUG</code>, prints a detailed reason to the Visual Studio Output window, which turns baffling failures into readable messages. It requires the Graphics Tools optional feature installed on Windows.</p></div></div>
+
+        <h2>From back buffer to render target view</h2>
+        <p>The swap chain owns the back buffer texture, but you cannot draw into a raw texture directly. Direct3D wants a <strong>view</strong> — a small object that says "treat this resource as a render target." So we ask the swap chain for buffer index <code>0</code> (the back buffer), then create an <code>ID3D11RenderTargetView</code> from it.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">ComPtr&lt;ID3D11Texture2D&gt;        backBuffer;
+ComPtr&lt;ID3D11RenderTargetView&gt; renderTargetView;
+
+// GetBuffer(0, ...) hands us the back buffer as a texture.
+hr = swapChain-&gt;GetBuffer(0, IID_PPV_ARGS(&amp;backBuffer));
+if (FAILED(hr)) return false;
+
+// Wrap it in a view we can bind as an output.
+hr = device-&gt;CreateRenderTargetView(
+    backBuffer.Get(),   // the resource
+    nullptr,            // nullptr = describe the view like the resource itself
+    &amp;renderTargetView);
+if (FAILED(hr)) return false;
+
+// backBuffer's ComPtr can go out of scope now; the view keeps the
+// texture alive through COM reference counting.</code></pre>
+
+        <p><code>IID_PPV_ARGS</code> is a small helper that fills in both the interface ID and the output pointer for you, so the requested type and the pointer can never get out of sync. The <code>.Get()</code> method returns the raw pointer that the C-style API expects, without transferring ownership.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 170" fill="none" stroke="#4aa8ff" stroke-width="2">
+          <rect x="20" y="60" width="120" height="50" rx="6"/>
+          <text x="80" y="90" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">IDXGISwapChain</text>
+          <rect x="240" y="60" width="120" height="50" rx="6"/>
+          <text x="300" y="85" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">ID3D11Texture2D</text>
+          <text x="300" y="101" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">(back buffer)</text>
+          <rect x="460" y="60" width="120" height="50" rx="6"/>
+          <text x="520" y="85" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">RenderTarget</text>
+          <text x="520" y="101" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">View</text>
+          <path d="M140 85 H236" stroke-linecap="round"/>
+          <path d="M228 78 L240 85 L228 92" stroke-linecap="round"/>
+          <text x="188" y="50" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">GetBuffer(0)</text>
+          <path d="M360 85 H456" stroke-linecap="round"/>
+          <path d="M448 78 L460 85 L448 92" stroke-linecap="round"/>
+          <text x="408" y="50" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">CreateRTV</text>
+        </svg></div><figcaption>The swap chain owns the back buffer texture; the render target view lets the pipeline draw into it.</figcaption></figure>
+
+        <p>That render target view is the object we bind to the output-merger stage before drawing. In the next lesson we will hand it to the context and use it to clear the screen to a solid color — your first visible sign of life from the GPU.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Where this lives in the engine</div><p>Wrap these five members — device, context, swap chain, back buffer and render target view — in a <code>Renderer</code> class, and put this whole sequence in an <code>Initialize(HWND hwnd)</code> method. Because every member is a <code>ComPtr</code>, the destructor cleans up automatically. That class becomes the foundation the rest of our engine renders through.</p></div></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Every D3D11 app owns a <strong>device</strong> (creates resources), a <strong>device context</strong> (issues commands) and a <strong>swap chain</strong> (presents to the window).</li>
+            <li>Fill a zero-initialized <code>DXGI_SWAP_CHAIN_DESC</code>: set the format, sample count, <code>DXGI_USAGE_RENDER_TARGET_OUTPUT</code>, <code>BufferCount</code>, <code>OutputWindow = hwnd</code> and <code>Windowed = TRUE</code>.</li>
+            <li><code>D3D11CreateDeviceAndSwapChain</code> builds all three at once and reports the feature level you actually got; always check the returned <code>HRESULT</code>.</li>
+            <li>Call <code>GetBuffer(0, ...)</code> for the back buffer, then <code>CreateRenderTargetView</code> to get a view you can render into.</li>
+            <li>Link <code>d3d11.lib</code> and store every object in a <code>Microsoft::WRL::ComPtr</code> so lifetimes are managed for you.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Text: std::string — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn std::string in C++: create, concatenate, measure, index, slice, compare, and read lines with getline — the text tool for your engine.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Text: std::string</h1>
+
+        <p class="lead">Every engine is full of text: the name of a component, the path to a texture, the tag on a game object, lines read from a config file. In this lesson we meet <code>std::string</code>, the standard, safe, easy-to-use way to hold text in C++. You already know how <code>std::vector</code> gives you a growable list of values; a string is that same idea, specialized for characters, with a friendly toolbox bolted on.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Create strings and join them together with <code>+</code></li>
+            <li>Measure length, read individual characters, and slice out pieces with <code>substr</code></li>
+            <li>Compare text with <code>==</code> and read whole lines with <code>std::getline</code></li>
+            <li>Reach the underlying C-string with <code>c_str()</code> when an old API asks for one</li>
+          </ul>
+        </div>
+
+        <h2>Creating a string</h2>
+        <p>Include <code>&lt;string&gt;</code>, then declare one just like any other variable. A string can start empty, hold a literal, or be built from another string.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::string empty;                 // "" — zero characters
+    std::string name = "Transform";    // from a text literal
+    std::string copy = name;           // an independent copy
+
+    std::cout &lt;&lt; "Component: " &lt;&lt; name &lt;&lt; "\n";
+    std::cout &lt;&lt; "Empty? "     &lt;&lt; empty.empty() &lt;&lt; "\n";  // prints 1 (true)
+    return 0;
+}</code></pre>
+
+        <p>Unlike a raw array of characters, a <code>std::string</code> owns its memory and grows on demand. You never have to guess a maximum size or remember to free anything — when the string goes out of scope, its storage is released automatically.</p>
+
+        <h2>Joining text with +</h2>
+        <p>The <code>+</code> operator concatenates strings, and <code>+=</code> appends to an existing one. This is how you assemble file paths, log messages, and generated names.</p>
+
+        <pre><code class="language-cpp" data-file="concat.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::string folder = "assets/";
+    std::string file   = "player";
+    std::string ext    = ".png";
+
+    std::string path = folder + file + ext;   // "assets/player.png"
+    path += "?v=2";                            // append in place
+
+    std::cout &lt;&lt; path &lt;&lt; "\n";                  // assets/player.png?v=2
+    return 0;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">At least one side must be a string</div>
+            <p>You cannot write <code>"a" + "b"</code> — those are two C-string literals and <code>+</code> is not defined for them. Make one an actual string first: <code>std::string("a") + "b"</code>, or store the first part in a <code>std::string</code> variable and add to that.</p>
+          </div>
+        </div>
+
+        <h2>How long is it?</h2>
+        <p>Two methods report the number of characters: <code>size()</code> and <code>length()</code>. They are identical twins — <code>length()</code> reads nicely for text, while <code>size()</code> matches the name used by <code>std::vector</code> and other containers.</p>
+
+        <pre><code class="language-cpp" data-file="length.cpp">std::string tag = "Enemy";
+std::cout &lt;&lt; tag.size()   &lt;&lt; "\n";   // 5
+std::cout &lt;&lt; tag.length() &lt;&lt; "\n";   // 5 — same value</code></pre>
+
+        <h2>Reading individual characters</h2>
+        <p>A string is indexed exactly like a vector: positions start at <code>0</code>, so the last valid index is <code>size() - 1</code>. Use square brackets to read or change a single <code>char</code>.</p>
+
+        <pre><code class="language-cpp" data-file="index.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::string word = "mesh";
+    std::cout &lt;&lt; word[0] &lt;&lt; "\n";   // 'm'
+    std::cout &lt;&lt; word[3] &lt;&lt; "\n";   // 'h'
+
+    word[0] = 'M';                 // strings are mutable
+    std::cout &lt;&lt; word &lt;&lt; "\n";      // "Mesh"
+
+    // Walk every character
+    for (char c : word) {
+        std::cout &lt;&lt; c &lt;&lt; ' ';
+    }
+    std::cout &lt;&lt; "\n";              // M e s h
+    return 0;
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Stay in range</div>
+            <p>Indexing past the end (for example <code>word[10]</code> on a 4-character string) is undefined behavior — it may crash or silently corrupt data. If you want a checked access that throws on a bad index, use <code>word.at(10)</code> instead.</p>
+          </div>
+        </div>
+
+        <h2>Slicing with substr</h2>
+        <p><code>substr(start, count)</code> returns a brand-new string copied from part of the original. Give it a starting index and how many characters to take; leave off the count to grab everything to the end. This is perfect for pulling a file extension or a name out of a path.</p>
+
+        <pre><code class="language-cpp" data-file="substr.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::string path = "assets/player.png";
+
+    // find() returns the index of a character, or std::string::npos if absent
+    std::size_t dot = path.find('.');
+    if (dot != std::string::npos) {
+        std::string ext = path.substr(dot + 1);   // "png" — from dot to end
+        std::cout &lt;&lt; "Extension: " &lt;&lt; ext &lt;&lt; "\n";
+    }
+
+    std::string first4 = path.substr(0, 4);        // "asse" — 4 chars from 0
+    std::cout &lt;&lt; first4 &lt;&lt; "\n";
+    return 0;
+}</code></pre>
+
+        <h2>Comparing text</h2>
+        <p>Here is a place where strings are much friendlier than the old C way: you compare them with <code>==</code>, <code>!=</code>, and even <code>&lt;</code> (which orders them alphabetically). The comparison checks the actual characters, which is almost always what you want.</p>
+
+        <pre><code class="language-cpp" data-file="compare.cpp">std::string a = "Player";
+std::string b = "Player";
+std::string c = "Enemy";
+
+bool same    = (a == b);   // true  — identical contents
+bool differ  = (a != c);   // true
+bool ordered = (c &lt; a);    // true  — "Enemy" sorts before "Player"</code></pre>
+
+        <h2>Reading whole lines</h2>
+        <p>Using <code>std::cin &gt;&gt; text</code> stops at the first space, so it only ever reads one word. To capture an entire line — spaces and all — use <code>std::getline</code>. Engines lean on this constantly when parsing config files, level descriptions, or console commands.</p>
+
+        <pre><code class="language-cpp" data-file="lines.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::cout &lt;&lt; "Name your entity: ";
+
+    std::string line;
+    std::getline(std::cin, line);   // reads the full line into 'line'
+
+    std::cout &lt;&lt; "Created entity \"" &lt;&lt; line &lt;&lt; "\" "
+              &lt;&lt; "(" &lt;&lt; line.size() &lt;&lt; " chars)\n";
+    return 0;
+}</code></pre>
+
+        <h2>C-strings and c_str()</h2>
+        <p>Before <code>std::string</code>, C++ inherited C's way of storing text: a raw <code>char</code> array ending in a hidden <code>'\0'</code> (the null terminator), passed around as a <code>const char*</code>. These <em>C-strings</em> have no built-in length and no <code>+</code>; you manipulate them with functions like <code>strlen</code>, and it is easy to overflow a buffer. This is exactly the manual, error-prone bookkeeping <code>std::string</code> saves you from.</p>
+
+        <p>You still meet C-strings at API boundaries — including parts of DirectX and the Windows/Win32 headers, which predate the standard library. When a function wants a <code>const char*</code>, hand it <code>c_str()</code>, which returns a read-only, null-terminated view of the string's characters.</p>
+
+        <pre><code class="language-cpp" data-file="cstr.cpp">#include &lt;cstdio&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::string shaderPath = "shaders/basic.hlsl";
+
+    // std::fopen is an old C function; it needs a const char*, not a std::string
+    std::FILE* f = std::fopen(shaderPath.c_str(), "rb");
+    if (f) {
+        std::fclose(f);
+    }
+    return 0;
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Prefer std::string in your own code</div>
+            <p>Keep text as a <code>std::string</code> everywhere you can and only call <code>c_str()</code> at the very moment a C-style API demands it. The pointer <code>c_str()</code> returns is valid only while the string still exists and stays unchanged — never store it and use it later after modifying the string.</p>
+          </div>
+        </div>
+
+        <h2>Putting it together</h2>
+        <p>Here is a small program that uses several of these tools at once. It reads a line, tidies it up, and reports on it — the kind of text massaging you will do when loading engine assets.</p>
+
+        <pre><code class="language-cpp" data-file="describe.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::cout &lt;&lt; "Enter a texture path: ";
+    std::string path;
+    std::getline(std::cin, path);          // e.g. "textures/Brick.PNG"
+
+    if (path.empty()) {
+        std::cout &lt;&lt; "No path given.\n";
+        return 0;
+    }
+
+    // Split the folder from the file name at the last '/'
+    std::size_t slash = path.find_last_of('/');
+    std::string file  = (slash == std::string::npos)
+                        ? path                       // no folder present
+                        : path.substr(slash + 1);    // just the file name
+
+    // Pull out the extension after the last '.'
+    std::size_t dot   = file.find_last_of('.');
+    std::string ext   = (dot == std::string::npos)
+                        ? std::string("")
+                        : file.substr(dot + 1);
+
+    std::string summary = "File '" + file + "' has extension '" + ext + "'";
+    std::cout &lt;&lt; summary &lt;&lt; "\n";
+    std::cout &lt;&lt; "Path length: " &lt;&lt; path.size() &lt;&lt; " characters\n";
+
+    if (path == file) {
+        std::cout &lt;&lt; "(It sits in the current folder.)\n";
+    }
+    return 0;
+}</code></pre>
+
+        <p>Notice how naturally it reads: no manual memory, no length counters, no separate compare function. That readability is why our engine will store names, tags, and paths as <code>std::string</code> — for instance, every game object will carry a <code>std::string name</code>, and each component type will report its type as a string we can log and compare.</p>
+
+        <h2>Quick reference</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Operation</th><th>Example</th><th>Result</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Concatenate</td><td><code>"a" + s</code> / <code>s += "b"</code></td><td>Joins text together</td></tr>
+              <tr><td>Length</td><td><code>s.size()</code> / <code>s.length()</code></td><td>Number of characters</td></tr>
+              <tr><td>Index</td><td><code>s[i]</code> / <code>s.at(i)</code></td><td>The character at position <code>i</code></td></tr>
+              <tr><td>Slice</td><td><code>s.substr(start, count)</code></td><td>A new copied piece</td></tr>
+              <tr><td>Find</td><td><code>s.find('x')</code></td><td>Index, or <code>std::string::npos</code></td></tr>
+              <tr><td>Compare</td><td><code>a == b</code> / <code>a &lt; b</code></td><td>Content equality / ordering</td></tr>
+              <tr><td>Read a line</td><td><code>std::getline(std::cin, s)</code></td><td>Fills <code>s</code> with one line</td></tr>
+              <tr><td>To C-string</td><td><code>s.c_str()</code></td><td>A <code>const char*</code> for old APIs</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><code>std::string</code> (from <code>&lt;string&gt;</code>) is a safe, growable, self-managing container of text.</li>
+            <li>Build strings with <code>+</code> and <code>+=</code>, measure them with <code>size()</code>/<code>length()</code>, and read characters with <code>[]</code> or the checked <code>at()</code>.</li>
+            <li><code>substr</code> slices out copies, <code>find</code> locates characters, and <code>==</code>/<code>&lt;</code> compare contents directly.</li>
+            <li><code>std::getline</code> reads a whole line including spaces; <code>c_str()</code> hands a <code>const char*</code> to older C-style APIs like parts of DirectX and Win32.</li>
+            <li>Prefer <code>std::string</code> throughout your engine and drop down to a raw C-string only at the boundary that requires it.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

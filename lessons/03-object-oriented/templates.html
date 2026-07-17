@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Templates &amp; Generic Programming — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn C++ function and class templates: write type-safe, reusable code once and build a tiny generic Array&lt;T&gt; container for your engine.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Templates &amp; Generic Programming</h1>
+
+        <p class="lead">Last lesson you taught your own types how to behave with operators like <code>+</code> and <code>==</code>. Now we go one level higher: writing code that works for <em>any</em> type without copy-pasting. Templates are how <code>std::vector</code> stores ints, floats, or your own <code>Vector3</code> with a single implementation — and they are exactly how our engine will one day offer a clean <code>GetComponent&lt;Transform&gt;()</code>.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why generics give you <strong>type-safe reuse</strong> instead of duplicated code</li>
+            <li>How to write <strong>function templates</strong> with <code>template &lt;typename T&gt;</code></li>
+            <li>How <strong>template argument deduction</strong> figures out <code>T</code> for you</li>
+            <li>How to write a <strong>class template</strong> — a tiny generic <code>Array&lt;T&gt;</code></li>
+            <li>That <code>std::vector&lt;T&gt;</code> is a class template, and how this leads to <code>GetComponent&lt;T&gt;()</code></li>
+          </ul>
+        </div>
+
+        <h2>The problem: one idea, many types</h2>
+        <p>Suppose you need a function that returns the larger of two values. You could write one for <code>int</code>, then another for <code>double</code>, then another for <code>std::string</code>. They would be identical except for the type. That is tedious, error-prone, and every bug fix has to be applied three times.</p>
+        <p>An older trick was to use macros, but macros are just blind text substitution — they don't understand types, don't respect scope, and give terrible error messages. <strong>Templates</strong> solve this properly: you write the logic <em>once</em> with a placeholder type, and the compiler stamps out a correct, fully type-checked version for each type you actually use.</p>
+
+        <h2>Function templates</h2>
+        <p>A function template starts with <code>template &lt;typename T&gt;</code>. Inside the function, <code>T</code> is a stand-in for whatever concrete type gets used. Here is a generic <code>Max</code>:</p>
+
+        <pre><code class="language-cpp" data-file="max.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+// A single template that works for any type T
+template &lt;typename T&gt;
+T Max(const T&amp; a, const T&amp; b) {
+    return (a &gt; b) ? a : b;   // requires that T supports operator&gt;
+}
+
+int main() {
+    std::cout &lt;&lt; Max(3, 7) &lt;&lt; "\n";            // T deduced as int    -&gt; 7
+    std::cout &lt;&lt; Max(2.5, 1.5) &lt;&lt; "\n";         // T deduced as double -&gt; 2.5
+    std::cout &lt;&lt; Max(std::string("apple"),
+                     std::string("pear")) &lt;&lt; "\n"; // T is std::string -&gt; pear
+    return 0;
+}</code></pre>
+
+        <p>One template, three concrete functions generated on demand. Notice we take arguments by <code>const T&amp;</code> (a const reference) so we don't copy large objects unnecessarily — the same habit you'd use for a <code>Vector3</code>.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">typename vs class</div><p>You will see both <code>template &lt;typename T&gt;</code> and <code>template &lt;class T&gt;</code>. For a type parameter they mean exactly the same thing. This course prefers <code>typename</code> because it reads more clearly — <code>T</code> can be any type, not only a class.</p></div>
+        </div>
+
+        <h3>Template argument deduction</h3>
+        <p>You may have noticed we never wrote <code>Max&lt;int&gt;(3, 7)</code> — just <code>Max(3, 7)</code>. The compiler looked at the arguments, saw two <code>int</code>s, and <strong>deduced</strong> that <code>T</code> is <code>int</code>. This is called template argument deduction, and it's why templates feel effortless most of the time.</p>
+        <p>Sometimes deduction can't decide — for example if the two arguments have different types. Then you can name the type explicitly:</p>
+
+        <pre><code class="language-cpp">// Ambiguous: is T int or double? The compiler refuses to guess.
+// Max(3, 4.5);          // error
+
+// Fix it by stating T yourself:
+Max&lt;double&gt;(3, 4.5);      // force T = double, 3 becomes 3.0 -&gt; 4.5</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Templates are compile-time</div><p>A template is a <em>recipe</em>, not code by itself. The compiler generates real functions only for the types you actually call with. This means zero runtime cost for the abstraction — the generated <code>Max&lt;int&gt;</code> is exactly as fast as a hand-written one.</p></div>
+        </div>
+
+        <h2>Class templates</h2>
+        <p>Templates aren't just for functions. An entire <em>class</em> can be parameterized on a type. This is the big one, because it's how containers work. Let's build a tiny growable array — a stripped-down cousin of <code>std::vector</code> — to see the machinery.</p>
+
+        <pre><code class="language-cpp" data-file="Array.h">#include &lt;cstddef&gt;   // for std::size_t
+
+template &lt;typename T&gt;
+class Array {
+public:
+    Array() : m_data(nullptr), m_size(0), m_capacity(0) {}
+
+    ~Array() { delete[] m_data; }   // free the buffer we own
+
+    void Add(const T&amp; value) {
+        if (m_size == m_capacity) {
+            Grow();                 // make room before writing
+        }
+        m_data[m_size] = value;
+        ++m_size;
+    }
+
+    // Access by index, both mutable and read-only
+    T&amp; operator[](std::size_t index)             { return m_data[index]; }
+    const T&amp; operator[](std::size_t index) const { return m_data[index]; }
+
+    std::size_t Size() const { return m_size; }
+
+private:
+    void Grow() {
+        std::size_t newCapacity = (m_capacity == 0) ? 4 : m_capacity * 2;
+        T* newData = new T[newCapacity];
+        for (std::size_t i = 0; i &lt; m_size; ++i) {
+            newData[i] = m_data[i];       // copy existing elements over
+        }
+        delete[] m_data;
+        m_data = newData;
+        m_capacity = newCapacity;
+    }
+
+    T*          m_data;      // buffer of T, sized to m_capacity
+    std::size_t m_size;      // how many are used
+    std::size_t m_capacity;  // how many can fit before we must grow
+};</code></pre>
+
+        <p>Everywhere you see <code>T</code>, the compiler substitutes the concrete type when you create an <code>Array&lt;int&gt;</code> or an <code>Array&lt;Vector3&gt;</code>. The same source produces a correct, fully type-checked container for each. Here it is in action:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include "Array.h"
+
+int main() {
+    Array&lt;int&gt; numbers;      // T is int for this instance
+    numbers.Add(10);        // first Add allocates the buffer: Grow() -&gt; capacity 4
+    numbers.Add(20);
+    numbers.Add(30);        // still room in the buffer; no reallocation yet
+
+    for (std::size_t i = 0; i &lt; numbers.Size(); ++i) {
+        std::cout &lt;&lt; numbers[i] &lt;&lt; "\n";
+    }
+    return 0;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Keep templates in headers</div><p>Because the compiler needs the full template definition to generate code for each type, class and function templates almost always live entirely in a <strong>header file</strong>. Splitting them into a separate <code>.cpp</code> the usual way leads to "unresolved external" linker errors. Our <code>Array</code> lives in <code>Array.h</code> for exactly this reason.</p></div>
+        </div>
+
+        <h2>You already use templates: std::vector</h2>
+        <p>Our <code>Array</code> was a teaching toy. In real code you'll reach for <code>std::vector&lt;T&gt;</code> from the standard library — a battle-tested class template that does everything ours does and much more (bounds-safe access, iterators, efficient moves). The angle brackets are the giveaway that it's a class template:</p>
+
+        <pre><code class="language-cpp" data-file="vectors.cpp">#include &lt;vector&gt;
+
+std::vector&lt;int&gt;   ids;      // a growable array of int
+std::vector&lt;float&gt; speeds;   // the SAME class, specialized for float
+
+ids.push_back(42);
+ids.push_back(1337);
+// ids now holds two elements; it grew its buffer for us, just like Array::Grow</code></pre>
+
+        <p>Every time you write <code>std::vector&lt;something&gt;</code>, the compiler instantiates that template for you. You've been using generic programming all along — now you understand the mechanism underneath it.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="220" y="20" width="160" height="46" rx="8"/>
+              <text x="300" y="48" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">Array&lt;T&gt; recipe</text>
+              <path d="M300 66 L150 110 M300 66 L300 110 M300 66 L450 110" stroke="currentColor" stroke-width="1.5"/>
+              <rect x="70" y="112" width="160" height="46" rx="8"/>
+              <text x="150" y="140" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Array&lt;int&gt;</text>
+              <rect x="220" y="112" width="160" height="46" rx="8"/>
+              <text x="300" y="140" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Array&lt;Vector3&gt;</text>
+              <rect x="370" y="112" width="160" height="46" rx="8"/>
+              <text x="450" y="140" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Array&lt;Mesh*&gt;</text>
+            </svg>
+          </div>
+          <figcaption>One template, many concrete types. The compiler generates each instantiation on demand.</figcaption>
+        </figure>
+
+        <h2>Where this points: GetComponent&lt;T&gt;()</h2>
+        <p>Here's the payoff for the engine. Unity and Unreal let you ask an entity for a component by type — <code>entity.GetComponent&lt;Transform&gt;()</code>. That clean, type-safe call is a <strong>member function template</strong>. We'll build the real version in a later module, but the shape is already within your reach:</p>
+
+        <pre><code class="language-cpp" data-file="Entity.h">// A sketch of what we'll build later in the engine
+class Entity {
+public:
+    // A function template *inside* a class
+    template &lt;typename T&gt;
+    T* GetComponent();   // returns a T* if this entity has one, else nullptr
+};
+
+// Usage reads beautifully and stays fully type-safe:
+Transform* t = entity.GetComponent&lt;Transform&gt;();
+Mesh*      m = entity.GetComponent&lt;Mesh&gt;();</code></pre>
+
+        <p>No casting, no string lookups, no guessing — the type you ask for is the type you get back, checked at compile time. That is the power of generic programming, and templates are the language feature that makes it possible.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Requirements come from usage</div><p>A template silently requires whatever operations it uses. <code>Max</code> needs <code>operator&gt;</code>; <code>Array</code> needs <code>T</code> to be copy-assignable. If you instantiate a template with a type that lacks a needed operation, the error appears at the point of use — another reason to keep your own types well-behaved with the operators from the previous lesson.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Templates let you write logic <strong>once</strong> and have the compiler generate a type-checked version for each concrete type — reuse without duplication.</li>
+            <li><code>template &lt;typename T&gt;</code> introduces a function or class template; <code>T</code> is a placeholder for a real type filled in at compile time.</li>
+            <li><strong>Argument deduction</strong> usually infers <code>T</code> from the call; when it can't, name it explicitly like <code>Max&lt;double&gt;(...)</code>.</li>
+            <li>Class templates power containers: our tiny <code>Array&lt;T&gt;</code> mirrors how the standard <code>std::vector&lt;T&gt;</code> works.</li>
+            <li>Templates typically live in headers, and they set up the type-safe <code>GetComponent&lt;T&gt;()</code> we'll add to the engine.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

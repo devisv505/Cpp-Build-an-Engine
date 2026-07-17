@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A Movable Camera — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build a first-person camera in Direct3D 11: view and projection matrices, WASD movement, mouse look, and feeding them to a constant buffer.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>A Movable Camera</h1>
+
+        <p class="lead">
+          Until now our triangle and textured quad have sat frozen in front of a fixed viewpoint.
+          A camera changes that: it lets us <strong>move through</strong> the scene and <strong>look around</strong>.
+          In this lesson we build a small <code>Camera</code> struct that rebuilds its <strong>view matrix</strong>
+          every frame from keyboard and mouse input, then hands the view and projection matrices to a constant buffer.
+          This is exactly the shape our future <strong>Camera component</strong> will take inside the engine.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why a camera is really just two matrices: <strong>view</strong> and <strong>projection</strong>.</li>
+            <li>How to store camera state as position plus <strong>yaw</strong> and <strong>pitch</strong>.</li>
+            <li>How to rebuild the view matrix each frame with <code>XMMatrixLookToLH</code>.</li>
+            <li>How to move with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> and look with the mouse, scaled by delta time.</li>
+            <li>How to upload view + projection into a constant buffer for the vertex shader.</li>
+          </ul>
+        </div>
+
+        <h2>A camera is two matrices</h2>
+        <p>
+          Rendering in 3D is a chain of coordinate spaces. A vertex starts in <strong>local space</strong>
+          (relative to its own model), gets moved into the world by a <strong>world matrix</strong>, then the
+          camera transforms it twice more:
+        </p>
+        <ul>
+          <li><strong>View matrix</strong> — moves the whole world so the camera sits at the origin looking down +Z.
+            Moving the camera "right" is the same as sliding the world left; that inversion is baked into this matrix.</li>
+          <li><strong>Projection matrix</strong> — applies perspective, so distant objects shrink and everything fits
+            inside the clip volume the GPU expects.</li>
+        </ul>
+        <p>
+          The projection rarely changes (only when the window resizes or you tweak the field of view). The
+          <em>view</em> matrix, on the other hand, is rebuilt every single frame from the camera's current position
+          and orientation. That rebuild is the heart of this lesson.
+        </p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="120" cy="120" r="10" fill="#4aa8ff" stroke="#4aa8ff"/>
+              <text x="120" y="155" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">camera</text>
+              <line x1="120" y1="120" x2="280" y2="120" stroke="#4aa8ff"/>
+              <polygon points="280,120 270,114 270,126" fill="#4aa8ff" stroke="#4aa8ff"/>
+              <text x="230" y="110" fill="#4aa8ff" stroke="none" font-size="13">forward</text>
+              <line x1="120" y1="120" x2="120" y2="55"/>
+              <polygon points="120,55 114,65 126,65" fill="currentColor"/>
+              <text x="132" y="60" fill="currentColor" stroke="none" font-size="13">up</text>
+              <line x1="120" y1="120" x2="185" y2="165"/>
+              <polygon points="185,165 174,162 179,153" fill="currentColor"/>
+              <text x="190" y="180" fill="currentColor" stroke="none" font-size="13">right</text>
+              <text x="430" y="90" fill="currentColor" stroke="none" font-size="13">yaw turns left / right</text>
+              <text x="430" y="120" fill="currentColor" stroke="none" font-size="13">pitch tilts up / down</text>
+            </svg>
+          </div>
+          <figcaption>The camera's local axes. Forward comes from yaw and pitch; right and up follow from it.</figcaption>
+        </figure>
+
+        <h2>Storing camera state</h2>
+        <p>
+          There are two common ways to describe where a camera looks. You can store a <strong>target point</strong>
+          and aim at it (great for orbiting a model), or you can store <strong>yaw</strong> and <strong>pitch</strong>
+          angles and derive a forward direction (great for first-person movement). We'll use the angle approach.
+        </p>
+        <ul>
+          <li><strong>Yaw</strong> is rotation around the up (Y) axis — turning left and right.</li>
+          <li><strong>Pitch</strong> is rotation around the right (X) axis — looking up and down.</li>
+        </ul>
+
+        <pre><code class="language-cpp" data-file="Camera.h">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+// A minimal first-person camera. All angles are in radians.
+struct Camera
+{
+    XMFLOAT3 position = { 0.0f, 0.0f, -5.0f }; // world-space eye position
+    float yaw   = 0.0f;   // turn left / right (around Y)
+    float pitch = 0.0f;   // look up / down   (around X)
+
+    float moveSpeed = 5.0f;      // world units per second
+    float lookSpeed = 0.0025f;   // radians per pixel of mouse movement
+
+    // Rebuild the view matrix from the current position and angles.
+    XMMATRIX View() const
+    {
+        // Rotate the default forward (+Z) and up (+Y) by pitch and yaw.
+        XMMATRIX rot     = XMMatrixRotationRollPitchYaw(pitch, yaw, 0.0f);
+        XMVECTOR forward = XMVector3TransformNormal(XMVectorSet(0, 0, 1, 0), rot);
+        XMVECTOR up      = XMVector3TransformNormal(XMVectorSet(0, 1, 0, 0), rot);
+        XMVECTOR eye     = XMLoadFloat3(&amp;position);
+
+        // LookTo takes a DIRECTION, not a target point.
+        return XMMatrixLookToLH(eye, forward, up);
+    }
+
+    // The projection only depends on the window's aspect ratio here.
+    XMMATRIX Projection(float aspect) const
+    {
+        float fovY = XMConvertToRadians(60.0f); // vertical field of view
+        return XMMatrixPerspectiveFovLH(fovY, aspect, 0.1f, 1000.0f);
+    }
+};</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">LookTo vs LookAt</div>
+            <p><code>XMMatrixLookToLH</code> wants a <em>direction</em> to look along, which is perfect when you already
+            have a forward vector. If you'd rather aim at a specific point, use <code>XMMatrixLookAtLH(eye, target, up)</code>
+            instead — same result, different inputs.</p>
+          </div>
+        </div>
+
+        <h2>Updating from input each frame</h2>
+        <p>
+          Every frame we do two things: apply the mouse movement to yaw and pitch, then apply the keyboard to slide
+          the position along the camera's own forward and right vectors. Assume you already have a tiny input snapshot
+          gathered from your window's message loop:
+        </p>
+
+        <pre><code class="language-cpp" data-file="Input.h">// Whatever your platform layer fills in each frame.
+struct Input
+{
+    bool  keyW = false, keyS = false, keyA = false, keyD = false;
+    float mouseDeltaX = 0.0f;  // pixels moved since last frame
+    float mouseDeltaY = 0.0f;
+};</code></pre>
+
+        <p>The update is the important part. Notice how <code>dt</code> (delta time, in seconds) keeps movement speed
+        independent of frame rate:</p>
+
+        <pre><code class="language-cpp" data-file="Camera.h">void Update(Camera&amp; cam, const Input&amp; in, float dt)
+{
+    // --- Mouse look ---
+    cam.yaw   += in.mouseDeltaX * cam.lookSpeed;
+    cam.pitch += in.mouseDeltaY * cam.lookSpeed;
+
+    // Clamp pitch just short of straight up / down so the view can't flip.
+    const float limit = XMConvertToRadians(89.0f);
+    if (cam.pitch &gt;  limit) cam.pitch =  limit;
+    if (cam.pitch &lt; -limit) cam.pitch = -limit;
+
+    // --- Build the movement basis from the current orientation ---
+    XMMATRIX rot     = XMMatrixRotationRollPitchYaw(cam.pitch, cam.yaw, 0.0f);
+    XMVECTOR forward = XMVector3TransformNormal(XMVectorSet(0, 0, 1, 0), rot);
+    XMVECTOR right   = XMVector3TransformNormal(XMVectorSet(1, 0, 0, 0), rot);
+
+    // --- Gather WASD into a single direction ---
+    XMVECTOR move = XMVectorZero();
+    if (in.keyW) move = XMVectorAdd(move, forward);
+    if (in.keyS) move = XMVectorSubtract(move, forward);
+    if (in.keyD) move = XMVectorAdd(move, right);
+    if (in.keyA) move = XMVectorSubtract(move, right);
+
+    // Normalize so diagonal movement isn't faster, then scale by speed * dt.
+    if (!XMVector3Equal(move, XMVectorZero()))
+    {
+        move = XMVector3Normalize(move);
+        XMVECTOR pos = XMLoadFloat3(&amp;cam.position);
+        pos = XMVectorAdd(pos, XMVectorScale(move, cam.moveSpeed * dt));
+        XMStoreFloat3(&amp;cam.position, pos);
+    }
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Why multiply by dt?</div>
+            <p>If a machine renders at 200 FPS and another at 60 FPS, adding a fixed step per frame would make one player
+            fly and the other crawl. Multiplying by <code>dt</code> (roughly 0.016 s at 60 FPS) turns
+            <code>moveSpeed</code> into a true "5 units per second," identical on both machines.</p>
+          </div>
+        </div>
+
+        <p>
+          Normalizing the combined move vector is a small but real detail. Without it, holding <kbd>W</kbd> + <kbd>D</kbd>
+          would move you <code>√2 ≈ 1.41×</code> faster than a single key, because the two unit vectors add to a longer one.
+        </p>
+
+        <h2>Feeding the shader</h2>
+        <p>
+          The vertex shader needs both matrices, so we pack them into a constant buffer. This mirrors the
+          <strong>per-frame</strong> constant buffer we set up when we first drew geometry — the camera simply fills it in.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">// CPU-side layout must match the HLSL cbuffer exactly.
+struct FrameConstants
+{
+    XMFLOAT4X4 view;
+    XMFLOAT4X4 projection;
+};
+
+void UploadCamera(ID3D11DeviceContext* ctx,
+                  ID3D11Buffer* frameCB,
+                  const Camera&amp; cam,
+                  float aspect)
+{
+    FrameConstants cb;
+    // Transpose: DirectXMath is row-major, HLSL expects column-major.
+    XMStoreFloat4x4(&amp;cb.view,       XMMatrixTranspose(cam.View()));
+    XMStoreFloat4x4(&amp;cb.projection, XMMatrixTranspose(cam.Projection(aspect)));
+
+    // Copy into the GPU buffer through a mapped pointer.
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    ctx-&gt;Map(frameCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &amp;mapped);
+    memcpy(mapped.pData, &amp;cb, sizeof(cb));
+    ctx-&gt;Unmap(frameCB, 0);
+
+    // Bind at slot b0 for the vertex shader.
+    ctx-&gt;VSSetConstantBuffers(0, 1, &amp;frameCB);
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't forget the transpose</div>
+            <p>DirectXMath stores matrices row-major, but HLSL reads <code>float4x4</code> as column-major by default.
+            If you skip <code>XMMatrixTranspose</code>, your geometry will vanish or smear across the screen. Transposing
+            on the CPU and using <code>mul(vector, matrix)</code> in the shader is the standard, matching pair.</p>
+          </div>
+        </div>
+
+        <p>The matching vertex shader multiplies each vertex by world, then view, then projection:</p>
+
+        <pre><code class="language-hlsl" data-file="Basic.hlsl">cbuffer FrameConstants : register(b0)
+{
+    float4x4 view;
+    float4x4 projection;
+};
+
+cbuffer ObjectConstants : register(b1)
+{
+    float4x4 world;   // comes from the object's Transform
+};
+
+struct VSIn  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+
+VSOut main(VSIn input)
+{
+    VSOut o;
+    float4 worldPos = mul(float4(input.pos, 1.0f), world);
+    float4 viewPos  = mul(worldPos, view);
+    o.pos = mul(viewPos, projection);
+    o.uv  = input.uv;
+    return o;
+}</code></pre>
+
+        <h2>Wiring it into the frame loop</h2>
+        <p>Putting the pieces together, each frame follows the same rhythm:</p>
+        <ol>
+          <li>Gather input into an <code>Input</code> snapshot.</li>
+          <li>Call <code>Update(camera, input, dt)</code> to move and rotate.</li>
+          <li>Call <code>UploadCamera(...)</code> with the current window aspect ratio.</li>
+          <li>Draw your objects — they now appear from the camera's point of view.</li>
+        </ol>
+        <p>
+          Compute <code>dt</code> from a high-resolution timer such as <code>QueryPerformanceCounter</code>, taking the
+          difference between this frame's timestamp and the previous one. Recompute <code>aspect</code> as
+          <code>width / height</code> whenever the window resizes so the projection never stretches your scene.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Toward a Camera component</div>
+            <p>Look at the shape of this code: a small bundle of data (<code>position</code>, <code>yaw</code>,
+            <code>pitch</code>) plus an <code>Update(..., dt)</code> function that runs every frame. That is precisely
+            the contract every engine component will follow. When we reach the component system, this struct becomes a
+            <strong>Camera component</strong> attached to an entity, and its position will come from a shared
+            <strong>Transform</strong> instead of a raw <code>XMFLOAT3</code>.</p>
+          </div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A camera is two matrices: a <strong>view</strong> matrix rebuilt each frame and a <strong>projection</strong>
+            matrix that only changes on resize.</li>
+            <li>We store <strong>position</strong>, <strong>yaw</strong>, and <strong>pitch</strong>, then derive forward,
+            right, and up with <code>XMMatrixRotationRollPitchYaw</code> and <code>XMVector3TransformNormal</code>.</li>
+            <li><code>XMMatrixLookToLH</code> builds the view matrix from an eye, a direction, and an up vector.</li>
+            <li>Mouse deltas drive yaw and pitch (clamp pitch near ±89°); <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+            slide the position, scaled by <code>moveSpeed * dt</code> and normalized so diagonals aren't faster.</li>
+            <li>Transpose both matrices before copying them into the constant buffer, then bind at <code>b0</code>.</li>
+            <li>This data-plus-<code>Update(dt)</code> shape foreshadows the engine's <strong>Camera component</strong>.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

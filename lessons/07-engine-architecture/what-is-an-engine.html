@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>What a Game Engine Actually Is — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn what a game engine really is: reusable runtime systems that separate engine code from game code, and why building your own teaches you the most.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>What a Game Engine Actually Is</h1>
+
+        <p class="lead">You have already drawn textured geometry and flown a camera around a scene with real Direct3D 11 code. That was the hard part. Now we zoom out and ask a bigger question: what is the reusable machine underneath all of that, and how do the professionals structure it? Understanding this shape is what turns a pile of demos into an <strong>engine</strong> — the same idea that powers Unity and Unreal.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>A concrete definition of a game engine as a set of reusable runtime <strong>systems</strong></li>
+            <li>The difference between reusable engine code and game-specific code, and why that line matters</li>
+            <li>The layered view: platform &rarr; engine systems &rarr; game</li>
+            <li>What Unity and Unreal hand you for free — and what you gain by building your own</li>
+          </ul>
+        </div>
+
+        <h2>The one-sentence definition</h2>
+
+        <p>A <strong>game engine</strong> is a collection of reusable runtime systems that handle the recurring, game-agnostic problems — drawing, input, timing, loading assets, managing a world of objects — so that the game on top can focus on <em>rules and content</em>. That is the whole idea. Everything else in this module is just detail about how those systems are organized and how they talk to each other.</p>
+
+        <p>Notice the word <strong>reusable</strong>. A one-off demo that hard-codes a single spinning cube is not an engine. The moment you can load a <em>different</em> model, bind a <em>different</em> texture, or spawn a <em>different</em> object without rewriting your renderer, you have crossed the line from "a game" into "an engine that runs a game."</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Engine vs. game</div>
+            <p>Rule of thumb: if code would still be useful in a completely different game, it belongs in the <strong>engine</strong>. If it only makes sense for <em>this</em> game's rules (how the player scores, what the enemies do), it is <strong>game code</strong>. Keeping that boundary clean is the single most valuable habit in this whole module.</p>
+          </div>
+        </div>
+
+        <h2>The systems inside an engine</h2>
+
+        <p>"Engine" sounds like one big thing, but it is really a team of smaller specialists called <strong>subsystems</strong>. Each one owns a single concern and exposes a small, stable interface to the rest of the program. Here are the core ones almost every engine has — including yours, by the end of this course.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>System</th><th>Responsibility</th><th>You have already touched…</th></tr></thead>
+            <tbody>
+              <tr><td>Rendering</td><td>Turns scene data into pixels via the GPU</td><td>Your D3D11 device, swap chain, shaders</td></tr>
+              <tr><td>Input</td><td>Reads keyboard, mouse and gamepad state</td><td>The camera controls from last lesson</td></tr>
+              <tr><td>Time</td><td>Measures delta time so motion is frame-rate independent</td><td>Your per-frame update timing</td></tr>
+              <tr><td>Resources</td><td>Loads and caches meshes, textures, shaders</td><td>Loading a texture from disk</td></tr>
+              <tr><td>Scene / World</td><td>Holds the objects that exist and their transforms</td><td>The objects you positioned in the world</td></tr>
+              <tr><td>Physics</td><td>Moves bodies, detects collisions (added later)</td><td>Not yet</td></tr>
+              <tr><td>Audio</td><td>Plays sounds and music (added later)</td><td>Not yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>You will not build all of these at once, and that is fine. The point is that each is a <em>replaceable box</em> with a defined job. Rendering does not care how input works; input does not care how audio works. That independence is what lets a large team — or a solo learner — grow an engine without every change rippling through the whole codebase.</p>
+
+        <h2>The layered view</h2>
+
+        <p>Engines are organized as <strong>layers</strong>, where each layer only depends on the ones below it. Think of it as a stack: the raw platform at the bottom, your reusable engine systems in the middle, and the specific game at the top.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Three-layer engine diagram: platform, engine systems, game">
+              <rect x="120" y="20" width="360" height="44" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="300" y="47" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Game — rules, levels, content</text>
+
+              <rect x="60" y="88" width="480" height="44" rx="6" fill="none" stroke="#4aa8ff" stroke-width="2"/>
+              <text x="300" y="115" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Engine systems — render, input, time, resources, world</text>
+
+              <rect x="120" y="156" width="360" height="44" rx="6" fill="none" stroke="currentColor" stroke-width="2"/>
+              <text x="300" y="183" text-anchor="middle" fill="currentColor" font-size="15" font-family="sans-serif">Platform — OS window, Direct3D 11, files</text>
+
+              <path d="M300 88 L300 64" stroke="currentColor" stroke-width="2" marker-end="url(#a)"/>
+              <path d="M300 156 L300 132" stroke="currentColor" stroke-width="2" marker-end="url(#a)"/>
+              <defs>
+                <marker id="a" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M1 1 L7 4 L1 7 z" fill="currentColor"/></marker>
+              </defs>
+            </svg>
+          </div>
+          <figcaption>Each layer depends only on the layer beneath it. The game talks to engine systems; engine systems talk to the platform.</figcaption>
+        </figure>
+
+        <ul>
+          <li><strong>Platform layer.</strong> The operating system window, the Direct3D 11 API, the filesystem, the high-resolution timer. This is the ground your engine stands on. It is inherently machine-specific.</li>
+          <li><strong>Engine systems layer.</strong> Your reusable code that wraps the platform in friendlier, game-facing tools: a renderer instead of raw device calls, an input manager instead of scattered key reads. This is what you are building.</li>
+          <li><strong>Game layer.</strong> The specific thing you are shipping — its rules, its levels, its characters. It leans entirely on the layer below and never talks to Direct3D directly.</li>
+        </ul>
+
+        <p>The golden rule is <strong>dependencies point downward only</strong>. The game may call the engine; the engine must never call the game. When that direction is respected, you can drop the same engine under a racing game or a puzzle game without touching a line of engine code.</p>
+
+        <h2>What this looks like in code</h2>
+
+        <p>Here is a sketch of the shape we are heading toward. Do not worry about implementing every method yet — we build these across the next lessons. Focus on how the game (the <code>main</code> function) only ever speaks to engine systems, never to the platform.</p>
+
+        <pre><code class="language-cpp" data-file="Engine.h">#pragma once
+#include &lt;memory&gt;
+
+// Each subsystem is its own reusable box with a small interface.
+class Renderer;      // wraps Direct3D 11
+class InputManager;  // wraps keyboard / mouse
+class Clock;         // wraps the high-resolution timer
+class World;         // holds the objects that exist
+
+// The engine owns the systems and wires them together.
+class Engine {
+public:
+    bool Initialize(void* windowHandle); // set up all systems
+    void RunFrame();                      // one tick of the loop
+    void Shutdown();
+
+private:
+    std::unique_ptr&lt;Renderer&gt;     renderer_;
+    std::unique_ptr&lt;InputManager&gt; input_;
+    std::unique_ptr&lt;Clock&gt;        clock_;
+    std::unique_ptr&lt;World&gt;        world_;
+};</code></pre>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include "Engine.h"
+
+// This is GAME code. Notice it never mentions Direct3D directly —
+// it only asks the engine to do reusable things.
+int main() {
+    Engine engine;
+    if (!engine.Initialize(/* window handle */ nullptr)) {
+        return 1; // engine failed to start up
+    }
+
+    // The main loop: keep ticking the engine until the game asks to quit.
+    bool running = true;
+    while (running) {
+        engine.RunFrame(); // update systems + render one frame
+        // running = ...   // game rules decide when to stop
+    }
+
+    engine.Shutdown();
+    return 0;
+}</code></pre>
+
+        <p>Read <code>main.cpp</code> again and note what is <em>absent</em>: no device, no swap chain, no message pump, no vertex buffers. All of that lives behind <code>Engine</code>. That absence is the whole point — the game author gets a clean, reusable machine and spends their energy on the game itself. We will flesh out <code>RunFrame</code> and the subsystems it drives in the next lesson.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Own your systems' lifetime</div>
+            <p>We store subsystems in <code>std::unique_ptr</code> so the engine clearly <strong>owns</strong> them, they get destroyed in a well-defined order, and we never leak. This is exactly the kind of modern-C++ ownership habit that keeps a growing engine from turning into a maze of raw <code>new</code>/<code>delete</code>.</p>
+          </div>
+        </div>
+
+        <h2>What Unity and Unreal hand you</h2>
+
+        <p>Commercial engines are simply this same layered idea, matured over decades and polished with tools. When you open Unity or Unreal, you are handed all of the systems above <em>already built</em>, plus an editor, an asset pipeline, a scripting layer, and a physics engine. You drag a model into a scene and it just renders, because their rendering, resource, and world systems are doing everything you saw in earlier lessons — behind a friendly interface.</p>
+
+        <p>That convenience is wonderful for shipping, but it hides the machinery. You can spend years in Unity and never learn <em>why</em> a draw call is expensive or <em>how</em> a transform becomes pixels. Building your own small engine is the opposite trade: slower to ship, but every layer becomes something you understand in your bones.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">We are not out-building Unreal</div>
+            <p>The goal is <strong>understanding</strong>, not competing with a thousand-engineer product. Our engine will be small and focused. That is a feature: a small engine you fully understand teaches you more than a giant one you only rent. The concepts transfer directly the day you do open a commercial engine.</p>
+          </div>
+        </div>
+
+        <h2>Why the boundary is worth the effort</h2>
+
+        <p>Keeping engine code and game code cleanly separated is not just tidiness for its own sake. It buys you concrete things:</p>
+
+        <ol>
+          <li><strong>Reuse.</strong> The same renderer runs your next project with zero changes.</li>
+          <li><strong>Testability.</strong> You can test the input system without launching a full game.</li>
+          <li><strong>Replaceability.</strong> Swap the Direct3D 11 renderer for a Direct3D 12 one later, and the game above never notices.</li>
+          <li><strong>Sanity.</strong> When something breaks, you know <em>which box</em> to open.</li>
+        </ol>
+
+        <p>Every design decision in the coming lessons — the component-based world, the resource manager, the main loop — exists to protect that boundary. Keep the layered picture in your head and the rest of the module will feel like filling in a diagram you already understand.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A game engine is a set of <strong>reusable runtime systems</strong> — rendering, input, time, resources, world, later physics and audio — that solve game-agnostic problems.</li>
+            <li><strong>Engine code</strong> is anything that would help a different game; <strong>game code</strong> is specific to one game's rules. Keeping them separate is the core habit.</li>
+            <li>Engines are <strong>layered</strong>: platform &rarr; engine systems &rarr; game, with dependencies pointing downward only.</li>
+            <li>Unity and Unreal hand you all these systems pre-built; building your own smaller version trades shipping speed for deep understanding.</li>
+            <li>Next, we open up the engine's <code>RunFrame</code> to see how the subsystems and the main loop actually fit together.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Assets &amp; Resource Management — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Load meshes, textures and shaders once and share them across the scene with a shared_ptr resource cache backed by RAII and ComPtr.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Assets &amp; Resource Management</h1>
+
+        <p class="lead">
+          A single texture can be tens of megabytes, and uploading it to the GPU takes real time. Yet in a
+          scene, hundreds of objects might all use the same brick texture or the same cube mesh. Loading that
+          file once per object would be catastrophic. In this lesson we build the part of the engine that loads
+          each asset <strong>exactly once</strong> and hands out shared references, so a thousand walls quietly
+          share one GPU resource — just like the asset databases inside Unity and Unreal.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why assets are expensive and should be loaded once and shared</li>
+            <li>How <code>std::shared_ptr</code> lets many objects co-own one resource safely</li>
+            <li>How RAII and <code>ComPtr</code> guarantee GPU memory is released automatically</li>
+            <li>How to build a small <code>ResourceManager&lt;T&gt;</code> that caches by path and avoids duplicate loads</li>
+          </ul>
+        </div>
+
+        <h2>Why assets need special treatment</h2>
+        <p>
+          Everything the renderer draws comes from an <strong>asset</strong>: a mesh (vertex and index buffers),
+          a texture (pixels living in GPU memory), or a compiled shader. Two things make them different from the
+          ordinary data we have used so far:
+        </p>
+        <ul>
+          <li><strong>They are expensive.</strong> Reading a file from disk, decoding it, and uploading it to the
+            GPU can take milliseconds each — an eternity when you have hundreds of them.</li>
+          <li><strong>They are shared.</strong> The same crate model may appear 500 times in a level. All 500
+            instances want to point at <em>one</em> vertex buffer, not 500 identical copies wasting memory.</li>
+        </ul>
+        <p>
+          The rule that falls out of this is simple and is the heart of the whole lesson:
+          <strong>load once, share everywhere, free when nobody is left</strong>. In the last lesson each object
+          had a <code>Transform</code> describing <em>where</em> it is; an asset describes <em>what</em> it looks
+          like. Many transforms can reference the same asset.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">A useful mental model</div>
+          <p>Think of the <code>ResourceManager</code> as a library. You ask for a book by its title (the file
+          path). If the library already has it, you get a reference to the copy on the shelf. If not, the library
+          fetches it once, then everyone borrows that same copy.</p></div>
+        </div>
+
+        <h2>Shared ownership with shared_ptr</h2>
+        <p>
+          When many objects use one asset, who owns it? If any single object owned it and got deleted, the others
+          would be left pointing at freed memory. If nobody owned it, it would leak. The right tool is
+          <strong>shared ownership</strong>: <code>std::shared_ptr&lt;T&gt;</code> keeps a reference count, and the
+          resource is destroyed the instant the <em>last</em> owner lets go. That is exactly the "free when nobody
+          is left" rule, enforced automatically.
+        </p>
+        <p>
+          So our manager will return <code>std::shared_ptr&lt;Mesh&gt;</code>, <code>std::shared_ptr&lt;Texture&gt;</code>,
+          and so on. A renderable component just holds onto one of those pointers. Copy the component, copy the
+          <code>shared_ptr</code>, and the count goes up — no data is duplicated.
+        </p>
+
+        <h2>Lifetime of GPU resources: RAII and ComPtr</h2>
+        <p>
+          A <code>shared_ptr</code> handles the C++ object, but the real payload lives on the GPU behind Direct3D
+          interfaces like <code>ID3D11Texture2D</code>. Those are COM objects with their own reference count that
+          you release by calling <code>Release()</code>. Forgetting that call leaks video memory. We never call it
+          by hand — we wrap every Direct3D interface in <code>Microsoft::WRL::ComPtr</code>, which calls
+          <code>Release()</code> for us when it goes out of scope. This is RAII: acquisition in the constructor,
+          release in the destructor.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Texture.h">#include &lt;d3d11.h&gt;
+#include &lt;wrl/client.h&gt;
+#include &lt;string&gt;
+
+using Microsoft::WRL::ComPtr;
+
+// One Texture owns its GPU resources. When the last shared_ptr&lt;Texture&gt;
+// is released, ~Texture runs, each ComPtr calls Release(), and the
+// GPU memory is freed automatically. We write no cleanup code at all.
+class Texture {
+public:
+    // Does the expensive work: read the file and upload pixels to the GPU.
+    void LoadFromFile(ID3D11Device* device, const std::string&amp; path);
+
+    // Shaders bind a texture through its shader-resource view.
+    ID3D11ShaderResourceView* GetSRV() const { return m_srv.Get(); }
+
+private:
+    ComPtr&lt;ID3D11Texture2D&gt;          m_texture; // the pixels, in GPU memory
+    ComPtr&lt;ID3D11ShaderResourceView&gt; m_srv;     // how shaders sample it
+};</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Two reference counts, one goal</div>
+          <p>The <code>shared_ptr</code> counts C++ owners of the <code>Texture</code>; the <code>ComPtr</code>
+          counts COM references to the D3D interface. They live at different layers but cooperate: when the last
+          <code>shared_ptr</code> dies, the <code>ComPtr</code> members are destroyed, dropping the D3D count to
+          zero and releasing the video memory. Never mix a raw <code>Release()</code> call into this — let RAII do it.</p></div>
+        </div>
+
+        <h2>The cache: a ResourceManager&lt;T&gt;</h2>
+        <p>
+          Now we tie it together. The manager keeps an <code>std::unordered_map</code> keyed by file path. When you
+          ask for an asset, it checks the map. A hit returns the existing pointer; a miss loads the asset, stores
+          it, and returns it. That single lookup is what turns 500 load requests into one actual load.
+        </p>
+        <p>
+          One subtlety decides how memory behaves: should the cache <em>own</em> the resource, or merely
+          <em>track</em> it? If we store <code>shared_ptr</code> in the map, the cache is an owner, so nothing is
+          ever freed while the manager lives. If we store a <code>std::weak_ptr</code>, the cache observes without
+          keeping the asset alive — the resource frees as soon as the last real user releases it, and the manager
+          reloads it on demand. The <code>weak_ptr</code> version is the one that scales, so that is what we build.
+        </p>
+
+        <pre><code class="language-cpp" data-file="ResourceManager.h">#include &lt;memory&gt;
+#include &lt;string&gt;
+#include &lt;unordered_map&gt;
+
+struct ID3D11Device; // fwd-declare: we only pass the pointer through
+
+// Loads assets of type T once and shares them. T must provide a
+// LoadFromFile(...) method (see Texture above). Templated so the same
+// logic serves Mesh, Texture, Shader, ... with no duplication.
+template &lt;typename T&gt;
+class ResourceManager {
+public:
+    explicit ResourceManager(ID3D11Device* device) : m_device(device) {}
+
+    // Return a shared handle to the asset at 'path', loading it only
+    // if it is not already live in the cache.
+    std::shared_ptr&lt;T&gt; Load(const std::string&amp; path) {
+        // 1. Have we loaded this path before, and is it still alive?
+        auto it = m_cache.find(path);
+        if (it != m_cache.end()) {
+            if (std::shared_ptr&lt;T&gt; existing = it-&gt;second.lock()) {
+                return existing;            // cache hit: share the copy
+            }
+        }
+
+        // 2. Cache miss (or the old one expired): do the expensive load.
+        std::shared_ptr&lt;T&gt; resource = std::make_shared&lt;T&gt;();
+        resource-&gt;LoadFromFile(m_device, path);
+
+        // 3. Track it with a weak reference so we do NOT keep it alive
+        //    by ourselves, but can still hand it out again next time.
+        m_cache[path] = resource;
+        return resource;
+    }
+
+private:
+    ID3D11Device* m_device = nullptr; // needed to create GPU resources
+    std::unordered_map&lt;std::string, std::weak_ptr&lt;T&gt;&gt; m_cache;
+};</code></pre>
+
+        <p>
+          Using it from the rest of the engine is pleasantly boring, which is the point:
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">ResourceManager&lt;Texture&gt; textures(device);
+
+// The file is read from disk and uploaded to the GPU exactly once here.
+std::shared_ptr&lt;Texture&gt; brick = textures.Load("assets/brick.png");
+
+// Every later request for the same path returns the SAME Texture.
+// No disk read, no GPU upload — just a reference-count bump.
+std::shared_ptr&lt;Texture&gt; sameBrick = textures.Load("assets/brick.png");
+
+// Proof they are one object, shared by two owners:
+// brick.get() == sameBrick.get(), and brick.use_count() == 2.</code></pre>
+
+        <h2>Owning vs. tracking, at a glance</h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Cache stores</th><th>Who keeps the asset alive</th><th>When is memory freed</th></tr></thead>
+          <tbody>
+            <tr><td><code>shared_ptr&lt;T&gt;</code></td><td>The cache itself (plus users)</td><td>Only when the manager is destroyed or you evict it by hand</td></tr>
+            <tr><td><code>weak_ptr&lt;T&gt;</code></td><td>Only the real users</td><td>Automatically, when the last user releases it</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Thread-safety comes later</div>
+          <p>This sketch assumes assets are loaded from one thread (typically the main thread during level load).
+          Real engines add a mutex around the map or a background loading queue. We keep it single-threaded for now
+          so the ownership idea stays front and centre — the caching logic will not change when we make it
+          concurrent.</p></div>
+        </div>
+
+        <h2>How this fits the engine</h2>
+        <p>
+          A renderable component — the thing we will attach to a scene object next to its <code>Transform</code> —
+          simply holds a <code>std::shared_ptr&lt;Mesh&gt;</code> and a <code>std::shared_ptr&lt;Texture&gt;</code>
+          it got from the managers. Spawning 500 crates means 500 transforms but two shared assets. When a level
+          unloads and those components disappear, the last references drop, the <code>ComPtr</code> destructors
+          fire, and the GPU memory returns on its own. You now have the same "reference one asset, instantiate it
+          everywhere" model that Unity's meshes and Unreal's static meshes are built on.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Assets (meshes, textures, shaders) are expensive to load and upload, so load each one once and share it.</li>
+            <li><code>std::shared_ptr&lt;T&gt;</code> gives many objects safe co-ownership; the asset frees when the last owner releases it.</li>
+            <li>Wrap every Direct3D interface in <code>ComPtr</code> so RAII releases GPU memory automatically — never call <code>Release()</code> by hand.</li>
+            <li>A <code>ResourceManager&lt;T&gt;</code> caches by file path in an <code>unordered_map</code>, turning duplicate load requests into one real load.</li>
+            <li>Storing <code>weak_ptr</code> in the cache lets it track resources without keeping them alive, so unused assets free themselves.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

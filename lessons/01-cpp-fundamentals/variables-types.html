@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Variables &amp; Fundamental Types — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Declare and initialize C++ variables, meet the fundamental types int, float, double, bool and char, and see why graphics code lives on float.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Variables &amp; Fundamental Types</h1>
+
+        <p class="lead">Every engine is, at heart, a giant pile of numbers changing over time: positions, colors, velocities, timestamps. Before we can move a cube or tint a pixel, we need a place to <em>store</em> those numbers. That place is a variable, and its <strong>type</strong> tells the compiler exactly what kind of value it holds and how much memory it takes. In this lesson you'll learn to declare, initialize, and reason about C++'s fundamental types — the raw material every component in our engine is built from.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How to declare and initialize a variable, and why initialization matters</li>
+            <li>The fundamental types <code>int</code>, <code>float</code>, <code>double</code>, <code>bool</code>, and <code>char</code></li>
+            <li>The difference between brace <code>{}</code> and copy <code>=</code> initialization</li>
+            <li>How to let the compiler deduce a type with <code>auto</code></li>
+            <li>Typical type sizes, <code>sizeof</code>, and why graphics code lives on <code>float</code></li>
+          </ul>
+        </div>
+
+        <h2>Declaring a variable</h2>
+        <p>A <strong>declaration</strong> introduces a name and gives it a type. The pattern is always <em>type</em>, then <em>name</em>:</p>
+
+        <pre><code class="language-cpp">int health;        // a whole number, currently uninitialized
+float speed;       // a single-precision decimal, uninitialized
+bool isAlive;      // true or false, uninitialized</code></pre>
+
+        <p>Those three variables exist, but they hold <em>garbage</em> — whatever bits happened to be sitting in that memory. Reading an uninitialized variable is one of the most common beginner bugs, and it produces values that seem to change randomly between runs.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Always initialize</div><p>An uninitialized local variable has an <strong>indeterminate</strong> value. Don't rely on it being zero — give every variable a starting value as you declare it. Your future self, debugging a jittering character at 2 a.m., will thank you.</p></div></div>
+
+        <h2>Initialization: brace <code>{}</code> vs copy <code>=</code></h2>
+        <p>To give a variable a starting value, you <strong>initialize</strong> it. C++ offers a few syntaxes; the two you'll use most are copy initialization with <code>=</code> and brace (list) initialization with <code>{}</code>:</p>
+
+        <pre><code class="language-cpp">int   health = 100;    // copy initialization
+float speed  = 5.5f;   // the trailing 'f' makes this a float literal
+bool  isAlive{true};   // brace initialization
+char  grade{'A'};      // a single character in single quotes</code></pre>
+
+        <p>They look interchangeable, and for these examples they behave the same. But brace initialization has one very useful safety feature: it refuses to silently throw away data. This is called a <strong>narrowing conversion</strong>, and braces turn it into a compile error instead of a quiet bug.</p>
+
+        <pre><code class="language-cpp">int a = 3.9;    // compiles: quietly truncates to 3 (the .9 vanishes)
+int b{3.9};     // ERROR: brace init won't narrow a double to an int</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Prefer braces</div><p>Modern C++ style leans toward <code>{}</code> initialization precisely because it catches accidental narrowing. When we build our <code>Transform</code> component later, using braces means the compiler flags a bad assignment before it ever ships.</p></div></div>
+
+        <h2>The fundamental types</h2>
+        <p>C++ has a small set of built-in ("fundamental") types. These five cover almost everything you'll do early on:</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Type</th><th>Holds</th><th>Example literal</th><th>Typical size</th></tr></thead>
+          <tbody>
+            <tr><td><code>int</code></td><td>Whole numbers (positive or negative)</td><td><code>42</code>, <code>-7</code></td><td>4 bytes</td></tr>
+            <tr><td><code>float</code></td><td>Single-precision decimals</td><td><code>5.5f</code>, <code>-0.5f</code></td><td>4 bytes</td></tr>
+            <tr><td><code>double</code></td><td>Double-precision decimals</td><td><code>3.14159</code></td><td>8 bytes</td></tr>
+            <tr><td><code>bool</code></td><td>Truth values</td><td><code>true</code>, <code>false</code></td><td>1 byte</td></tr>
+            <tr><td><code>char</code></td><td>A single character / small integer</td><td><code>'A'</code>, <code>'\n'</code></td><td>1 byte</td></tr>
+          </tbody>
+        </table></div>
+
+        <p>A few things worth calling out:</p>
+        <ul>
+          <li><strong><code>float</code> vs <code>double</code>:</strong> both store decimals, but <code>double</code> uses twice the memory for roughly twice the precision. A plain literal like <code>3.14</code> is a <code>double</code>; write <code>3.14f</code> to make it a <code>float</code>.</li>
+          <li><strong><code>char</code> is a number too:</strong> internally <code>'A'</code> is just the integer 65. You can do arithmetic on it, which is occasionally handy.</li>
+          <li><strong><code>bool</code></strong> only ever holds <code>true</code> or <code>false</code> — perfect for flags like "is this entity active?"</li>
+        </ul>
+
+        <h2>Why graphics code lives on <code>float</code></h2>
+        <p>Here's a habit to lock in early: <strong>almost all graphics math uses <code>float</code>, not <code>double</code></strong>. A GPU is built to chew through millions of 32-bit floats per frame. Vertex positions, colors, matrices, and shader variables are overwhelmingly <code>float</code>. Direct3D's own math library, DirectXMath, is entirely <code>float</code>-based.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Get comfortable with the <code>f</code></div><p>When you write a graphics constant, add the <code>f</code>: <code>0.0f</code>, <code>1.0f</code>, <code>0.5f</code>. It keeps the value a <code>float</code> and avoids needless <code>double</code>-to-<code>float</code> conversions. You'll type it thousands of times building the engine, so it becomes muscle memory fast.</p></div></div>
+
+        <h2>Signed vs unsigned</h2>
+        <p>By default <code>int</code> is <em>signed</em> — it can be negative. There's also <code>unsigned int</code>, which can only be zero or positive and, for the same 4 bytes, reaches about twice as high. You'll meet <code>unsigned</code> mostly as sizes and counts; for example, the number of elements in a <code>std::vector</code> is an unsigned type.</p>
+
+        <pre><code class="language-cpp">int          temperature = -15;   // can be negative
+unsigned int vertexCount = 3000;  // never negative, so unsigned fits</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Unsigned wraps around</div><p>Subtracting past zero in an <code>unsigned</code> type doesn't give a negative — it <em>wraps</em> to a huge number. If <code>vertexCount</code> is 0 and you compute <code>vertexCount - 1</code>, you get roughly four billion, not -1. Keep that in mind when looping backward over counts.</p></div></div>
+
+        <h2>Letting the compiler decide with <code>auto</code></h2>
+        <p>Sometimes the type is obvious from the value on the right-hand side, and spelling it out is just noise. The <code>auto</code> keyword tells the compiler to <strong>deduce</strong> the type for you:</p>
+
+        <pre><code class="language-cpp">auto count = 10;       // deduced as int
+auto ratio = 0.5f;     // deduced as float (because of the 'f')
+auto pi    = 3.14159;  // deduced as double
+auto ready = true;     // deduced as bool</code></pre>
+
+        <p><code>auto</code> shines later when types get long — think iterators or template types — where writing the full name is tedious and error-prone. For simple literals it's a matter of taste, but it's worth recognizing now because you'll see it everywhere in real engine code.</p>
+
+        <h2>Measuring types with <code>sizeof</code></h2>
+        <p>The <code>sizeof</code> operator reports how many bytes a type occupies. Knowing this matters in graphics: when we later hand a buffer of vertices to the GPU, we tell Direct3D the exact byte size, and getting it wrong corrupts the whole mesh.</p>
+
+        <p>Let's put everything together in a small, complete program you can compile and run:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    // Declare and initialize one of each fundamental type.
+    int    health = 100;      // whole number
+    float  speed  = 5.5f;     // single-precision decimal (note the 'f')
+    double gravity = -9.81;   // double-precision decimal
+    bool   isAlive = true;    // truth value
+    char   grade   = 'A';     // a single character
+
+    // Print the values. std::boolalpha shows true/false as words.
+    std::cout &lt;&lt; "health : " &lt;&lt; health  &lt;&lt; '\n';
+    std::cout &lt;&lt; "speed  : " &lt;&lt; speed   &lt;&lt; '\n';
+    std::cout &lt;&lt; "gravity: " &lt;&lt; gravity &lt;&lt; '\n';
+    std::cout &lt;&lt; "isAlive: " &lt;&lt; std::boolalpha &lt;&lt; isAlive &lt;&lt; '\n';
+    std::cout &lt;&lt; "grade  : " &lt;&lt; grade   &lt;&lt; '\n';
+
+    // Report how many bytes each type uses on this platform.
+    std::cout &lt;&lt; "\nSizes in bytes:\n";
+    std::cout &lt;&lt; "int    = " &lt;&lt; sizeof(int)    &lt;&lt; '\n';
+    std::cout &lt;&lt; "float  = " &lt;&lt; sizeof(float)  &lt;&lt; '\n';
+    std::cout &lt;&lt; "double = " &lt;&lt; sizeof(double) &lt;&lt; '\n';
+    std::cout &lt;&lt; "bool   = " &lt;&lt; sizeof(bool)   &lt;&lt; '\n';
+    std::cout &lt;&lt; "char   = " &lt;&lt; sizeof(char)   &lt;&lt; '\n';
+
+    return 0;
+}</code></pre>
+
+        <p>On a typical 64-bit Windows setup, this prints something like:</p>
+
+        <pre><code class="language-console">health : 100
+speed  : 5.5
+gravity: -9.81
+isAlive: true
+grade  : A
+
+Sizes in bytes:
+int    = 4
+float  = 4
+double = 8
+bool   = 1
+char   = 1</code></pre>
+
+        <p>Notice <code>float</code> and <code>int</code> are both 4 bytes, while <code>double</code> is 8. That size difference is exactly why the GPU prefers <code>float</code>: half the memory and half the bandwidth per number, and for on-screen visuals the extra precision of <code>double</code> is rarely worth the cost.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Try it yourself</div><p>Change a value, swap a <code>=</code> for <code>{}</code>, or add <code>unsigned int</code> to the size list and rerun. Poking at working code and watching what changes is the fastest way to make these types feel natural.</p></div></div>
+
+        <p>These humble variables are the atoms of everything ahead. A position is three <code>float</code>s, a color is four, a rotation is a handful more — and a component like <code>Transform</code> is really just a tidy bundle of the types you met today. Master how they're declared and sized now, and the engine work later becomes a matter of arranging familiar pieces.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A variable declaration is <em>type</em> then <em>name</em>; always initialize it to avoid indeterminate "garbage" values.</li>
+            <li>The core fundamental types are <code>int</code>, <code>float</code>, <code>double</code>, <code>bool</code>, and <code>char</code>.</li>
+            <li>Brace <code>{}</code> initialization is safer than copy <code>=</code> because it rejects narrowing conversions like <code>3.9</code> into an <code>int</code>.</li>
+            <li><code>auto</code> lets the compiler deduce a type from the initializer — handy for long or obvious types.</li>
+            <li><code>sizeof</code> reports bytes; <code>float</code> is 4 bytes and dominates graphics code, so write literals like <code>1.0f</code>.</li>
+            <li><code>unsigned</code> types can't go negative and wrap around at zero — great for counts, but watch backward loops.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

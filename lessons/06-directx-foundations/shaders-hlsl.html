@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shaders &amp; HLSL — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Write HLSL vertex and pixel shaders for a colored triangle, compile them, and bind them to the Direct3D 11 pipeline.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Shaders &amp; HLSL</h1>
+
+        <p class="lead">Last lesson you drew a triangle, but the GPU can't do anything with your vertices until you tell it <em>how</em>. That "how" lives in two tiny programs: a <strong>vertex shader</strong> and a <strong>pixel shader</strong>, written in HLSL. In this lesson we'll write both for our colored triangle, compile them, and wire the resulting bytecode into the Direct3D 11 pipeline — the same shader flow your engine's material system will use later.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What a vertex shader and a pixel shader each do, and where they sit in the pipeline.</li>
+            <li>How HLSL <strong>semantics</strong> like <code>POSITION</code>, <code>COLOR</code>, <code>SV_POSITION</code> and <code>SV_TARGET</code> connect stages together.</li>
+            <li>How to compile HLSL at runtime with <code>D3DCompileFromFile</code> (or offline with <code>fxc</code>).</li>
+            <li>How to create shader objects with <code>CreateVertexShader</code> / <code>CreatePixelShader</code> and bind them with <code>VSSetShader</code> / <code>PSSetShader</code>.</li>
+          </ul>
+        </div>
+
+        <h2>The two shaders in the pipeline</h2>
+        <p>When you issue a draw call, the GPU runs your vertices through a fixed sequence of stages. Two of those stages are programmable and you must supply them:</p>
+        <ul>
+          <li>The <strong>vertex shader</strong> runs <em>once per vertex</em>. Its job is to output a position in <em>clip space</em> — the coordinate system the rasterizer expects. It can also pass extra data (like a color) down to the next stage.</li>
+          <li>The <strong>pixel shader</strong> (also called the fragment shader) runs <em>once per pixel</em> that the triangle covers. Its job is to return the final color for that pixel.</li>
+        </ul>
+        <p>Between them sits the fixed-function <strong>rasterizer</strong>, which turns the triangle into pixels and smoothly interpolates the per-vertex data across the surface. That interpolation is why a triangle with a red, green and blue corner blends into a rainbow in the middle — you never wrote code for the in-between pixels; the hardware did it for you.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 120" fill="none" stroke="#4aa8ff" stroke-width="2">
+          <rect x="10" y="35" width="130" height="50" rx="8"/>
+          <text x="75" y="65" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Vertex Shader</text>
+          <rect x="235" y="35" width="130" height="50" rx="8"/>
+          <text x="300" y="60" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Rasterizer</text>
+          <text x="300" y="76" fill="currentColor" stroke="none" font-size="10" text-anchor="middle">(fixed)</text>
+          <rect x="460" y="35" width="130" height="50" rx="8"/>
+          <text x="525" y="65" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Pixel Shader</text>
+          <path d="M140 60 H235" marker-end="url(#a)"/>
+          <path d="M365 60 H460" marker-end="url(#a)"/>
+          <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0l6 3-6 3z" fill="#4aa8ff" stroke="none"/></marker></defs>
+        </svg></div><figcaption>Per-vertex data flows left to right; the rasterizer interpolates it for every covered pixel.</figcaption></figure>
+
+        <h2>HLSL structs and semantics</h2>
+        <p>HLSL (High-Level Shading Language) looks a lot like C. Data moves between stages through <code>struct</code>s, and every field carries a <strong>semantic</strong> — an uppercase tag that tells the GPU what a field <em>means</em> so it can be matched up between stages.</p>
+        <p>There are two kinds of semantics. Plain semantics like <code>POSITION</code> and <code>COLOR</code> are names <em>you</em> choose to link your vertex data to the shader input. Semantics beginning with <code>SV_</code> are <strong>system-value</strong> semantics with special meaning to the hardware:</p>
+        <div class="table-wrap"><table><thead><tr><th>Semantic</th><th>Where</th><th>Meaning</th></tr></thead><tbody>
+          <tr><td><code>POSITION</code></td><td>VS input</td><td>The raw vertex position coming from your vertex buffer.</td></tr>
+          <tr><td><code>COLOR</code></td><td>VS input / output</td><td>A user-defined color you attach to each vertex.</td></tr>
+          <tr><td><code>SV_POSITION</code></td><td>VS output</td><td>The final clip-space position the rasterizer requires.</td></tr>
+          <tr><td><code>SV_TARGET</code></td><td>PS output</td><td>The color written to render target 0 (your back buffer).</td></tr>
+        </tbody></table></div>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">SV_POSITION is mandatory</div><p>A vertex shader <strong>must</strong> output a <code>float4</code> tagged <code>SV_POSITION</code>. It's in clip space, not screen pixels — for our flat 2D triangle we can pass coordinates straight through with <code>w = 1</code>. Once we add a camera and a <code>Transform</code> component, this is exactly where the view-projection matrix multiply will happen.</p></div></div>
+
+        <h2>Writing the shaders</h2>
+        <p>We'll keep both shaders in one <code>.hlsl</code> file with two entry points, <code>VSMain</code> and <code>PSMain</code>. The vertex shader receives a position and a color, forwards the color untouched, and promotes the 3-component position to a <code>float4</code>. The pixel shader simply returns whatever color the rasterizer handed it.</p>
+
+        <pre><code class="language-hlsl" data-file="Triangle.hlsl">// Data coming in from the vertex buffer (matches our input layout).
+struct VSInput
+{
+    float3 position : POSITION;   // one point of the triangle
+    float4 color    : COLOR;      // its RGBA color
+};
+
+// Data passed from the vertex shader to the pixel shader.
+struct PSInput
+{
+    float4 position : SV_POSITION; // clip-space position (required)
+    float4 color    : COLOR;       // interpolated across the triangle
+};
+
+// --- Vertex shader: runs once per vertex ---
+PSInput VSMain(VSInput input)
+{
+    PSInput output;
+    // Promote the 3D position to a 4D clip-space position (w = 1).
+    output.position = float4(input.position, 1.0f);
+    output.color    = input.color;   // hand the color down the pipeline
+    return output;
+}
+
+// --- Pixel shader: runs once per covered pixel ---
+float4 PSMain(PSInput input) : SV_TARGET
+{
+    // Return the interpolated color as this pixel's final color.
+    return input.color;
+}</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Names must match on both ends</div><p>The fields in <code>VSInput</code> and their semantics (<code>POSITION</code>, <code>COLOR</code>) must line up with the input layout you'll define next lesson. Likewise, the <code>PSInput</code> the pixel shader reads must match what the vertex shader writes. Semantics are the glue — mismatches produce a black screen or a compile error, not a crash.</p></div></div>
+
+        <h2>Compiling HLSL to bytecode</h2>
+        <p>The GPU doesn't run HLSL text directly — it runs compiled <strong>bytecode</strong>. You have two options:</p>
+        <h3>Option A — compile at runtime with D3DCompileFromFile</h3>
+        <p>Great while learning: edit the shader, re-run, see the change. It lives in <code>d3dcompiler.h</code>, so link against <code>d3dcompiler.lib</code>.</p>
+
+        <pre><code class="language-cpp" data-file="Shaders.cpp">#include &lt;d3d11.h&gt;
+#include &lt;d3dcompiler.h&gt;
+#include &lt;wrl/client.h&gt;   // Microsoft::WRL::ComPtr
+
+#pragma comment(lib, "d3dcompiler.lib")
+
+using Microsoft::WRL::ComPtr;
+
+// Compiles one entry point from an .hlsl file into a blob of bytecode.
+HRESULT CompileShader(const wchar_t* path, const char* entry,
+                      const char* target, ComPtr&lt;ID3DBlob&gt;&amp; outBlob)
+{
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
+#if defined(_DEBUG)
+    // Keep symbols and skip optimization so debugging shaders is sane.
+    flags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+
+    ComPtr&lt;ID3DBlob&gt; errors;
+    HRESULT hr = D3DCompileFromFile(
+        path,            // L"Triangle.hlsl"
+        nullptr,         // no #defines
+        D3D_COMPILE_STANDARD_FILE_INCLUDE, // resolve #include normally
+        entry,           // "VSMain" or "PSMain"
+        target,          // "vs_5_0" or "ps_5_0"
+        flags, 0,
+        &amp;outBlob, &amp;errors);
+
+    if (FAILED(hr) &amp;&amp; errors)
+        OutputDebugStringA((const char*)errors-&gt;GetBufferPointer());
+
+    return hr;
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Always read the error blob</div><p>When a compile fails, <code>D3DCompileFromFile</code> fills the <code>errors</code> blob with the exact line and reason. Printing it (as above) turns a mysterious <code>FAILED(hr)</code> into a readable message like <code>error X3018: invalid subscript</code>. Never ignore it.</p></div></div>
+
+        <h3>Option B — compile offline with fxc</h3>
+        <p>For shipping, compile ahead of time with the <code>fxc</code> tool from the Windows SDK and load the resulting <code>.cso</code> file at runtime. No compiler dependency in your release build:</p>
+        <pre><code class="language-powershell" data-file="build-shaders.ps1"># Vertex shader -&gt; Triangle_VS.cso
+fxc /T vs_5_0 /E VSMain /Fo Triangle_VS.cso Triangle.hlsl
+# Pixel shader  -&gt; Triangle_PS.cso
+fxc /T ps_5_0 /E PSMain /Fo Triangle_PS.cso Triangle.hlsl</code></pre>
+        <p>Either way you end up with a block of bytecode. With <code>D3DCompileFromFile</code> it's an <code>ID3DBlob</code>; with <code>fxc</code> it's a file you read into a <code>std::vector&lt;char&gt;</code>. Both feed the same <code>Create*Shader</code> calls next.</p>
+
+        <h2>Creating and binding the shaders</h2>
+        <p>Now we turn bytecode into GPU shader objects with <code>CreateVertexShader</code> and <code>CreatePixelShader</code>, then bind them each frame with <code>VSSetShader</code> and <code>PSSetShader</code>. Assume <code>device</code> is your <code>ID3D11Device</code> and <code>context</code> your <code>ID3D11DeviceContext</code> from the previous lessons.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">ComPtr&lt;ID3D11VertexShader&gt; vertexShader;
+ComPtr&lt;ID3D11PixelShader&gt;  pixelShader;
+ComPtr&lt;ID3DBlob&gt; vsBlob, psBlob;
+
+// 1) Compile both entry points from the same file.
+HRESULT hr = CompileShader(L"Triangle.hlsl", "VSMain", "vs_5_0", vsBlob);
+if (FAILED(hr)) return hr;
+hr = CompileShader(L"Triangle.hlsl", "PSMain", "ps_5_0", psBlob);
+if (FAILED(hr)) return hr;
+
+// 2) Create the GPU shader objects from the bytecode.
+hr = device-&gt;CreateVertexShader(
+        vsBlob-&gt;GetBufferPointer(), vsBlob-&gt;GetBufferSize(),
+        nullptr, &amp;vertexShader);
+if (FAILED(hr)) return hr;
+
+hr = device-&gt;CreatePixelShader(
+        psBlob-&gt;GetBufferPointer(), psBlob-&gt;GetBufferSize(),
+        nullptr, &amp;pixelShader);
+if (FAILED(hr)) return hr;
+
+// 3) Bind them to the pipeline (do this before Draw each frame).
+context-&gt;VSSetShader(vertexShader.Get(), nullptr, 0);
+context-&gt;PSSetShader(pixelShader.Get(),  nullptr, 0);
+
+// ... set input layout + vertex buffer (next lesson), then:
+// context-&gt;Draw(3, 0);</code></pre>
+
+        <p>Notice we hang onto <code>vsBlob</code> beyond this point. That's deliberate: next lesson, <code>CreateInputLayout</code> needs the vertex-shader bytecode to validate that your vertex format matches the shader's <code>VSInput</code>. That's the direct bridge into <strong>Input Layouts &amp; Vertex Formats</strong>.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Why ComPtr?</div><p><code>Microsoft::WRL::ComPtr</code> is a smart pointer for COM objects. It calls <code>Release()</code> automatically when it goes out of scope, so you don't leak Direct3D resources. In our engine every renderer resource — shaders, buffers, textures — will be held in a <code>ComPtr</code> for exactly this reason.</p></div></div>
+
+        <p>Bind these two shaders, hook up the triangle's vertex buffer, and your rainbow triangle appears — this time driven entirely by code you wrote, not fixed hardware behavior. That's the whole point: shaders are where <em>your</em> look-and-feel lives, and every material in your engine will be a pair of programs just like these.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The <strong>vertex shader</strong> runs per vertex and must output an <code>SV_POSITION</code> in clip space; the <strong>pixel shader</strong> runs per pixel and outputs <code>SV_TARGET</code>.</li>
+            <li><strong>Semantics</strong> (<code>POSITION</code>, <code>COLOR</code>, <code>SV_POSITION</code>, <code>SV_TARGET</code>) glue the stages together, and the rasterizer interpolates per-vertex data in between.</li>
+            <li>Compile HLSL to bytecode at runtime with <code>D3DCompileFromFile</code> (read the error blob!) or offline with <code>fxc</code>.</li>
+            <li>Create objects with <code>CreateVertexShader</code> / <code>CreatePixelShader</code>, then bind them with <code>VSSetShader</code> / <code>PSSetShader</code> before drawing.</li>
+            <li>Keep the vertex-shader blob around — the next lesson's input layout needs it.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

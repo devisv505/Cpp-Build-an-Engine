@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scenes, Transforms &amp; Hierarchy — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Model a scene as a tree of GameObjects, store local transforms, and combine them into world matrices with a single recursive traversal.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Scenes, Transforms &amp; Hierarchy</h1>
+
+        <p class="lead">In the last lesson we broke objects apart into entities and components. Now we give those objects a place to <em>live</em>: a scene. A scene is a tree of <strong>GameObjects</strong>, each carrying a <strong>Transform</strong>, and the magic of that tree is that moving one object automatically moves everything attached to it. This is exactly how a turret rides on a tank, or a hand follows an arm, in every real engine.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What a scene is: a tree (really a forest) of GameObjects.</li>
+            <li>How a Transform stores position, rotation and scale in <em>local</em> space.</li>
+            <li>The difference between a <strong>local</strong> transform and a <strong>world</strong> transform.</li>
+            <li>How to compute <code>world = parent × local</code> — and why matrix order matters in DirectXMath.</li>
+            <li>How one recursive traversal updates every object's world matrix each frame.</li>
+          </ul>
+        </div>
+
+        <h2>What is a scene?</h2>
+
+        <p>A <strong>scene</strong> is the container for everything you can see or interact with in a level: the player, the props, the lights, the camera. Structurally it is a collection of GameObjects, but not a flat list — the objects form a <strong>hierarchy</strong>. Each GameObject may have one parent and any number of children, which makes the whole thing a tree. Because a scene can hold several unparented objects at the top level, it is technically a <em>forest</em> (many trees), and we call those top-level objects the <strong>roots</strong>.</p>
+
+        <p>Here is a small hierarchy for a tank. The player is the root; the turret is attached to the player; the barrel is attached to the turret.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 270" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="1.6">
+              <!-- links -->
+              <path d="M300 47 L300 83" stroke="#4aa8ff"/>
+              <path d="M300 117 L160 158 M300 117 L300 158 M300 117 L440 158" stroke="#4aa8ff"/>
+              <path d="M440 192 L440 223" stroke="#4aa8ff"/>
+              <!-- Scene root -->
+              <rect x="255" y="13" width="90" height="34" rx="6" stroke="#4aa8ff"/>
+              <text x="300" y="35" text-anchor="middle" font-size="14" stroke="none" fill="currentColor">Player</text>
+              <!-- Player level -->
+              <rect x="255" y="83" width="90" height="34" rx="6"/>
+              <text x="300" y="105" text-anchor="middle" font-size="14" stroke="none" fill="currentColor">Turret</text>
+              <!-- children -->
+              <rect x="115" y="158" width="90" height="34" rx="6"/>
+              <text x="160" y="180" text-anchor="middle" font-size="14" stroke="none" fill="currentColor">Camera</text>
+              <rect x="255" y="158" width="90" height="34" rx="6"/>
+              <text x="300" y="180" text-anchor="middle" font-size="14" stroke="none" fill="currentColor">Hull mesh</text>
+              <rect x="395" y="158" width="90" height="34" rx="6"/>
+              <text x="440" y="180" text-anchor="middle" font-size="14" stroke="none" fill="currentColor">Turret mesh</text>
+              <!-- barrel -->
+              <rect x="395" y="223" width="90" height="34" rx="6"/>
+              <text x="440" y="245" text-anchor="middle" font-size="14" stroke="none" fill="currentColor">Barrel</text>
+            </svg>
+          </div>
+          <figcaption>A scene is a tree. Children move with their parent, so rotating the turret carries the barrel along.</figcaption>
+        </figure>
+
+        <h2>The Transform component</h2>
+
+        <p>Every GameObject owns a <strong>Transform</strong>: its position, rotation and scale. The key idea is that these values are stored in <strong>local space</strong> — relative to the object's parent, not to the world. A barrel positioned at <code>(0, 0, 2)</code> is two units in front of <em>its turret</em>, wherever that turret happens to be.</p>
+
+        <p>We store the raw values and provide a helper that bakes them into a single 4×4 matrix using DirectXMath, the same math library we will feed to our shaders.</p>
+
+        <pre><code class="language-cpp" data-file="Transform.h">#include &lt;DirectXMath.h&gt;
+#include &lt;vector&gt;
+#include &lt;memory&gt;
+#include &lt;string&gt;
+
+using namespace DirectX;
+
+// A Transform stores position, rotation and scale in LOCAL space --
+// that is, relative to its parent. The engine bakes it into a matrix.
+struct Transform {
+    XMFLOAT3 position { 0.0f, 0.0f, 0.0f };
+    XMFLOAT3 rotation { 0.0f, 0.0f, 0.0f }; // Euler angles, in radians
+    XMFLOAT3 scale    { 1.0f, 1.0f, 1.0f };
+
+    // Build the local matrix in the order scale, then rotate, then translate.
+    XMMATRIX LocalMatrix() const {
+        XMMATRIX s = XMMatrixScaling(scale.x, scale.y, scale.z);
+        XMMATRIX r = XMMatrixRotationRollPitchYaw(rotation.x, rotation.y, rotation.z);
+        XMMATRIX t = XMMatrixTranslation(position.x, position.y, position.z);
+        return s * r * t; // row-vector convention: applied left to right
+    }
+};
+
+// A GameObject owns a Transform and a list of child GameObjects.
+struct GameObject {
+    std::string name;
+    Transform   transform;
+
+    GameObject* parent = nullptr;
+    std::vector&lt;std::unique_ptr&lt;GameObject&gt;&gt; children;
+
+    XMFLOAT4X4 world; // cached world matrix, refreshed every frame
+
+    // Create a child, wire up the parent pointer, and hand back a handle.
+    GameObject* AddChild(std::string childName) {
+        auto child = std::make_unique&lt;GameObject&gt;();
+        child-&gt;name   = std::move(childName);
+        child-&gt;parent = this;
+        children.push_back(std::move(child));
+        return children.back().get();
+    }
+};
+
+// A Scene is just the set of top-level objects (the roots of the forest).
+struct Scene {
+    std::vector&lt;std::unique_ptr&lt;GameObject&gt;&gt; roots;
+};</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Ownership by parent</div><p>Each node owns its children through <code>std::unique_ptr</code>, so deleting a GameObject cleanly destroys its whole subtree — no manual bookkeeping. The raw <code>parent</code> pointer is a non-owning back-reference and must never be a smart pointer, or you would create an ownership cycle.</p></div></div>
+
+        <h2>Local space vs world space</h2>
+
+        <p>There are two matrices to keep straight:</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Matrix</th><th>Means</th><th>Who stores it</th></tr></thead><tbody>
+          <tr><td><strong>Local</strong></td><td>Where the object sits <em>relative to its parent</em>.</td><td>Computed on demand from the Transform.</td></tr>
+          <tr><td><strong>World</strong></td><td>Where the object sits <em>in the whole scene</em>.</td><td>Cached in <code>GameObject::world</code> each frame.</td></tr>
+        </tbody></table></div>
+
+        <p>The renderer only ever cares about the <strong>world</strong> matrix — that is what maps a mesh's vertices into the shared world before the camera looks at them. So the job of the scene graph each frame is to turn every local transform into a world transform by walking down the tree.</p>
+
+        <h2>Computing the world matrix</h2>
+
+        <p>An object's world transform is its parent's world transform combined with its own local transform. Conceptually, in the column-vector math you see in textbooks:</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 120" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="1.6">
+              <rect x="20" y="40" width="150" height="44" rx="8" stroke="#4aa8ff"/>
+              <text x="95" y="67" text-anchor="middle" font-size="15" stroke="none" fill="currentColor">Parent world</text>
+              <text x="205" y="67" text-anchor="middle" font-size="22" stroke="none" fill="#4aa8ff">×</text>
+              <rect x="240" y="40" width="160" height="44" rx="8" stroke="#4aa8ff"/>
+              <text x="320" y="67" text-anchor="middle" font-size="15" stroke="none" fill="currentColor">Local (S·R·T)</text>
+              <path d="M415 62 L455 62" stroke="#4aa8ff" marker-end="url(#a)"/>
+              <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#4aa8ff" stroke="none"/></marker></defs>
+              <rect x="460" y="40" width="120" height="44" rx="8"/>
+              <text x="520" y="67" text-anchor="middle" font-size="15" stroke="none" fill="currentColor">World</text>
+            </svg>
+          </div>
+          <figcaption>A node's world matrix is its local matrix chained onto its parent's world matrix.</figcaption>
+        </figure>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Multiplication order flips in DirectXMath</div><p>DirectXMath uses <strong>row vectors</strong> (<code>v' = v · M</code>), so a point is transformed by its <em>local</em> matrix first and its <em>parent</em> matrix second. That means the code multiplies <code>local * parentWorld</code> — the reverse of the <code>parent × local</code> you see in column-vector textbooks. Same result, opposite writing order. Getting this backwards is the classic "my child orbits the wrong way" bug.</p></div></div>
+
+        <h2>Walking the tree each frame</h2>
+
+        <p>Now the payoff. A single recursive function visits every node, passing each node's freshly computed world matrix down to its children as <em>their</em> parent. Roots start from the identity matrix, meaning "no parent."</p>
+
+        <pre><code class="language-cpp" data-file="SceneUpdate.cpp">// Walk one branch of the tree, turning local transforms into world matrices.
+// parentWorld is the already-computed world matrix of this node's parent
+// (or the identity matrix for a root object).
+void UpdateWorldTransforms(GameObject&amp; node, const XMMATRIX&amp; parentWorld) {
+    // 1. The object's transform relative to its parent.
+    XMMATRIX local = node.transform.LocalMatrix();
+
+    // 2. Combine with the parent. In DirectXMath's row-vector convention a
+    //    point is moved by LOCAL first and by the PARENT second, so we write
+    //    local * parentWorld. (In column-vector math this is parentWorld * local.)
+    XMMATRIX world = XMMatrixMultiply(local, parentWorld);
+
+    // 3. Store it so the renderer and any children can read it back.
+    XMStoreFloat4x4(&amp;node.world, world);
+
+    // 4. Every child inherits THIS node's world matrix as its parent.
+    for (auto&amp; child : node.children) {
+        UpdateWorldTransforms(*child, world);
+    }
+}
+
+// Once per frame, refresh the whole scene starting from an identity matrix.
+void UpdateScene(Scene&amp; scene) {
+    for (auto&amp; root : scene.roots) {
+        UpdateWorldTransforms(*root, XMMatrixIdentity());
+    }
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">Parents before children — always</div><p>A child's world matrix depends on its parent's, so the parent <em>must</em> be updated first. Our top-down recursion guarantees that automatically. If you ever flatten the tree into an array for speed, sort it so every parent appears before its children, or the children will read a stale matrix for one frame.</p></div></div>
+
+        <h2>Why hierarchy is powerful</h2>
+
+        <p>Because every child derives its position from its parent, you get grouped movement for free. Watch what happens when we move only the player: the turret and barrel come along without a single extra line.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">Scene scene;
+
+// Add the top-level object (a root of the scene).
+scene.roots.push_back(std::make_unique&lt;GameObject&gt;());
+GameObject* player = scene.roots.back().get();
+player-&gt;name = "Player";
+
+// Build a small hierarchy: Player -&gt; Turret -&gt; Barrel.
+GameObject* turret = player-&gt;AddChild("Turret");
+GameObject* barrel = turret-&gt;AddChild("Barrel");
+
+// The barrel sits 2 units in front of the turret, in the turret's LOCAL space.
+barrel-&gt;transform.position = { 0.0f, 0.0f, 2.0f };
+
+// Move ONLY the player. The turret and barrel are carried along for free.
+player-&gt;transform.position.x += 5.0f;
+
+UpdateScene(scene); // barrel's world matrix now reflects the 5-unit shift too</code></pre>
+
+        <p>Rotating the turret works the same way: because the barrel's position is expressed in the turret's local space, spinning the turret swings the barrel around it. This is the entire reason engines use a scene graph instead of a flat list.</p>
+
+        <h2>Handing the world matrix to the GPU</h2>
+
+        <p>Once <code>node.world</code> is up to date, drawing a mesh means uploading that matrix into a constant buffer and letting the vertex shader move each vertex from local space into world space. Here is the HLSL side — note it multiplies <em>vector then matrix</em>, matching the row-vector convention we used in C++.</p>
+
+        <pre><code class="language-hlsl" data-file="Object.hlsl">cbuffer PerObject : register(b0)
+{
+    matrix World;          // node.world, uploaded before each draw call
+    matrix ViewProjection; // supplied by the camera
+};
+
+float4 main(float3 localPos : POSITION) : SV_POSITION
+{
+    // local space -&gt; world space -&gt; clip space
+    float4 worldPos = mul(float4(localPos, 1.0f), World);
+    return mul(worldPos, ViewProjection);
+}</code></pre>
+
+        <p>That is the whole loop of a scene graph: store transforms locally, walk the tree to compute world matrices, and feed each world matrix to the GPU. In later modules we will hang meshes, materials and cameras off these same GameObjects, and add a "dirty flag" so we only recompute branches that actually moved.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <strong>scene</strong> is a tree (a forest) of GameObjects; the unparented ones are the <strong>roots</strong>.</li>
+            <li>A <strong>Transform</strong> stores position, rotation and scale in <strong>local</strong> space — relative to the parent.</li>
+            <li>The <strong>world</strong> matrix is what the renderer needs; it is the parent's world combined with the node's local matrix.</li>
+            <li>In DirectXMath's row-vector convention that combination is <code>local * parentWorld</code>, computed with <code>XMMatrixMultiply</code>.</li>
+            <li>A single top-down recursion updates every node each frame, so moving a parent moves all of its children automatically.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

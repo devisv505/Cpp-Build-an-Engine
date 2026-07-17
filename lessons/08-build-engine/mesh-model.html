@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meshes &amp; Loading Models — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build a reusable Mesh class that owns a vertex and index buffer, upload it to the GPU, draw it, and generate a cube with a factory.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Meshes &amp; Loading Models</h1>
+
+        <p class="lead">
+          Every 3D object your engine draws — a crate, a character, a planet — is ultimately a bag of
+          triangles. In this lesson we wrap that geometry in a clean <strong>Mesh</strong> class that owns its
+          GPU buffers, knows how to upload itself, and knows how to draw itself. This is one of the first real
+          engine building blocks, and it sits right underneath the <code>MeshRenderer</code> component we'll
+          assemble a little later.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What a vertex, a vertex buffer, and an index buffer actually are.</li>
+            <li>How to design a <code>Mesh</code> class that owns a vertex buffer, an index buffer, and an index count.</li>
+            <li>How to implement <code>Upload(device)</code> and <code>Draw(context)</code> with real Direct3D 11 calls.</li>
+            <li>How to build a cube procedurally with a small factory function.</li>
+            <li>Where real model files (OBJ, glTF) fit in, and how <code>MeshRenderer</code> will use all of this.</li>
+          </ul>
+        </div>
+
+        <h2>What is a mesh?</h2>
+
+        <p>
+          A <strong>mesh</strong> is a list of points in space (<strong>vertices</strong>) plus a recipe for
+          connecting them into triangles (<strong>indices</strong>). Each vertex carries more than just a
+          position: it also stores a <em>normal</em> (which way the surface faces, used for lighting) and a
+          <em>UV coordinate</em> (how a texture wraps onto it). We'll describe a single vertex with a plain
+          struct built from the math types from the previous lesson's math library work.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Vertex.h">#include &lt;DirectXMath.h&gt;
+
+// One vertex of a mesh: where it is, which way it faces, and
+// how a texture maps onto it. This is the exact data our shaders read.
+struct Vertex {
+    DirectX::XMFLOAT3 position; // model-space position (x, y, z)
+    DirectX::XMFLOAT3 normal;   // surface direction, used for lighting
+    DirectX::XMFLOAT2 uv;       // texture coordinates (u, v)
+};</code></pre>
+
+        <p>
+          Why bother with a separate <strong>index buffer</strong>? Because vertices are expensive and shared.
+          A cube corner is touched by three faces; without indices we'd store that corner three times. Indices
+          let many triangles reuse the same vertex, so we store the geometry once and just reference it by
+          number. A cube ends up as a handful of vertices and a short list of integers.
+        </p>
+
+        <h2>Designing the Mesh class</h2>
+
+        <p>
+          Our <code>Mesh</code> will hold the CPU-side data (a <code>std::vector</code> of vertices and one of
+          indices) plus the two GPU buffers it creates. We use <code>Microsoft::WRL::ComPtr</code> — a smart
+          pointer for COM objects — so the Direct3D buffers are released automatically when the mesh is
+          destroyed. No manual <code>Release()</code>, no leaks.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Mesh.h">#include &lt;d3d11.h&gt;
+#include &lt;wrl/client.h&gt;
+#include &lt;DirectXMath.h&gt;
+#include &lt;vector&gt;
+#include &lt;cstdint&gt;
+
+using Microsoft::WRL::ComPtr;
+
+class Mesh {
+public:
+    // Build the mesh on the CPU. Nothing touches the GPU yet.
+    Mesh(std::vector&lt;Vertex&gt; vertices, std::vector&lt;uint32_t&gt; indices)
+        : m_vertices(std::move(vertices)), m_indices(std::move(indices)) {}
+
+    // Create the GPU buffers. Call once, after we have a device.
+    bool Upload(ID3D11Device* device);
+
+    // Bind our buffers and issue the draw call for this frame.
+    void Draw(ID3D11DeviceContext* context) const;
+
+    uint32_t IndexCount() const { return m_indexCount; }
+
+private:
+    std::vector&lt;Vertex&gt;   m_vertices; // CPU copy of the geometry
+    std::vector&lt;uint32_t&gt; m_indices;  // CPU copy of the triangle list
+
+    ComPtr&lt;ID3D11Buffer&gt; m_vertexBuffer; // GPU vertex data
+    ComPtr&lt;ID3D11Buffer&gt; m_indexBuffer;  // GPU index data
+    uint32_t            m_indexCount = 0; // how many indices to draw
+};</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Split construction from upload</div>
+          <p>The constructor only fills vectors, so a mesh can be created before the graphics device even
+          exists — handy for loading on a background thread. <code>Upload()</code> is the single point where
+          the GPU gets involved.</p></div>
+        </div>
+
+        <h2>Uploading to the GPU</h2>
+
+        <p>
+          To draw geometry, the data has to live in GPU memory as Direct3D buffers. We describe each buffer
+          with a <code>D3D11_BUFFER_DESC</code>, point the driver at our vector's raw bytes with a
+          <code>D3D11_SUBRESOURCE_DATA</code>, and call <code>CreateBuffer</code>. Because our cube never
+          changes, we mark the buffers <code>D3D11_USAGE_IMMUTABLE</code> — the fastest option, since the GPU
+          knows the contents are read-only.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Mesh.cpp">bool Mesh::Upload(ID3D11Device* device) {
+    if (m_vertices.empty() || m_indices.empty())
+        return false;
+
+    // ---- Vertex buffer ----
+    D3D11_BUFFER_DESC vbDesc = {};
+    vbDesc.ByteWidth = static_cast&lt;UINT&gt;(m_vertices.size() * sizeof(Vertex));
+    vbDesc.Usage     = D3D11_USAGE_IMMUTABLE;      // GPU-only, never changes
+    vbDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA vbData = {};
+    vbData.pSysMem = m_vertices.data();            // source bytes to copy
+
+    HRESULT hr = device-&gt;CreateBuffer(&amp;vbDesc, &amp;vbData, &amp;m_vertexBuffer);
+    if (FAILED(hr)) return false;
+
+    // ---- Index buffer ----
+    D3D11_BUFFER_DESC ibDesc = {};
+    ibDesc.ByteWidth = static_cast&lt;UINT&gt;(m_indices.size() * sizeof(uint32_t));
+    ibDesc.Usage     = D3D11_USAGE_IMMUTABLE;
+    ibDesc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+    D3D11_SUBRESOURCE_DATA ibData = {};
+    ibData.pSysMem = m_indices.data();
+
+    hr = device-&gt;CreateBuffer(&amp;ibDesc, &amp;ibData, &amp;m_indexBuffer);
+    if (FAILED(hr)) return false;
+
+    m_indexCount = static_cast&lt;uint32_t&gt;(m_indices.size());
+    return true; // buffers now live on the GPU
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Always check your HRESULTs</div>
+          <p>Almost every Direct3D call returns an <code>HRESULT</code>. Ignoring it means a failed buffer
+          creation shows up later as a mysterious blank screen. Wrapping the check in <code>FAILED(hr)</code>
+          and bailing early saves hours of debugging.</p></div>
+        </div>
+
+        <h2>Drawing the mesh</h2>
+
+        <p>
+          Drawing is a three-step ritual on the <em>input assembler</em>: bind the vertex buffer, bind the
+          index buffer, and tell Direct3D that the indices form a triangle list. Then a single
+          <code>DrawIndexed</code> submits every triangle. Note the <code>stride</code> — the size of one
+          vertex — which tells the GPU how far to step between vertices.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Mesh.cpp">void Mesh::Draw(ID3D11DeviceContext* context) const {
+    const UINT stride = sizeof(Vertex); // bytes per vertex
+    const UINT offset = 0;
+
+    ID3D11Buffer* vb = m_vertexBuffer.Get();
+    context-&gt;IASetVertexBuffers(0, 1, &amp;vb, &amp;stride, &amp;offset);
+
+    // 32-bit indices match our uint32_t vector.
+    context-&gt;IASetIndexBuffer(m_indexBuffer.Get(), DXGI_FORMAT_R32_UINT, 0);
+    context-&gt;IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    context-&gt;DrawIndexed(m_indexCount, 0, 0); // one call, every triangle
+}</code></pre>
+
+        <p>
+          The mesh does not bind shaders, textures, or the camera — that is deliberate. A mesh only knows about
+          geometry. Everything else is the caller's job, which keeps this class small and reusable. The next
+          lesson's material and shader system will take care of the rest.
+        </p>
+
+        <h2>A cube factory</h2>
+
+        <p>
+          Rather than hand-authoring a model file just to see something on screen, we can generate simple
+          shapes in code. A cube needs <strong>24 vertices</strong>, not 8: each of the six faces gets its own
+          four corners so every face can have a correct, flat normal and its own texture mapping. Sharing eight
+          corners would smear the normals and break lighting.
+        </p>
+
+        <pre><code class="language-cpp" data-file="MeshFactory.cpp">// Build a unit-ish cube centered on the origin, edge length = size.
+Mesh CreateCube(float size = 1.0f) {
+    const float h = size * 0.5f; // half-extent
+
+    // 4 vertices per face so each face keeps its own normal &amp; uv.
+    std::vector&lt;Vertex&gt; vertices = {
+        // +X face
+        {{ h,-h,-h}, { 1, 0, 0}, {0,1}}, {{ h, h,-h}, { 1, 0, 0}, {0,0}},
+        {{ h, h, h}, { 1, 0, 0}, {1,0}}, {{ h,-h, h}, { 1, 0, 0}, {1,1}},
+        // -X face
+        {{-h,-h, h}, {-1, 0, 0}, {0,1}}, {{-h, h, h}, {-1, 0, 0}, {0,0}},
+        {{-h, h,-h}, {-1, 0, 0}, {1,0}}, {{-h,-h,-h}, {-1, 0, 0}, {1,1}},
+        // +Y face
+        {{-h, h,-h}, { 0, 1, 0}, {0,1}}, {{-h, h, h}, { 0, 1, 0}, {0,0}},
+        {{ h, h, h}, { 0, 1, 0}, {1,0}}, {{ h, h,-h}, { 0, 1, 0}, {1,1}},
+        // -Y face
+        {{-h,-h, h}, { 0,-1, 0}, {0,1}}, {{-h,-h,-h}, { 0,-1, 0}, {0,0}},
+        {{ h,-h,-h}, { 0,-1, 0}, {1,0}}, {{ h,-h, h}, { 0,-1, 0}, {1,1}},
+        // +Z face
+        {{ h,-h, h}, { 0, 0, 1}, {0,1}}, {{ h, h, h}, { 0, 0, 1}, {0,0}},
+        {{-h, h, h}, { 0, 0, 1}, {1,0}}, {{-h,-h, h}, { 0, 0, 1}, {1,1}},
+        // -Z face
+        {{-h,-h,-h}, { 0, 0,-1}, {0,1}}, {{-h, h,-h}, { 0, 0,-1}, {0,0}},
+        {{ h, h,-h}, { 0, 0,-1}, {1,0}}, {{ h,-h,-h}, { 0, 0,-1}, {1,1}},
+    };
+
+    // 6 faces * 2 triangles * 3 indices = 36 indices total.
+    std::vector&lt;uint32_t&gt; indices;
+    indices.reserve(36);
+    for (uint32_t f = 0; f &lt; 6; ++f) {
+        const uint32_t base = f * 4;
+        indices.insert(indices.end(), {
+            base + 0, base + 1, base + 2, // first triangle
+            base + 0, base + 2, base + 3  // second triangle
+        });
+    }
+
+    return Mesh(std::move(vertices), std::move(indices));
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Winding order decides what's a "front" face</div>
+          <p>The order the three indices of a triangle are listed determines whether it faces toward or away
+          from the camera. With back-face culling on, if your cube looks inside-out or invisible, swap two
+          indices per triangle to flip the winding. It's the most common first-cube surprise.</p></div>
+        </div>
+
+        <h3>Putting it together</h3>
+
+        <p>
+          With a device and a device context already created during startup, using the mesh is short. Build it
+          once, upload once, and draw it every frame after your shaders and camera constants are bound.
+        </p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">// --- setup, once ---
+Mesh cube = CreateCube(1.0f);
+if (!cube.Upload(device.Get())) {
+    // Log and handle the failure; don't draw an empty mesh.
+}
+
+// --- render loop, every frame ---
+// (bind vertex/pixel shaders, input layout, and camera constants first)
+cube.Draw(context.Get());</code></pre>
+
+        <h2>From cubes to real models</h2>
+
+        <p>
+          Procedural shapes are perfect for testing, but eventually you'll want art made in Blender or Maya.
+          The good news: nothing about <code>Mesh</code> changes. Loading a model just means filling the same
+          two vectors from a file instead of from a loop.
+        </p>
+
+        <ul>
+          <li><strong>OBJ</strong> is a plain-text format — great to parse by hand as a learning exercise. You
+          read positions, normals, and UVs, then assemble <code>Vertex</code> entries and indices.</li>
+          <li><strong>glTF</strong> is the modern standard for real-time engines and maps cleanly onto GPU
+          buffers.</li>
+          <li><strong>Assimp</strong> (the Open Asset Import Library) reads dozens of formats and hands you
+          vertex and index arrays ready to drop straight into <code>CreateBuffer</code>.</li>
+        </ul>
+
+        <p>
+          A real loader will return a <code>std::vector&lt;Mesh&gt;</code> — a single file often contains many
+          sub-meshes, each with a different material. That's a natural bridge to the next lesson.
+        </p>
+
+        <h2>Foreshadowing the MeshRenderer component</h2>
+
+        <p>
+          A <code>Mesh</code> is pure geometry: it has no position in the world and no idea what color it
+          should be. In a component-based engine — the same idea behind Unity's <code>MeshRenderer</code> or
+          Unreal's static mesh component — a game object will own a <strong>Transform</strong> (from our math
+          library) and a <strong>MeshRenderer</strong> component. That renderer will hold a pointer to a shared
+          <code>Mesh</code> plus a material, and each frame it will feed the transform into the shader and call
+          <code>mesh-&gt;Draw(context)</code>. One mesh, many renderers, many positions — that's how you get a
+          hundred crates on screen from a single set of GPU buffers.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A mesh is a list of <strong>vertices</strong> (position, normal, UV) plus <strong>indices</strong> that connect them into triangles.</li>
+            <li>The <code>Mesh</code> class owns a vertex buffer, an index buffer, and an index count, using <code>ComPtr</code> for automatic cleanup.</li>
+            <li><code>Upload(device)</code> creates immutable GPU buffers; <code>Draw(context)</code> binds them and issues a single <code>DrawIndexed</code>.</li>
+            <li>A cube needs 24 vertices (4 per face) and 36 indices; a factory function generates it in code — and winding order controls which side faces out.</li>
+            <li>Real models (OBJ, glTF, Assimp) fill the same two vectors, and a <code>MeshRenderer</code> component will pair a shared mesh with a Transform and material.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

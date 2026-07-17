@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loops: while, do-while &amp; for — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Master C++ loops — while, do-while and for — plus break, continue and nested loops, and see how a game runs one loop forever.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Loops: while, do-while &amp; for</h1>
+
+        <p class="lead">In the last lesson you taught your program to make decisions. Now you'll teach it to <strong>repeat</strong> work without copying and pasting the same lines a hundred times. Loops are the beating heart of every program you'll ever write — and quite literally the heart of a game engine, which runs one enormous loop over and over to draw each frame. Let's learn the three loop shapes C++ gives us and when to reach for each.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Write <code>while</code> and <code>do-while</code> loops and understand the difference</li>
+            <li>Read and write the classic <code>for</code> loop with its three parts</li>
+            <li>Steer a loop with <code>break</code> and <code>continue</code></li>
+            <li>Combine loops by <strong>nesting</strong> them</li>
+            <li>See how a game's "main loop" runs forever, frame after frame</li>
+          </ul>
+        </div>
+
+        <h2>Why loops exist</h2>
+        <p>Imagine you want to print the numbers 1 through 5. You could write five <code>std::cout</code> lines by hand. But what about 1 through 500? Copy-paste stops being funny very quickly, and if the rule changes you'd have to edit every line. A loop lets you describe the repetition <em>once</em> and let the computer do the counting. Every loop needs three ingredients: a <strong>starting point</strong>, a <strong>condition</strong> that decides whether to keep going, and something that <strong>changes</strong> each time so the loop eventually stops.</p>
+
+        <h2>The <code>while</code> loop</h2>
+        <p>A <code>while</code> loop is the simplest shape: "while this condition is true, keep running the body." It checks the condition <em>before</em> each pass, so if the condition is false to begin with, the body never runs at all.</p>
+
+        <pre><code class="language-cpp" data-file="while_demo.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    int count = 1;              // 1. starting point
+
+    while (count &lt;= 5)          // 2. condition: keep going while true
+    {
+        std::cout &lt;&lt; count &lt;&lt; " ";
+        count = count + 1;      // 3. change, or the loop never ends!
+    }
+
+    std::cout &lt;&lt; "\nDone!\n";
+    return 0;
+}
+// Output: 1 2 3 4 5
+//         Done!</code></pre>
+
+        <p>Trace it in your head: <code>count</code> starts at 1, the condition <code>count &lt;= 5</code> is true, so we print and bump <code>count</code> to 2. This repeats until <code>count</code> becomes 6, the condition is false, and the loop exits.</p>
+
+        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">The infinite loop trap</div><p>If you forget the line that changes <code>count</code>, the condition stays true forever and your program hangs. If a program ever freezes and spins your fan up, a runaway loop is the usual culprit. Always make sure something inside the body moves you toward the condition becoming false.</p></div></div>
+
+        <h2>The <code>do-while</code> loop</h2>
+        <p>Sometimes you want the body to run <em>at least once</em> before checking the condition — for example, showing a menu and then asking "again?" A <code>do-while</code> loop puts the check at the <em>bottom</em>.</p>
+
+        <pre><code class="language-cpp" data-file="do_while_demo.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    int choice = 0;
+
+    do
+    {
+        std::cout &lt;&lt; "1) Play  2) Quit\n&gt; ";
+        std::cin &gt;&gt; choice;          // body runs before the check
+    }
+    while (choice != 2);            // repeat until the user picks Quit
+
+    std::cout &lt;&lt; "Goodbye!\n";
+    return 0;
+}</code></pre>
+
+        <p>Notice the semicolon after <code>while (...)</code> — it's required here and easy to forget. The menu always appears once, which is exactly what you want.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Loop</th><th>Checks condition</th><th>Runs body at least once?</th></tr></thead><tbody>
+          <tr><td><code>while</code></td><td>Before the body</td><td>No</td></tr>
+          <tr><td><code>do-while</code></td><td>After the body</td><td>Yes</td></tr>
+          <tr><td><code>for</code></td><td>Before the body</td><td>No</td></tr>
+        </tbody></table></div>
+
+        <h2>The <code>for</code> loop</h2>
+        <p>When you're counting a known number of times, the <code>for</code> loop is the tidiest choice because it gathers all three loop ingredients onto one line. Its anatomy is <code>for (init; condition; update)</code>.</p>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 130" fill="none" stroke="#4aa8ff" stroke-width="2">
+          <rect x="20" y="45" width="150" height="40" rx="6"/>
+          <text x="95" y="70" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">init: i = 0</text>
+          <rect x="215" y="45" width="150" height="40" rx="6"/>
+          <text x="290" y="70" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">condition: i &lt; 5</text>
+          <rect x="410" y="45" width="150" height="40" rx="6"/>
+          <text x="485" y="70" fill="currentColor" stroke="none" font-size="15" text-anchor="middle">update: i++</text>
+          <path d="M170 65 H215" marker-end="url(#a)"/>
+          <path d="M365 65 H410" marker-end="url(#a)"/>
+          <path d="M485 85 V110 H290 V85" marker-end="url(#a)"/>
+          <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#4aa8ff" stroke="none"/></marker></defs>
+        </svg></div><figcaption>A <code>for</code> loop: initialise once, test the condition, run the body, then update — and back to the test.</figcaption></figure>
+
+        <pre><code class="language-cpp" data-file="sum_demo.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    int sum = 0;
+
+    // init: i = 1  |  condition: i &lt;= 100  |  update: i++
+    for (int i = 1; i &lt;= 100; ++i)
+    {
+        sum += i;               // add each number to the running total
+    }
+
+    std::cout &lt;&lt; "The sum of 1..100 is " &lt;&lt; sum &lt;&lt; "\n";
+    return 0;
+}
+// Output: The sum of 1..100 is 5050</code></pre>
+
+        <p>Read that <code>for</code> header left to right: create <code>i</code> starting at 1; before each pass check <code>i &lt;= 100</code>; after each pass run <code>++i</code> (add one to <code>i</code>). The variable <code>i</code> only exists inside the loop, which keeps your code clean. Any <code>for</code> loop can be rewritten as a <code>while</code> loop and vice versa — <code>for</code> just keeps the moving parts in one place.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Prefer <code>++i</code> over <code>i++</code></div><p>For plain counters the two behave the same in a loop header, but <code>++i</code> ("pre-increment") is the idiomatic C++ habit. It matters later when <code>i</code> is a heavier type like an iterator, where <code>i++</code> makes a needless copy. Start the good habit now.</p></div></div>
+
+        <h2>Steering a loop: <code>break</code> and <code>continue</code></h2>
+        <p>Two keywords let you override a loop's normal flow. <code>break</code> exits the loop immediately. <code>continue</code> skips the rest of the current pass and jumps straight to the next one.</p>
+
+        <pre><code class="language-cpp" data-file="steer_demo.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    for (int i = 1; i &lt;= 10; ++i)
+    {
+        if (i == 8)
+            break;              // stop the loop entirely at 8
+
+        if (i % 2 != 0)
+            continue;           // skip odd numbers, go to next i
+
+        std::cout &lt;&lt; i &lt;&lt; " ";   // only even numbers below 8 reach here
+    }
+    std::cout &lt;&lt; "\n";
+    return 0;
+}
+// Output: 2 4 6</code></pre>
+
+        <p>Here <code>continue</code> filters out odd values and <code>break</code> halts the loop once <code>i</code> hits 8, so we print 2, 4 and 6. Used sparingly, these keywords make loops read clearly; overused, they can make flow hard to follow.</p>
+
+        <h2>Nested loops</h2>
+        <p>A loop can live inside another loop. The inner loop runs completely for every single pass of the outer loop. This is how you walk a 2D grid — rows and columns — which we'll do constantly when addressing pixels or tiles.</p>
+
+        <pre><code class="language-cpp" data-file="grid_demo.cpp">#include &lt;iostream&gt;
+
+int main()
+{
+    // Outer loop = rows, inner loop = columns
+    for (int row = 0; row &lt; 3; ++row)
+    {
+        for (int col = 0; col &lt; 3; ++col)
+        {
+            std::cout &lt;&lt; "(" &lt;&lt; row &lt;&lt; "," &lt;&lt; col &lt;&lt; ") ";
+        }
+        std::cout &lt;&lt; "\n";       // new line after each row
+    }
+    return 0;
+}
+// Output:
+// (0,0) (0,1) (0,2)
+// (1,0) (1,1) (1,2)
+// (2,0) (2,1) (2,2)</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Watch your counts</div><p>Three rows times three columns means the inner body runs 9 times. Nesting multiplies work, so a loop inside a loop inside a loop over big ranges can get expensive fast. Keep an eye on how many total passes you're really asking for.</p></div></div>
+
+        <h2>The one loop that never stops: the game loop</h2>
+        <p>Here's the exciting part. A game — and the engine we're building — is fundamentally <strong>one loop that runs forever</strong> until the player quits. Each pass through that loop is a single <em>frame</em>: read input, update the world, draw everything to the screen, repeat. At 60 frames per second that loop runs 60 times every second.</p>
+
+        <pre><code class="language-cpp" data-file="game_loop_sketch.cpp">#include &lt;iostream&gt;
+
+// A rough sketch of the heartbeat we'll build for real later.
+int main()
+{
+    bool running = true;
+
+    while (running)                 // the main loop: one pass = one frame
+    {
+        // 1. Input   — has the player pressed a key or closed the window?
+        // 2. Update  — move objects, run physics, tick timers
+        // 3. Render  — draw the frame with DirectX
+
+        // For now, a fake exit so this demo actually finishes:
+        static int frame = 0;
+        std::cout &lt;&lt; "Rendering frame " &lt;&lt; frame &lt;&lt; "\n";
+        if (++frame &gt;= 3)
+            running = false;        // real games flip this when you hit Quit
+    }
+
+    std::cout &lt;&lt; "Window closed. Bye!\n";
+    return 0;
+}</code></pre>
+
+        <p>Notice it's just a <code>while</code> loop with a <code>bool</code> condition — nothing you haven't already met. When we reach the DirectX modules, those three commented steps become real function calls, and the loop keeps your triangle (and eventually your whole 3D scene) alive on screen. Every loop you practise now is direct preparation for that engine heartbeat.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">There's a fourth loop coming</div><p>C++ also has a <em>range-based</em> <code>for</code> loop for stepping through every item in a collection without a counter. It's a perfect fit for arrays and <code>std::vector</code>, so we'll save it for the arrays lesson where it truly shines. Just know it exists.</p></div></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Every loop needs a start, a condition, and something that changes each pass — or it never ends.</li>
+            <li><code>while</code> checks first; <code>do-while</code> runs the body once <em>then</em> checks; <code>for</code> packs all three parts into its header.</li>
+            <li>Use a <code>for</code> loop when you're counting a known number of times, like summing 1 through 100.</li>
+            <li><code>break</code> leaves the loop; <code>continue</code> skips to the next pass.</li>
+            <li>Nesting loops walks 2D grids, but multiplies the total number of passes.</li>
+            <li>A game (and our engine) is one big loop running frame after frame until the player quits.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tying It Together: the Engine Loop — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Assemble Renderer, Input, Time and a Scene of GameObjects into one main loop that renders a spinning cube — a real engine skeleton.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Tying It Together: the Engine Loop</h1>
+
+        <p class="lead">You have built every piece separately: a window, a Renderer, an Input system, a Time clock, GameObjects with Components, a Mesh, a Material, and a Camera. This is the lesson where they finally click together. We'll write the <code>Application</code> that owns all the subsystems and runs one clean frame loop — and by the end you'll have a spinning cube drawn by a real, if small, engine.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How the <code>Application</code> owns the Renderer, Input, Time and the active Scene.</li>
+            <li>The anatomy of one frame: poll input, update the scene by delta time, then render.</li>
+            <li>How the Scene walks every GameObject and Component each frame.</li>
+            <li>How the Renderer finds the active Camera and draws each mesh with its world matrix.</li>
+            <li>A complete <code>main()</code> that ties it all together into a spinning cube.</li>
+          </ul>
+        </div>
+
+        <h2>The shape of a frame</h2>
+        <p>Every game engine, from a hobby project to Unreal, is a loop that does the same three things over and over, thousands of times per second:</p>
+        <ol>
+          <li><strong>Gather input</strong> — what did the player press since last frame?</li>
+          <li><strong>Update</strong> — advance the simulation by the elapsed time (<code>dt</code>, the delta time).</li>
+          <li><strong>Render</strong> — draw the current state of the world to the screen.</li>
+        </ol>
+        <p>That's it. Everything else — physics, animation, AI, spinning cubes — hangs off those three steps. Our job now is to give each step a clear owner and a clear order.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 140" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="16" y="45" width="120" height="50" rx="8"/>
+              <text x="76" y="75" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Input.Update</text>
+              <rect x="176" y="45" width="120" height="50" rx="8"/>
+              <text x="236" y="75" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Scene.Update(dt)</text>
+              <rect x="336" y="45" width="120" height="50" rx="8"/>
+              <text x="396" y="75" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">Render</text>
+              <rect x="496" y="45" width="88" height="50" rx="8" stroke-dasharray="5 4"/>
+              <text x="540" y="75" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">repeat</text>
+              <path d="M136 70 L176 70" marker-end="url(#a)"/>
+              <path d="M296 70 L336 70" marker-end="url(#a)"/>
+              <path d="M456 70 L496 70" marker-end="url(#a)"/>
+              <path d="M540 45 C540 20 76 20 76 45" marker-end="url(#a)"/>
+              <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0 0 L8 4.5 L0 9 z" fill="#4aa8ff" stroke="none"/></marker></defs>
+            </svg>
+          </div>
+          <figcaption>One frame flows left to right, then loops back to the top.</figcaption>
+        </figure>
+
+        <h2>Who owns what</h2>
+        <p>The <code>Application</code> is the top of the tree. It owns the long-lived subsystems for the whole program's life, and it owns the <code>Scene</code> — a plain list of the GameObjects currently in the world. Nothing above the Application; everything below is reachable from it.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Owner</th><th>Responsibility</th></tr></thead>
+            <tbody>
+              <tr><td><code>Application</code></td><td>Creates the window, owns all subsystems, runs the loop.</td></tr>
+              <tr><td><code>Renderer</code></td><td>Owns the D3D11 device/context/swap chain; draws meshes.</td></tr>
+              <tr><td><code>Input</code></td><td>Tracks which keys and mouse buttons are down this frame.</td></tr>
+              <tr><td><code>Time</code></td><td>Measures delta time between frames.</td></tr>
+              <tr><td><code>Scene</code></td><td>Holds the list of <code>GameObject</code>s; updates them all.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>Recall from earlier lessons that a <code>GameObject</code> owns a list of <code>Component</code>s, always including a <code>Transform</code>. A <code>MeshRenderer</code> is just another Component that holds a pointer to a shared <code>Mesh</code> and <code>Material</code>. The <code>Camera</code> is a Component too. That uniformity is the whole point of the design — the loop below never needs a special case for any object type.</p>
+
+        <h2>The Scene: update everything</h2>
+        <p>The Scene's job during update is simple: walk every GameObject, and for each one give every Component a chance to run its per-frame logic. Here is the Scene and the base Component contract.</p>
+
+        <pre><code class="language-cpp" data-file="Scene.h">#pragma once
+#include &lt;vector&gt;
+#include &lt;memory&gt;
+#include "GameObject.h"
+
+class Scene {
+public:
+    // Create a GameObject, own it, and return a raw pointer for convenience.
+    GameObject* CreateObject(const std::string&amp; name) {
+        auto obj = std::make_unique&lt;GameObject&gt;(name);
+        GameObject* ptr = obj.get();
+        m_objects.push_back(std::move(obj));
+        return ptr;
+    }
+
+    // Advance every object (and thus every component) by dt seconds.
+    void Update(float dt) {
+        for (auto&amp; obj : m_objects)
+            obj-&gt;Update(dt);
+    }
+
+    // Read-only access so the Renderer can iterate the world.
+    const std::vector&lt;std::unique_ptr&lt;GameObject&gt;&gt;&amp; Objects() const {
+        return m_objects;
+    }
+
+private:
+    std::vector&lt;std::unique_ptr&lt;GameObject&gt;&gt; m_objects;
+};</code></pre>
+
+        <p>Each <code>GameObject::Update</code> loops over its components and calls their virtual <code>Update(dt)</code>. A component that has nothing to do (like a static <code>Mesh</code>) simply doesn't override it. A component that spins the cube overrides it and rotates its Transform:</p>
+
+        <pre><code class="language-cpp" data-file="Spinner.h">#pragma once
+#include "Component.h"
+#include "Transform.h"
+
+// A tiny gameplay component: rotate the owner around Y every frame.
+class Spinner : public Component {
+public:
+    float speed = 1.0f; // radians per second
+
+    void Update(float dt) override {
+        // GetTransform() is provided by Component via its owning GameObject.
+        Transform* t = GetTransform();
+        t-&gt;rotation.y += speed * dt; // frame-rate independent thanks to dt
+    }
+};</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Always multiply by dt</div><p>Notice <code>speed * dt</code>, not just <code>speed</code>. Multiplying movement and rotation by delta time makes your game run at the same real-world speed whether it renders at 60 or 300 frames per second. Forget it and your cube spins faster on a better PC.</p></div>
+        </div>
+
+        <h2>The Renderer: draw everything</h2>
+        <p>Rendering is where the Camera and the meshes meet. The Renderer opens the frame, works out the camera's view-projection matrix once, then draws each GameObject that has both a <code>MeshRenderer</code> and a <code>Transform</code>. For each one it uploads the object's world matrix and the shared view-projection into a constant buffer, binds the material, and issues the draw call.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer_Draw.cpp">// Per-frame constant buffer layout — must match the HLSL cbuffer exactly.
+struct FrameConstants {
+    DirectX::XMFLOAT4X4 world;          // this object's model-to-world
+    DirectX::XMFLOAT4X4 viewProjection; // shared camera matrix
+};
+
+void Renderer::DrawScene(const Scene&amp; scene, Camera* camera) {
+    using namespace DirectX;
+
+    // 1) Compute view-projection once for the whole frame.
+    XMMATRIX view = camera-&gt;GetViewMatrix();
+    XMMATRIX proj = camera-&gt;GetProjectionMatrix(AspectRatio());
+    XMMATRIX viewProj = XMMatrixMultiply(view, proj);
+
+    // 2) Draw every object that can be drawn.
+    for (const auto&amp; obj : scene.Objects()) {
+        MeshRenderer* mr = obj-&gt;GetComponent&lt;MeshRenderer&gt;();
+        if (!mr || !mr-&gt;mesh || !mr-&gt;material)
+            continue; // no visual — skip (e.g. the camera object)
+
+        Transform* t = obj-&gt;GetComponent&lt;Transform&gt;();
+
+        // Fill and upload the per-object constants.
+        FrameConstants cb{};
+        XMStoreFloat4x4(&amp;cb.world, XMMatrixTranspose(t-&gt;GetWorldMatrix()));
+        XMStoreFloat4x4(&amp;cb.viewProjection, XMMatrixTranspose(viewProj));
+        m_context-&gt;UpdateSubresource(m_frameCB.Get(), 0, nullptr, &amp;cb, 0, 0);
+
+        // Bind material (shaders + input layout) and the mesh buffers, then draw.
+        mr-&gt;material-&gt;Bind(m_context.Get());
+        mr-&gt;mesh-&gt;Bind(m_context.Get());
+        m_context-&gt;DrawIndexed(mr-&gt;mesh-&gt;IndexCount(), 0, 0);
+    }
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Why the transpose?</div><p>HLSL constant buffers expect column-major matrices by default, but DirectXMath is row-major. <code>XMMatrixTranspose</code> bridges the two. If your cube renders as a garbled mess, a missing transpose is the usual culprit.</p></div>
+        </div>
+
+        <p>The matching vertex shader multiplies each vertex by world then view-projection, exactly the two matrices we uploaded:</p>
+
+        <pre><code class="language-hlsl" data-file="cube.hlsl">cbuffer FrameConstants : register(b0)
+{
+    float4x4 world;
+    float4x4 viewProjection;
+};
+
+struct VSInput  { float3 pos : POSITION; float3 color : COLOR; };
+struct VSOutput { float4 pos : SV_POSITION; float3 color : COLOR; };
+
+VSOutput VSMain(VSInput input)
+{
+    VSOutput o;
+    float4 worldPos = mul(float4(input.pos, 1.0), world);
+    o.pos   = mul(worldPos, viewProjection); // world -&gt; clip space
+    o.color = input.color;
+    return o;
+}
+
+float4 PSMain(VSOutput input) : SV_TARGET
+{
+    return float4(input.color, 1.0);
+}</code></pre>
+
+        <h2>The Application: one loop to run them all</h2>
+        <p>Now we assemble the owners. The <code>Application</code> holds the subsystems, builds a Scene with a cube and a camera, and runs the loop. The frame ordering is deliberate and worth memorising: <strong>input, then update, then render</strong>. Input must be fresh before update reads it, and update must finish before render draws the result.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include "Application.h"
+#include "Renderer.h"
+#include "Input.h"
+#include "Time.h"
+#include "Scene.h"
+#include "MeshRenderer.h"
+#include "Camera.h"
+#include "Spinner.h"
+
+int Application::Run() {
+    // --- Subsystems owned for the whole program's lifetime ---
+    m_window.Create(L"My Engine", 1280, 720);
+    m_renderer.Initialize(m_window.Handle(), 1280, 720);
+    m_input.Initialize();
+    m_time.Reset();
+
+    // --- Build the scene ---
+    Scene scene;
+
+    // A camera object: Transform + Camera component.
+    GameObject* camObj = scene.CreateObject("MainCamera");
+    camObj-&gt;GetComponent&lt;Transform&gt;()-&gt;position = { 0.0f, 1.5f, -5.0f };
+    Camera* camera = camObj-&gt;AddComponent&lt;Camera&gt;();
+    camera-&gt;fovYRadians = DirectX::XMConvertToRadians(60.0f);
+
+    // A cube object: Transform + MeshRenderer + Spinner.
+    GameObject* cube = scene.CreateObject("Cube");
+    MeshRenderer* mr = cube-&gt;AddComponent&lt;MeshRenderer&gt;();
+    mr-&gt;mesh     = Mesh::CreateCube(m_renderer.Device());
+    mr-&gt;material = Material::Create(m_renderer.Device(), L"cube.hlsl");
+    cube-&gt;AddComponent&lt;Spinner&gt;()-&gt;speed = 1.2f;
+
+    // --- The frame loop ---
+    while (!m_window.ShouldClose()) {
+        m_window.PumpMessages();          // OS events -&gt; keep window alive
+        float dt = m_time.Tick();         // seconds since last frame
+
+        m_input.Update();                 // 1. snapshot keyboard/mouse
+        scene.Update(dt);                 // 2. update every GameObject/Component
+
+        m_renderer.BeginFrame(0.1f, 0.1f, 0.12f); // 3a. clear the back buffer
+        m_renderer.DrawScene(scene, camera);      // 3b. draw the world
+        m_renderer.EndFrame();                    // 3c. present the swap chain
+    }
+    return 0;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Order matters</div><p>If you render before you update, you draw the previous frame's positions — everything appears one frame stale. If you update before polling input, your controls feel laggy. Keep the sequence <strong>Input &rarr; Update &rarr; Render</strong> and both problems disappear.</p></div>
+        </div>
+
+        <h3>Finding the active camera</h3>
+        <p>Here we pass the camera pointer in directly because we know it. In a bigger engine you'd let the Scene find it: iterate the GameObjects, ask each for a <code>Camera</code> component, and use the first one flagged active. That keeps <code>Run()</code> free of hard-coded object knowledge and lets designers add or swap cameras in data. The principle is the same — the Renderer needs exactly one camera's view-projection per frame.</p>
+
+        <h2>What you actually built</h2>
+        <p>Step back and look at what that loop represents. You have a data-driven world (the Scene), uniform objects made of composable Components, a subsystem that advances simulation by real time, and a subsystem that turns world state into pixels — with a clean seam between them. That is the same architecture Unity calls GameObjects and MonoBehaviours, and Unreal calls Actors and Components. Yours is smaller, but it is genuinely the same idea, and every feature from here (lighting, multiple meshes, physics) is just another Component or another draw in the same loop.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The <code>Application</code> owns the Renderer, Input, Time and the active Scene for the whole program.</li>
+            <li>One frame is always <strong>Input.Update &rarr; Scene.Update(dt) &rarr; Render</strong>, in that order.</li>
+            <li><code>Scene.Update(dt)</code> walks every GameObject, which updates each of its Components; multiply motion by <code>dt</code> for frame-rate independence.</li>
+            <li>The Renderer computes the camera's view-projection once, then draws each object using its world matrix uploaded to a constant buffer.</li>
+            <li>Transpose matrices going into HLSL, and match the cbuffer layout to the shader — the two most common bugs.</li>
+            <li>This small skeleton mirrors how Unity and Unreal are architected: composable Components running inside one central loop.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

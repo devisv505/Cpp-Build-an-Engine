@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Standard Template Library — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="A practical tour of the C++ STL: vector, array, map and unordered_map, iterators, range-based for, and core algorithms for our engine.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>The Standard Template Library</h1>
+
+        <p class="lead">Every engine juggles collections of things: meshes, textures, entities, the components attached to each object. Rather than reinventing dynamic arrays and lookup tables by hand, C++ ships them in the <strong>Standard Template Library</strong> — the STL. This lesson is a guided tour of the containers and algorithms you will reach for constantly, so that when we start wiring up components and resources you already speak the language of <code>std::vector</code> and <code>std::unordered_map</code>.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The four containers you will use most: <code>std::vector</code>, <code>std::array</code>, <code>std::map</code>, and <code>std::unordered_map</code>.</li>
+            <li>How iterators and the range-based <code>for</code> loop let you walk any container the same way.</li>
+            <li>Reaching into <code>&lt;algorithm&gt;</code> for <code>std::sort</code>, <code>std::find</code>, and <code>std::for_each</code>.</li>
+            <li>Engine-flavored patterns, like a name-to-resource lookup table for our asset manager.</li>
+          </ul>
+        </div>
+
+        <h2>What "template" means here</h2>
+        <p>The "T" in STL stands for <strong>template</strong>. A template is a container recipe that works for any type you plug in. <code>std::vector&lt;int&gt;</code> is a growable array of integers; <code>std::vector&lt;Mesh&gt;</code> is a growable array of meshes. You write the type in angle brackets and the compiler generates a specialized, fully type-safe version. Because everything lives in the <code>std</code> namespace, you will see the <code>std::</code> prefix throughout — or a <code>using</code> declaration to shorten it.</p>
+
+        <h2>std::vector — the workhorse</h2>
+        <p><code>std::vector</code> is a dynamic array: contiguous in memory, resizable at runtime, and cache-friendly. If you are unsure which container to use, the honest answer is almost always "start with a vector." We will store our scene's entities in one.</p>
+
+        <pre><code class="language-cpp" data-file="vector_demo.cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::vector&lt;std::string&gt; entities;   // empty, grows on demand
+
+    entities.push_back("Player");        // append to the end
+    entities.push_back("Enemy");
+    entities.push_back("Pickup");
+
+    std::cout &lt;&lt; "Entity count: " &lt;&lt; entities.size() &lt;&lt; "\n";
+    std::cout &lt;&lt; "First entity: " &lt;&lt; entities[0] &lt;&lt; "\n";
+
+    entities.pop_back();                 // remove the last element
+    std::cout &lt;&lt; "After pop: " &lt;&lt; entities.size() &lt;&lt; "\n";
+
+    return 0;
+}</code></pre>
+
+        <p>Key members you will use daily: <code>push_back</code> appends, <code>size</code> reports the count, <code>operator[]</code> and <code>at</code> access elements (the latter bounds-checks), <code>front</code> and <code>back</code> grab the ends, and <code>clear</code> empties it. When you know roughly how many items you need, call <code>reserve</code> up front to avoid repeated reallocations.</p>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Reserve when you can</div><p>If you're about to load 5,000 vertices, call <code>verts.reserve(5000)</code> first. The vector allocates once instead of growing piecemeal — a real win in hot loading paths.</p></div></div>
+
+        <h2>std::array — fixed size, zero overhead</h2>
+        <p>When the count is known at compile time, <code>std::array&lt;T, N&gt;</code> is a thin, safe wrapper around a C-style array. No heap allocation, no resizing — just a fixed block with the same friendly interface (<code>size</code>, <code>at</code>, iterators). It is perfect for things like a 4&times;4 matrix's 16 floats, or the RGBA channels of a color.</p>
+
+        <pre><code class="language-cpp" data-file="array_demo.cpp">#include &lt;array&gt;
+#include &lt;iostream&gt;
+
+int main() {
+    // A clear color: red, green, blue, alpha — always exactly 4 floats.
+    std::array&lt;float, 4&gt; clearColor = { 0.1f, 0.2f, 0.4f, 1.0f };
+
+    std::cout &lt;&lt; "Channels: " &lt;&lt; clearColor.size() &lt;&lt; "\n";  // always 4
+    std::cout &lt;&lt; "Blue: "     &lt;&lt; clearColor[2]     &lt;&lt; "\n";
+
+    return 0;
+}</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">array vs. vector</div><p>Use <code>std::array</code> when the size never changes and is known while compiling. Use <code>std::vector</code> when the size is decided at runtime or grows over time. DirectX will later hand us buffers whose size we already know — <code>std::array</code> shines there.</p></div></div>
+
+        <h2>Associative containers: map and unordered_map</h2>
+        <p>Vectors answer "give me the item at index 3." Maps answer "give me the item named <em>brick_wall</em>." They store <strong>key → value</strong> pairs, which is exactly what an asset manager needs: look up a texture or mesh by its name.</p>
+
+        <ul>
+          <li><code>std::map</code> keeps keys sorted and is backed by a balanced tree. Lookups are <strong>O(log n)</strong>. Use it when you need keys in order.</li>
+          <li><code>std::unordered_map</code> is a hash table. Lookups are average <strong>O(1)</strong> but the order is undefined. For a resource cache, this is usually what you want.</li>
+        </ul>
+
+        <p>Here is a small engine-flavored resource cache mapping a resource name to a made-up handle id.</p>
+
+        <pre><code class="language-cpp" data-file="resource_cache.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+#include &lt;unordered_map&gt;
+
+int main() {
+    // name -&gt; texture handle (a stand-in for a real GPU resource id)
+    std::unordered_map&lt;std::string, int&gt; textures;
+
+    textures["brick_wall"] = 101;
+    textures["grass"]      = 102;
+    textures["player_skin"] = 103;
+
+    // Look up by name.
+    std::string wanted = "grass";
+    auto it = textures.find(wanted);
+    if (it != textures.end()) {
+        // it-&gt;first is the key, it-&gt;second is the value.
+        std::cout &lt;&lt; wanted &lt;&lt; " -&gt; handle " &lt;&lt; it-&gt;second &lt;&lt; "\n";
+    } else {
+        std::cout &lt;&lt; wanted &lt;&lt; " not loaded\n";
+    }
+
+    // count() gives a quick yes/no for existence.
+    if (textures.count("brick_wall")) {
+        std::cout &lt;&lt; "brick_wall is cached\n";
+    }
+
+    return 0;
+}</code></pre>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">operator[] inserts</div><p>Reading a missing key with <code>textures["ghost"]</code> does not error — it silently <em>creates</em> the entry with a default value. To check whether a key exists without inserting it, use <code>find</code> or <code>count</code>, as above.</p></div></div>
+
+        <div class="table-wrap"><table><thead><tr><th>Container</th><th>Best for</th><th>Access cost</th></tr></thead><tbody>
+          <tr><td><code>std::vector</code></td><td>Ordered lists that grow</td><td>O(1) by index</td></tr>
+          <tr><td><code>std::array</code></td><td>Fixed-size, known at compile time</td><td>O(1) by index</td></tr>
+          <tr><td><code>std::map</code></td><td>Sorted key lookups</td><td>O(log n) by key</td></tr>
+          <tr><td><code>std::unordered_map</code></td><td>Fast name/id lookups</td><td>O(1) average by key</td></tr>
+        </tbody></table></div>
+
+        <h2>Iterators and the range-based for loop</h2>
+        <p>An <strong>iterator</strong> is a generalized pointer into a container. Every STL container exposes <code>begin()</code> (points at the first element) and <code>end()</code> (points just past the last). Algorithms are written against iterators, which is why one <code>std::sort</code> works on a vector, an array, or any other sequence.</p>
+        <p>Ninety percent of the time you won't touch iterators directly — the range-based <code>for</code> loop does it for you. Use <code>const auto&amp;</code> to read without copying, or <code>auto&amp;</code> to modify in place.</p>
+
+        <pre><code class="language-cpp" data-file="ranged_for.cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+#include &lt;string&gt;
+
+int main() {
+    std::vector&lt;std::string&gt; scene = { "Player", "Enemy", "Pickup" };
+
+    // Read-only pass: const reference avoids copying each string.
+    for (const auto&amp; name : scene) {
+        std::cout &lt;&lt; "Spawned: " &lt;&lt; name &lt;&lt; "\n";
+    }
+
+    // The classic iterator form does the same thing.
+    for (auto it = scene.begin(); it != scene.end(); ++it) {
+        std::cout &lt;&lt; "  visited: " &lt;&lt; *it &lt;&lt; "\n";  // *it dereferences to the value
+    }
+
+    return 0;
+}</code></pre>
+
+        <figure><div class="figure-box"><svg viewBox="0 0 600 130" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="60" y="45" width="90" height="50" rx="6" stroke="currentColor" stroke-width="2"/>
+          <rect x="150" y="45" width="90" height="50" rx="6" stroke="currentColor" stroke-width="2"/>
+          <rect x="240" y="45" width="90" height="50" rx="6" stroke="currentColor" stroke-width="2"/>
+          <rect x="330" y="45" width="90" height="50" rx="6" stroke="currentColor" stroke-width="2"/>
+          <text x="105" y="76" fill="currentColor" font-size="15" text-anchor="middle">Player</text>
+          <text x="195" y="76" fill="currentColor" font-size="15" text-anchor="middle">Enemy</text>
+          <text x="285" y="76" fill="currentColor" font-size="15" text-anchor="middle">Pickup</text>
+          <text x="375" y="76" fill="#4aa8ff" font-size="13" text-anchor="middle">(past)</text>
+          <text x="105" y="30" fill="#4aa8ff" font-size="13" text-anchor="middle">begin()</text>
+          <text x="375" y="30" fill="#4aa8ff" font-size="13" text-anchor="middle">end()</text>
+          <path d="M105 34 L105 43" stroke="#4aa8ff" stroke-width="2"/>
+          <path d="M375 34 L375 43" stroke="#4aa8ff" stroke-width="2"/>
+        </svg></div><figcaption><code>end()</code> points one slot <em>past</em> the last element — a sentinel, never dereferenced.</figcaption></figure>
+
+        <h2>Algorithms from &lt;algorithm&gt;</h2>
+        <p>The header <code>&lt;algorithm&gt;</code> is a toolbox of reusable operations that act on iterator ranges. Three you will use often:</p>
+        <ul>
+          <li><code>std::sort</code> — orders a range in place.</li>
+          <li><code>std::find</code> — returns an iterator to the first matching element (or <code>end()</code>).</li>
+          <li><code>std::for_each</code> — applies a function to every element.</li>
+        </ul>
+
+        <pre><code class="language-cpp" data-file="algorithms.cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+#include &lt;algorithm&gt;
+
+int main() {
+    std::vector&lt;int&gt; drawOrder = { 40, 10, 30, 20 };
+
+    // Sort ascending (default). Great for depth-sorting later.
+    std::sort(drawOrder.begin(), drawOrder.end());
+
+    // Sort descending with a lambda comparator.
+    std::sort(drawOrder.begin(), drawOrder.end(),
+              [](int a, int b) { return a &gt; b; });
+
+    // Find a value; compare against end() to test success.
+    auto found = std::find(drawOrder.begin(), drawOrder.end(), 30);
+    if (found != drawOrder.end()) {
+        std::cout &lt;&lt; "Found 30 in the list\n";
+    }
+
+    // Apply an action to every element.
+    std::for_each(drawOrder.begin(), drawOrder.end(),
+                  [](int layer) { std::cout &lt;&lt; "layer " &lt;&lt; layer &lt;&lt; "\n"; });
+
+    return 0;
+}</code></pre>
+
+        <p>Those <code>[](...) { ... }</code> snippets are <strong>lambdas</strong> — small unnamed functions written inline. They pair naturally with algorithms: <code>std::sort</code> takes one to decide ordering, and <code>std::for_each</code> takes one as the action. We will lean on this pattern when sorting renderables front-to-back for our engine's draw loop.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Half-open ranges</div><p>STL ranges are <em>half-open</em>: <code>[begin, end)</code> includes the first element but stops before <code>end</code>. This is why an empty container has <code>begin() == end()</code>, and why loops terminate cleanly.</p></div></div>
+
+        <h2>Putting it together</h2>
+        <p>None of these tools live in isolation. A resource manager might hold an <code>unordered_map</code> from name to a <code>vector</code> of mesh handles, sort that vector with <code>std::sort</code>, and iterate it with a range-based <code>for</code>. Because they all share the iterator interface, they compose without friction. In the next module we shift gears from data structures to math — <strong>coordinate systems and spaces</strong> — but we will keep storing that data in exactly these containers.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><code>std::vector</code> is your default growable array; <code>std::array</code> is its fixed-size, zero-overhead sibling.</li>
+            <li><code>std::map</code> and <code>std::unordered_map</code> store key → value pairs — ideal for name-based resource lookups.</li>
+            <li>Iterators (<code>begin()</code>/<code>end()</code>) unify traversal; the range-based <code>for</code> loop is the everyday way to walk a container.</li>
+            <li><code>std::sort</code>, <code>std::find</code>, and <code>std::for_each</code> from <code>&lt;algorithm&gt;</code> operate on any iterator range, often paired with lambdas.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

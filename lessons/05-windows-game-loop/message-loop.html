@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Message Loop &amp; Input — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn how Windows delivers events through the message queue, write a WndProc, and build the non-blocking PeekMessage loop games rely on.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>The Message Loop &amp; Input</h1>
+
+        <p class="lead">Last lesson you created a Win32 window and it appeared on screen — but it just sat there, deaf to the world. That is because Windows is <strong>event-driven</strong>: every click, keypress and resize is a <em>message</em> waiting in a queue for you to collect. In this lesson we build the loop that pumps those messages and the callback that reacts to them. This is the beating heart every game — and our engine — is built around.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>How the Windows message queue and the <code>WndProc</code> callback work together</li>
+            <li>The common messages you will handle: <code>WM_DESTROY</code>, <code>WM_CLOSE</code>, <code>WM_KEYDOWN</code>/<code>WM_KEYUP</code>, <code>WM_SIZE</code> and <code>WM_MOUSEMOVE</code></li>
+            <li>Why games use the non-blocking <code>PeekMessage</code> loop instead of <code>GetMessage</code></li>
+            <li>What <code>TranslateMessage</code> and <code>DispatchMessage</code> actually do</li>
+          </ul>
+        </div>
+
+        <h2>Windows is event-driven</h2>
+        <p>In a console program from earlier lessons, <em>you</em> were in charge: your code ran top to bottom and asked for input when it wanted it. A GUI program flips that around. The operating system watches the hardware — keyboard, mouse, the window's title bar — and whenever something happens it packages the event into a <strong>message</strong> and drops it into your window's <strong>message queue</strong>. Your job is to keep emptying that queue.</p>
+
+        <p>A message is just a small bundle of numbers. The important pieces are a message ID (like <code>WM_KEYDOWN</code>) and two parameters, <code>wParam</code> and <code>lParam</code>, whose meaning depends on the message. For a key press, <code>wParam</code> holds which key; for a resize, <code>lParam</code> packs the new width and height.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 170" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="20" y="60" width="120" height="50" rx="6"/>
+              <text x="80" y="90" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">OS / hardware</text>
+              <rect x="200" y="60" width="120" height="50" rx="6"/>
+              <text x="260" y="85" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Message</text>
+              <text x="260" y="101" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">queue</text>
+              <rect x="380" y="60" width="90" height="50" rx="6"/>
+              <text x="425" y="90" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">Your loop</text>
+              <rect x="500" y="60" width="80" height="50" rx="6"/>
+              <text x="540" y="90" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">WndProc</text>
+              <path d="M140 85 H196" marker-end="url(#a)"/>
+              <path d="M320 85 H376" marker-end="url(#a)"/>
+              <path d="M470 85 H496" marker-end="url(#a)"/>
+              <defs><marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="#4aa8ff" stroke="none"/></marker></defs>
+            </svg>
+          </div>
+          <figcaption>Events flow from the OS into the queue; your loop pulls them out and dispatches each to your window procedure.</figcaption>
+        </figure>
+
+        <h2>The WndProc: your window's brain</h2>
+        <p>When you registered your window class last lesson, you gave it a function pointer called <code>lpfnWndProc</code>. That function — the <strong>window procedure</strong> — is where messages are actually handled. Windows calls it for you, one message at a time. Every message you do not care about should be passed to <code>DefWindowProc</code>, which supplies sensible default behavior (drawing the frame, moving the window, and so on).</p>
+
+        <pre><code class="language-cpp" data-file="Window.cpp">// The window procedure. Windows calls this once per dispatched message.
+LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_CLOSE:
+        // The user clicked the X or pressed Alt+F4. We choose to destroy
+        // the window; DestroyWindow will then send us WM_DESTROY.
+        DestroyWindow(hWnd);
+        return 0;
+
+    case WM_DESTROY:
+        // The window is being torn down. Post WM_QUIT so our message
+        // loop knows it is time to exit.
+        PostQuitMessage(0);
+        return 0;
+
+    case WM_SIZE:
+    {
+        // The client area was resized. Low/high word of lParam hold the
+        // new width and height in pixels. We'll resize our swap chain here later.
+        UINT width  = LOWORD(lParam);
+        UINT height = HIWORD(lParam);
+        // TODO(engine): notify the renderer so the back buffer matches.
+        return 0;
+    }
+
+    case WM_KEYDOWN:
+        // wParam is the virtual-key code of the pressed key.
+        if (wParam == VK_ESCAPE)
+            DestroyWindow(hWnd); // Esc quits, handy during development.
+        return 0;
+
+    case WM_KEYUP:
+        // Fired when a key is released. We'll feed this to our input system.
+        return 0;
+
+    case WM_MOUSEMOVE:
+    {
+        // Cursor moved inside the client area. Coordinates are in lParam.
+        int mouseX = GET_X_LPARAM(lParam);
+        int mouseY = GET_Y_LPARAM(lParam);
+        return 0;
+    }
+    }
+
+    // Everything we didn't handle goes to the default handler.
+    return DefWindowProc(hWnd, msg, wParam, lParam);
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Always call DefWindowProc for the rest</div>
+            <p>If you forget the final <code>return DefWindowProc(...)</code> and instead return 0 for every message, your window will misbehave in strange ways — no title-bar dragging, broken resizing, no close animation. Handle what you need, then defer everything else.</p>
+          </div>
+        </div>
+
+        <p>To read <code>WM_MOUSEMOVE</code> coordinates with the <code>GET_X_LPARAM</code> / <code>GET_Y_LPARAM</code> macros, include <code>&lt;windowsx.h&gt;</code> at the top of the file alongside <code>&lt;windows.h&gt;</code>.</p>
+
+        <h3>The WM_CLOSE → WM_DESTROY → WM_QUIT chain</h3>
+        <p>These three messages trip people up, so let's be precise about the order:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Message</th><th>When it arrives</th><th>What we do</th></tr></thead>
+            <tbody>
+              <tr><td><code>WM_CLOSE</code></td><td>User clicks X / presses Alt+F4</td><td>Call <code>DestroyWindow</code> (or ask "Save first?")</td></tr>
+              <tr><td><code>WM_DESTROY</code></td><td>The window is actually being destroyed</td><td>Call <code>PostQuitMessage(0)</code></td></tr>
+              <tr><td><code>WM_QUIT</code></td><td>Posted by <code>PostQuitMessage</code></td><td>Our loop sees it and exits</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">WM_QUIT never reaches WndProc</div>
+            <p><code>WM_QUIT</code> is special: it is not delivered to your window procedure. It is caught directly by the message loop, which is exactly how the loop knows to stop. That is why <code>PostQuitMessage</code> is the clean way to end a program.</p>
+          </div>
+        </div>
+
+        <h2>GetMessage vs. PeekMessage</h2>
+        <p>Now for the loop that drains the queue. There are two ways to pull a message out, and the difference decides whether you are writing a form or a game.</p>
+
+        <p><code>GetMessage</code> is <strong>blocking</strong>. If the queue is empty it puts your thread to sleep until a message shows up. That is perfect for a calculator or a text editor: nothing needs to happen while the user is idle, so sleeping saves power.</p>
+
+        <pre><code class="language-cpp" data-file="classic_loop.cpp">// Classic blocking loop — great for normal apps, WRONG for a game.
+MSG msg = {};
+while (GetMessage(&amp;msg, nullptr, 0, 0) &gt; 0) // returns 0 on WM_QUIT, -1 on error
+{
+    TranslateMessage(&amp;msg); // turn key events into WM_CHAR where relevant
+    DispatchMessage(&amp;msg);  // hand the message to our WndProc
+}
+// msg.wParam holds the exit code passed to PostQuitMessage.</code></pre>
+
+        <p>A game cannot afford to sleep. Even when the player is perfectly still we still need to advance physics, animate, and render the next frame. So games use <code>PeekMessage</code>, which is <strong>non-blocking</strong>: it checks the queue and returns immediately whether or not a message was waiting. That lets us process any pending input and then fall through to the game work every single frame.</p>
+
+        <pre><code class="language-cpp" data-file="game_loop.cpp">// Non-blocking loop — the shape every real-time engine uses.
+bool running = true;
+MSG  msg = {};
+
+while (running)
+{
+    // Drain ALL pending messages without blocking. PM_REMOVE pops each
+    // message off the queue so we don't see it twice.
+    while (PeekMessage(&amp;msg, nullptr, 0, 0, PM_REMOVE))
+    {
+        if (msg.message == WM_QUIT)
+        {
+            running = false;
+            break; // stop pumping; we're shutting down
+        }
+        TranslateMessage(&amp;msg);
+        DispatchMessage(&amp;msg);
+    }
+
+    // ---- No messages left: do one frame of game work ----
+    // Update(deltaTime);   // move objects, run systems
+    // Render();            // draw the frame with DirectX
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Drain the queue, then render once</div>
+            <p>Notice the two loops: the inner <code>while (PeekMessage...)</code> empties every message that piled up, then a single Update/Render pass runs. If you rendered inside the inner loop you'd draw multiple times when several messages arrive at once — wasted work and stutter.</p>
+          </div>
+        </div>
+
+        <h3>What TranslateMessage and DispatchMessage do</h3>
+        <p>Two calls appear in every loop, and it is worth knowing why:</p>
+        <ul>
+          <li><strong><code>TranslateMessage</code></strong> looks at raw key events (<code>WM_KEYDOWN</code>/<code>WM_KEYUP</code>) and, when they represent a typed character, generates a <code>WM_CHAR</code> message with the actual letter — respecting Shift, Caps Lock and the keyboard layout. If you only care about physical keys you can skip it, but it costs nothing and text input needs it.</li>
+          <li><strong><code>DispatchMessage</code></strong> is the call that actually invokes your <code>WndProc</code> for that message. Without it, you would pull messages off the queue and throw them away — your window procedure would never run.</li>
+        </ul>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't stall the pump</div>
+            <p>Everything in your loop — updating, rendering, loading — runs on the same thread that pumps messages. If a single frame takes too long, Windows notices the queue isn't being drained and paints your window with "(Not Responding)". Keep per-frame work bounded and push heavy jobs onto worker threads later.</p>
+          </div>
+        </div>
+
+        <h2>How this feeds the engine</h2>
+        <p>Right now we react to input directly inside <code>WndProc</code>, which is fine for quitting on Escape. But scattering game logic through a giant switch statement does not scale. The professional pattern — the one Unity and Unreal use — is to let <code>WndProc</code> do one job: record raw state. On <code>WM_KEYDOWN</code> we set a flag, on <code>WM_KEYUP</code> we clear it, on <code>WM_MOUSEMOVE</code> we store the cursor position. Then our gameplay code asks a small <strong>Input</strong> class questions like "is the W key held?" during <code>Update</code>.</p>
+
+        <p>We will build exactly that Input abstraction in an upcoming module, and the <code>WM_SIZE</code> handler above is where our DirectX swap chain will resize its back buffer so the 3D image always matches the window. For now, the takeaway is the structure: a WndProc that classifies messages, and a PeekMessage loop that pumps them and then runs a frame. Every lesson from here builds inside that loop.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Windows is event-driven: the OS posts <strong>messages</strong> to your window's queue, and you must keep draining them.</li>
+            <li>The <code>WndProc</code> callback handles messages in a <code>switch</code>, and passes anything it ignores to <code>DefWindowProc</code>.</li>
+            <li>The close sequence is <code>WM_CLOSE</code> → <code>DestroyWindow</code> → <code>WM_DESTROY</code> → <code>PostQuitMessage</code> → <code>WM_QUIT</code>, which ends the loop.</li>
+            <li><code>GetMessage</code> blocks (good for apps); games use non-blocking <code>PeekMessage</code> with <code>PM_REMOVE</code> so a frame renders even when idle.</li>
+            <li><code>TranslateMessage</code> produces character messages; <code>DispatchMessage</code> actually calls your <code>WndProc</code>.</li>
+            <li>Keep WndProc lean — record input state there and let the game ask an Input class about it later.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

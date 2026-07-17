@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Constants &amp; Console I/O — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn const and constexpr, literals, and how to print and read input with std::cout and std::cin by building a small FPS prompt.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Constants &amp; Console I/O</h1>
+
+        <p class="lead">In the previous lesson you gave data a home with variables and fundamental types. Now we make two upgrades: values that are promised never to change (<code>const</code> and <code>constexpr</code>), and a way to talk to the outside world through the console. Together these let us build our first genuinely interactive program — the same input/output loop your future engine will use to load settings and report what it is doing.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Declare values that cannot change with <code>const</code>, and compile-time constants with <code>constexpr</code></li>
+            <li>Recognise the common kinds of <strong>literals</strong> and what type each one has</li>
+            <li>Print text and values to the screen with <code>std::cout</code></li>
+            <li>Read a number and a line of text from the user with <code>std::cin</code> and <code>std::getline</code></li>
+            <li>Choose between <code>std::endl</code> and <code>"\n"</code> and know why it matters</li>
+          </ul>
+        </div>
+
+        <h2>Values that never change: const</h2>
+
+        <p>A regular variable can be reassigned at any time. Often that is exactly what you do <em>not</em> want. If a value represents a fixed fact — the number of milliseconds in a second, the maximum number of lights your renderer supports — you should say so in the code. The keyword <code>const</code> makes a variable read-only after it is initialised.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+int main() {
+    const int maxLights = 8;   // read-only from here on
+    std::cout &lt;&lt; "Max lights: " &lt;&lt; maxLights &lt;&lt; "\n";
+
+    // maxLights = 16;  // ERROR: assignment of read-only variable
+    return 0;
+}</code></pre>
+
+        <p>The commented line would refuse to compile. That is a feature, not an annoyance: the compiler now guards your intent. Anyone reading the code — including you in six months — knows this value is a fixed rule, and any accidental attempt to change it is caught immediately instead of becoming a hard-to-find bug.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Const by default</div><p>A good habit: reach for <code>const</code> first, and only drop it when you actually need to change the value. Code full of clearly-constant values is far easier to reason about.</p></div>
+        </div>
+
+        <h2>Compile-time constants: constexpr</h2>
+
+        <p>A <code>const</code> value must never change once set, but it might be computed while the program runs. Sometimes we want more: a value the compiler can figure out <strong>before the program even runs</strong>. That is what <code>constexpr</code> guarantees — a constant known at compile time.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">constexpr int targetFps   = 60;              // known while compiling
+constexpr double frameTime = 1.0 / targetFps; // computed at compile time too
+
+// Because it is a compile-time constant, it can size a fixed array:
+int frameHistory[targetFps]; // 60 slots, decided by the compiler</code></pre>
+
+        <p>Every <code>constexpr</code> is also implicitly <code>const</code>. The extra promise is <em>when</em> the value exists. This matters because some things — like the size of a plain fixed array, shown above — must be known at compile time. Later, when we design our engine, values such as the maximum number of components per entity will be <code>constexpr</code> so the compiler can lay out memory efficiently.</p>
+
+        <div class="table-wrap"><table><thead><tr><th>Keyword</th><th>Can it change?</th><th>Known at compile time?</th><th>Typical use</th></tr></thead><tbody>
+          <tr><td><code>int x</code></td><td>Yes</td><td>No</td><td>Ordinary changing values</td></tr>
+          <tr><td><code>const int x</code></td><td>No</td><td>Not necessarily</td><td>A value fixed once, maybe at runtime</td></tr>
+          <tr><td><code>constexpr int x</code></td><td>No</td><td>Yes</td><td>Fixed values, array sizes, math on constants</td></tr>
+        </tbody></table></div>
+
+        <h2>Literals: values written directly in code</h2>
+
+        <p>A <strong>literal</strong> is a value you type straight into the source. Every literal has a type, and small suffixes let you steer that type.</p>
+
+        <ul>
+          <li><code>42</code> — an <code>int</code> literal.</li>
+          <li><code>3.14</code> — a <code>double</code> literal; write <code>3.14f</code> for a <code>float</code>.</li>
+          <li><code>60u</code> — an <code>unsigned int</code>; <code>10L</code> is a <code>long</code>.</li>
+          <li><code>'A'</code> — a single <code>char</code> (single quotes).</li>
+          <li><code>"hello"</code> — a string literal (double quotes).</li>
+          <li><code>true</code> / <code>false</code> — <code>bool</code> literals.</li>
+        </ul>
+
+        <p>You can also make long numbers readable with digit separators, and write values in other bases:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">int   big   = 1'000'000;   // apostrophes are ignored, just for readability
+int   hex   = 0xFF;        // 255, written in hexadecimal
+int   binary = 0b1010;     // 10, written in binary
+float gravity = 9.81f;     // the f suffix keeps it a float</code></pre>
+
+        <h2>Talking to the screen: std::cout</h2>
+
+        <p>You have already met <code>std::cout</code>, the standard output stream. The <code>&lt;&lt;</code> operator "sends" values into it, and you can chain as many as you like. Anything printable — text, numbers, the value of a variable — flows in left to right.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+int main() {
+    constexpr int fps = 60;
+    std::cout &lt;&lt; "Rendering at " &lt;&lt; fps &lt;&lt; " frames per second.\n";
+    return 0;
+}</code></pre>
+
+        <h3>std::endl vs "\n"</h3>
+
+        <p>You will see two ways to end a line. Both move output to a new line, but they are not identical:</p>
+
+        <ul>
+          <li><code>"\n"</code> is simply a newline character in the text.</li>
+          <li><code>std::endl</code> writes a newline <em>and then flushes the buffer</em> — it forces everything queued to be written out immediately.</li>
+        </ul>
+
+        <p>Flushing has a cost. In a loop that runs thousands of times per second — like a render loop — flushing on every line will slow you down noticeably. Prefer <code>"\n"</code> for ordinary output, and save <code>std::endl</code> for the rare moment you truly need the text on screen right now (for example, just before a long pause).</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Rule of thumb</div><p>Use <code>"\n"</code> almost everywhere. Only reach for <code>std::endl</code> when you have a specific reason to force an immediate flush.</p></div>
+        </div>
+
+        <h2>Reading from the user: std::cin</h2>
+
+        <p>Input mirrors output. The stream is <code>std::cin</code>, and the <code>&gt;&gt;</code> operator "extracts" a value from it into a variable. When you use <code>&gt;&gt;</code>, whitespace (spaces, tabs, newlines) separates one value from the next, so reading a number is simple:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">int fps = 0;
+std::cout &lt;&lt; "Target FPS: ";
+std::cin &gt;&gt; fps;   // waits for the user to type a number and press Enter</code></pre>
+
+        <p>Reading whole words works the same way. But a name or a sentence contains spaces, and <code>&gt;&gt;</code> would stop at the first space. To capture a full line — spaces included — use <code>std::getline</code> with a <code>std::string</code>:</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;string&gt;
+
+std::string engineName;
+std::getline(std::cin, engineName); // reads everything up to Enter</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">The leftover newline trap</div><p>After <code>std::cin &gt;&gt; number</code>, the Enter key you pressed is still sitting in the input buffer. A following <code>std::getline</code> will read that empty leftover instead of waiting for you. The fix is to discard it first with <code>std::cin.ignore(...)</code>, shown in the program below.</p></div>
+        </div>
+
+        <h2>Putting it together: an interactive setup</h2>
+
+        <p>Here is a complete, compilable program that greets the user, reads a name (which may contain spaces) and a target FPS, and echoes a small summary. It uses everything from this lesson: <code>constexpr</code>, literals, both streams, <code>getline</code>, and the newline discard.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+#include &lt;limits&gt;
+
+int main() {
+    constexpr int   defaultFps = 60;          // compile-time constant
+    constexpr double msPerSec  = 1000.0;      // for the frame-time math
+
+    std::cout &lt;&lt; "=== Engine Setup ===\n";
+
+    // Read a full line, spaces allowed.
+    std::cout &lt;&lt; "Name your engine: ";
+    std::string engineName;
+    std::getline(std::cin, engineName);
+
+    // Read a single number with the extraction operator.
+    std::cout &lt;&lt; "Target FPS (default " &lt;&lt; defaultFps &lt;&lt; "): ";
+    int targetFps = 0;
+    std::cin &gt;&gt; targetFps;
+
+    // Guard against silly input using a plain const decision.
+    const bool valid = (targetFps &gt; 0);
+    if (!valid) {
+        targetFps = defaultFps;
+        std::cout &lt;&lt; "That wasn't a positive number - using the default.\n";
+    }
+
+    const double frameTimeMs = msPerSec / targetFps; // budget per frame
+
+    std::cout &lt;&lt; "\nEngine  : " &lt;&lt; engineName &lt;&lt; "\n";
+    std::cout &lt;&lt; "Running : " &lt;&lt; targetFps &lt;&lt; " FPS\n";
+    std::cout &lt;&lt; "Budget  : " &lt;&lt; frameTimeMs &lt;&lt; " ms per frame\n";
+    return 0;
+}</code></pre>
+
+        <p>Compile and run it, then type an engine name and a number. At 60 FPS the program reports about <code>16.6667</code> ms per frame — the exact time budget a real render loop has to do all its work. That number will become very familiar as we build the engine, because staying inside that budget is what "60 FPS" really means.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Notice the order</div><p>We call <code>getline</code> <em>before</em> the numeric <code>&gt;&gt;</code>. Doing it this way sidesteps the leftover-newline trap entirely. When you need a number first and then a line, add <code>std::cin.ignore(std::numeric_limits&lt;std::streamsize&gt;::max(), '\n');</code> between them — that is why we included <code>&lt;limits&gt;</code>.</p></div>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><code>const</code> makes a value read-only after initialisation; <code>constexpr</code> additionally requires it to be known at compile time and is implicitly <code>const</code>.</li>
+            <li>Literals are values written in code (<code>42</code>, <code>3.14f</code>, <code>'A'</code>, <code>"text"</code>, <code>true</code>); suffixes and prefixes like <code>f</code>, <code>u</code>, <code>0x</code> steer their type.</li>
+            <li><code>std::cout &lt;&lt; ...</code> prints values; <code>std::cin &gt;&gt; ...</code> reads whitespace-separated values into variables.</li>
+            <li>Use <code>std::getline(std::cin, str)</code> to read a whole line including spaces, and watch out for the leftover newline after <code>&gt;&gt;</code>.</li>
+            <li>Prefer <code>"\n"</code> over <code>std::endl</code> — <code>endl</code> also flushes, which is slower and rarely needed.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

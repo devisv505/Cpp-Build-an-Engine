@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Matrices &amp; Transformations — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn how 4x4 matrices encode translation, rotation, and scale, why multiplication order matters, and how DirectX builds a world matrix.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Matrices &amp; Transformations</h1>
+
+        <p class="lead">Every object in your engine needs to know where it is, how big it is, and which way it faces. A single <strong>4x4 matrix</strong> can carry all three answers at once. In this lesson you will learn to read a matrix as a transformation, build translation, rotation, and scale matrices, and combine them into the <strong>world matrix</strong> that DirectX uses to place a model in the scene.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why a matrix is just a machine that transforms points</li>
+            <li>The identity matrix, and the 4x4 forms of translation, rotation, and scale</li>
+            <li>How matrix multiplication combines transforms — and why the order is not interchangeable</li>
+            <li>How to build a world matrix by combining scale, rotation, and translation</li>
+            <li>The row-major, row-vector convention that DirectX and DirectXMath use</li>
+          </ul>
+        </div>
+
+        <h2>A matrix is a transformation</h2>
+
+        <p>In the last lesson we treated a vector as a point or a direction in space. A <strong>matrix</strong> is the next step up: it is a grid of numbers that <em>transforms</em> vectors. You feed a point in, and a moved, rotated, or resized point comes out. That is the whole idea. Instead of writing custom code to spin or shift each object, we store the recipe as numbers in a matrix and let a single multiply do the work.</p>
+
+        <p>We use <strong>4x4</strong> matrices (four rows, four columns) even though our world is 3D. The extra row and column let one matrix express translation <em>and</em> rotation <em>and</em> scale together — something a plain 3x3 matrix cannot do. That fourth dimension is a bookkeeping trick called <em>homogeneous coordinates</em>; for now, just treat the 4th component of a point as <code>1</code>.</p>
+
+        <h2>The identity matrix</h2>
+
+        <p>The simplest transformation is "do nothing." That is the <strong>identity matrix</strong>: ones down the diagonal, zeros everywhere else. Multiplying any vector by it gives back the exact same vector, like multiplying a number by 1.</p>
+
+        <pre><code class="language-text" data-file="identity">| 1  0  0  0 |
+| 0  1  0  0 |
+| 0  0  1  0 |
+| 0  0  0  1 |</code></pre>
+
+        <p>Every transform we build starts life as the identity and then overwrites a few slots. It is also the safe default for a brand-new object that has not moved yet — its <strong>Transform component</strong> begins at identity.</p>
+
+        <h2>Translation, scale, and rotation</h2>
+
+        <p>Here are the three building blocks, written in the layout DirectX expects (more on that convention below). Notice how each one differs from the identity by only a handful of numbers.</p>
+
+        <h3>Scale</h3>
+        <p>Scaling stretches or shrinks along each axis. The scale factors sit on the diagonal, so <code>sx</code>, <code>sy</code>, and <code>sz</code> multiply the x, y, and z of the point.</p>
+        <pre><code class="language-text" data-file="scale">| sx  0   0   0 |
+|  0  sy  0   0 |
+|  0  0   sz  0 |
+|  0  0   0   1 |</code></pre>
+
+        <h3>Translation</h3>
+        <p>Translation slides a point without rotating or resizing it. In DirectX's convention the offset lives in the <strong>bottom row</strong>.</p>
+        <pre><code class="language-text" data-file="translation">|  1   0   0   0 |
+|  0   1   0   0 |
+|  0   0   1   0 |
+| tx  ty  tz   1 |</code></pre>
+
+        <h3>Rotation (about the Z axis)</h3>
+        <p>Rotation reorients a point around an axis. Rotating around Z by an angle &theta; mixes the x and y coordinates using sine and cosine. There are matching matrices for the X and Y axes.</p>
+        <pre><code class="language-text" data-file="rotationZ">|  cos&theta;   sin&theta;   0   0 |
+| -sin&theta;   cos&theta;   0   0 |
+|   0       0     1   0 |
+|   0       0     0   1 |</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Angles are in radians</div><p>All the trig functions in C++ (<code>std::sin</code>, <code>std::cos</code>) and in DirectXMath work in <strong>radians</strong>, not degrees. A full turn is <code>2&pi;</code> radians, so 90&deg; is <code>&pi;/2 &asymp; 1.5708</code>. Convert with <code>radians = degrees * (3.14159f / 180.0f)</code>.</p></div>
+        </div>
+
+        <h2>Multiplying matrices combines transforms</h2>
+
+        <p>The real power shows up when you <strong>multiply</strong> two matrices together. The product is a single matrix that performs both transformations in one step. If <code>S</code> scales and <code>R</code> rotates, then <code>S * R</code> is one matrix that scales <em>and</em> rotates. This lets us bake a whole chain of movements into a single 4x4 matrix that the GPU applies to thousands of vertices cheaply.</p>
+
+        <p>Here is a small, self-contained C++ implementation so you can see there is no magic — a matrix multiply is just rows-times-columns.</p>
+
+        <pre><code class="language-cpp" data-file="mat4.cpp">#include &lt;array&gt;
+#include &lt;cmath&gt;
+
+// A 4x4 matrix stored ROW-MAJOR: m[row][col].
+struct Mat4 {
+    std::array&lt;std::array&lt;float, 4&gt;, 4&gt; m{}; // starts all zero
+
+    static Mat4 Identity() {
+        Mat4 r;
+        for (int i = 0; i &lt; 4; ++i)
+            r.m[i][i] = 1.0f;              // ones on the diagonal
+        return r;
+    }
+};
+
+// Row-vector convention: read a * b left-to-right.
+Mat4 operator*(const Mat4&amp; a, const Mat4&amp; b) {
+    Mat4 r; // all zeros
+    for (int row = 0; row &lt; 4; ++row)
+        for (int col = 0; col &lt; 4; ++col)
+            for (int k = 0; k &lt; 4; ++k)
+                r.m[row][col] += a.m[row][k] * b.m[k][col];
+    return r;
+}
+
+Mat4 Scale(float sx, float sy, float sz) {
+    Mat4 r = Mat4::Identity();
+    r.m[0][0] = sx; r.m[1][1] = sy; r.m[2][2] = sz;
+    return r;
+}
+
+Mat4 Translation(float tx, float ty, float tz) {
+    Mat4 r = Mat4::Identity();
+    r.m[3][0] = tx; r.m[3][1] = ty; r.m[3][2] = tz; // bottom row
+    return r;
+}
+
+Mat4 RotationZ(float radians) {
+    Mat4 r = Mat4::Identity();
+    float c = std::cos(radians);
+    float s = std::sin(radians);
+    r.m[0][0] =  c; r.m[0][1] = s;
+    r.m[1][0] = -s; r.m[1][1] = c;
+    return r;
+}</code></pre>
+
+        <h2>Order matters: multiplication is not commutative</h2>
+
+        <p>With ordinary numbers, <code>3 * 5</code> equals <code>5 * 3</code>. Matrices are different: <strong>A * B is usually not the same as B * A</strong>. Swapping the order changes the result, and this is not a quirk to memorize — it reflects physical reality.</p>
+
+        <p>Imagine an object at the origin. If you <em>rotate then translate</em>, it spins in place and then slides away. If you <em>translate then rotate</em>, it slides away first and then swings around the origin in a big arc — landing somewhere completely different. Same two operations, two different outcomes.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Wrong order = mystery bugs</div><p>A model that orbits the origin instead of spinning in place, or that grows toward one corner, is almost always a matrix-order mistake. When something looks "warped and flung across the scene," check your multiply order first.</p></div>
+        </div>
+
+        <h2>Building the world matrix</h2>
+
+        <p>Nearly every object is placed with the same recipe: <strong>scale it, then rotate it, then move it into position</strong>. Applying scale first keeps stretching aligned to the object's own axes; translating last drops the finished object at its spot in the world. Combine those three into one <strong>world matrix</strong> (also called the model matrix):</p>
+
+        <pre><code class="language-cpp" data-file="world.cpp">// Scale to 2x, spin 90 degrees about Z, then move to (10, 0, 0).
+// Row-vector order reads the SAME as the action order: S, then R, then T.
+Mat4 world = Scale(2.0f, 2.0f, 2.0f)
+           * RotationZ(1.5708f)            // ~90 degrees in radians
+           * Translation(10.0f, 0.0f, 0.0f);</code></pre>
+
+        <h2>Row-major, row-vector: the DirectX convention</h2>
+
+        <p>Two separate choices decide how the numbers above are laid out. DirectX and DirectXMath make both of these choices, so we follow them for consistency with the rest of the engine.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Choice</th><th>DirectX convention</th><th>What it means for you</th></tr></thead>
+          <tbody>
+            <tr><td>Storage</td><td><strong>Row-major</strong></td><td>Memory holds row 0, then row 1, and so on — matching <code>m[row][col]</code>.</td></tr>
+            <tr><td>Vectors</td><td><strong>Row vectors</strong></td><td>A point is a 1x4 row, transformed as <code>v' = v * M</code> (vector on the left).</td></tr>
+            <tr><td>Translation</td><td><strong>Bottom row</strong></td><td>The offset sits in row 3, as shown in the translation matrix.</td></tr>
+            <tr><td>Combine order</td><td><strong>S * R * T</strong></td><td>Multiply left-to-right in the same order the actions happen.</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Why textbooks sometimes write T * R * S</div><p>Math textbooks and OpenGL usually use <em>column</em> vectors, transformed as <code>M * v</code> with the vector on the right. There the order flips to <code>T * R * S</code> and translation lives in the last column. It is the exact same transformation — just a mirror-image notation. Because our engine targets DirectX, we stay with row vectors and <code>S * R * T</code> everywhere.</p></div>
+        </div>
+
+        <p>This matters for our engine design. Each object's <strong>Transform component</strong> will store a scale, a rotation, and a position. Every frame it rebuilds one world matrix with exactly the <code>S * R * T</code> chain above, and hands that matrix to the GPU. In the next lesson we replace our hand-written <code>Mat4</code> with <strong>DirectXMath</strong>, which does the same math far faster using SIMD hardware instructions.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A 4x4 matrix is a machine that transforms points; the identity matrix leaves them unchanged.</li>
+            <li>Scale sits on the diagonal, translation in the bottom row, and rotation mixes coordinates with sine and cosine.</li>
+            <li>Matrix multiplication combines transforms into one matrix, but <code>A * B &ne; B * A</code> — order changes the result.</li>
+            <li>A world matrix is built as scale, then rotate, then translate — written <code>S * R * T</code> in DirectX's row-vector convention.</li>
+            <li>DirectX uses row-major storage with row vectors (<code>v' = v * M</code>), which our Transform component will follow.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

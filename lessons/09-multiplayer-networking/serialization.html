@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Serializing Game State — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Turn a Transform and player id into portable bytes with a ByteWriter/ByteReader and send game state between MiniEngine instances.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Serializing Game State</h1>
+
+        <p class="lead">In the last lesson we opened a UDP socket and shot raw datagrams across the network. But a datagram is just a bag of bytes — the socket has no idea what a <code>Transform</code> or a player id is. In this lesson we build the translation layer: a tiny binary protocol plus a <code>ByteWriter</code> and <code>ByteReader</code> that turn engine state into bytes and back. Get this right and two MiniEngine instances can finally agree on where everything is.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why you must never <code>memcpy</code> a raw struct across machines</li>
+            <li>How to design a simple message protocol: a type byte followed by a payload</li>
+            <li>Building a <code>ByteWriter</code>/<code>ByteReader</code> over a <code>std::vector&lt;uint8_t&gt;</code></li>
+            <li>Serializing a <code>Transform</code> and player id into a <code>PlayerStatePacket</code></li>
+            <li>Keeping integers and floats portable with <code>htonl</code>/<code>ntohl</code> and bit-casting</li>
+          </ul>
+        </div>
+
+        <h2>Why not just send the struct?</h2>
+
+        <p>It is tempting. You have a <code>PlayerState</code> struct in memory already, so why not point <code>sendto</code> at it and blast the raw bytes? Because the bytes on one machine do not mean the same thing on another. Two problems bite you:</p>
+
+        <ul>
+          <li><strong>Struct padding and alignment.</strong> The compiler inserts invisible gaps between fields so each one lands on a convenient address. A <code>uint8_t</code> followed by a <code>float</code> often has 3 padding bytes between them. Different compilers, flags, or target architectures pad differently, so <code>sizeof</code> and the field offsets can disagree between your two builds.</li>
+          <li><strong>Endianness.</strong> The order in which a multi-byte integer is stored in memory (little-endian vs big-endian) is CPU-dependent. The value <code>0x01020304</code> is four bytes, but which byte comes first differs. Send it raw and the other machine may read <code>0x04030201</code>.</li>
+        </ul>
+
+        <p>Serialization fixes both by defining an explicit, byte-for-byte layout that both sides obey — independent of how any one compiler happens to lay out memory.</p>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body"><div class="c-title">Never do this</div>
+          <p><code>sendto(sock, (const char*)&amp;state, sizeof(state), 0, ...)</code> works perfectly on your machine and fails the moment a friend on a different CPU or compiler joins. It is the single most common networking bug in hobby engines.</p></div>
+        </div>
+
+        <h2>A tiny binary protocol</h2>
+
+        <p>A protocol is just an agreement about what the bytes mean. Ours starts every message with a single <strong>type byte</strong> so the receiver knows how to interpret the rest. We define the types with an enum backed by <code>uint8_t</code>:</p>
+
+        <pre><code class="language-cpp" data-file="Protocol.h">#include &lt;cstdint&gt;
+
+// Every datagram starts with one of these as its first byte.
+enum class MsgType : uint8_t {
+    Hello        = 1,  // a client joining
+    PlayerState  = 2,  // a Transform update for one player
+    Goodbye      = 3,  // a client leaving
+};</code></pre>
+
+        <p>After the type byte comes the <strong>payload</strong>, whose layout depends on the type. For <code>PlayerState</code> the payload is a player id followed by a transform. Laid out on the wire, one packet looks like this:</p>
+
+        <figure><div class="figure-box">
+          <svg viewBox="0 0 600 130" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#4aa8ff" stroke-width="2">
+            <rect x="10"  y="40" width="70"  height="50" rx="4"/>
+            <rect x="80"  y="40" width="110" height="50" rx="4"/>
+            <rect x="190" y="40" width="120" height="50" rx="4"/>
+            <rect x="310" y="40" width="120" height="50" rx="4"/>
+            <rect x="430" y="40" width="120" height="50" rx="4"/>
+            <g fill="currentColor" stroke="none" font-size="13" text-anchor="middle" font-family="monospace">
+              <text x="45"  y="70">type</text>
+              <text x="135" y="70">id (u32)</text>
+              <text x="250" y="70">pos x,y,z</text>
+              <text x="370" y="70">rot x,y,z,w</text>
+              <text x="490" y="70">(next msg)</text>
+            </g>
+            <g fill="currentColor" stroke="none" font-size="11" text-anchor="middle" font-family="monospace">
+              <text x="45"  y="108">1 B</text>
+              <text x="135" y="108">4 B</text>
+              <text x="250" y="108">12 B</text>
+              <text x="370" y="108">16 B</text>
+            </g>
+          </svg>
+        </div><figcaption>A fixed-size <code>PlayerState</code> message: 1 type byte + 33 payload bytes.</figcaption></figure>
+
+        <h3>Fixed-size vs variable messages</h3>
+
+        <p>Our <code>PlayerState</code> is <strong>fixed-size</strong>: the receiver always reads exactly 33 payload bytes. That is simplest and ideal for real-time transform updates. Some messages are <strong>variable-size</strong> — a chat string or a list of spawned objects — and those need a length field (say a <code>uint16_t</code> count) before the repeated data so the reader knows when to stop. We will lean on fixed-size packets here and mention the length-prefix trick where it matters.</p>
+
+        <h2>ByteWriter and ByteReader</h2>
+
+        <p>Rather than hand-pack every message, we build two small helpers. The <code>ByteWriter</code> appends values to a growing <code>std::vector&lt;uint8_t&gt;</code>; the <code>ByteReader</code> walks a received buffer, tracking an offset. Both convert integers to <strong>network byte order</strong> (big-endian) with <code>htonl</code>/<code>htons</code> so the wire format is identical everywhere.</p>
+
+        <p>Floats need one extra trick. There is no <code>htonf</code>, so we reinterpret the float's 32 bits as a <code>uint32_t</code>, byte-swap that, and send it. On the way back we reverse the steps. We use <code>std::memcpy</code> for the bit reinterpret — it is the only way to type-pun in C++ without undefined behavior (a plain cast through a pointer breaks strict aliasing).</p>
+
+        <pre><code class="language-cpp" data-file="ByteBuffer.h">#include &lt;cstdint&gt;
+#include &lt;cstring&gt;   // std::memcpy
+#include &lt;vector&gt;
+#include &lt;stdexcept&gt;
+
+#ifdef _WIN32
+  #include &lt;winsock2.h&gt;   // htonl, htons, ntohl, ntohs
+#else
+  #include &lt;arpa/inet.h&gt;
+#endif
+
+class ByteWriter {
+public:
+    void writeU8(uint8_t v) {
+        buf_.push_back(v);
+    }
+    void writeU16(uint16_t v) {
+        uint16_t n = htons(v);              // host -&gt; network order
+        appendBytes(&amp;n, sizeof(n));
+    }
+    void writeU32(uint32_t v) {
+        uint32_t n = htonl(v);
+        appendBytes(&amp;n, sizeof(n));
+    }
+    void writeFloat(float f) {
+        uint32_t bits;
+        std::memcpy(&amp;bits, &amp;f, sizeof(bits)); // reinterpret the 32 bits, no UB
+        writeU32(bits);                       // reuse the portable u32 path
+    }
+
+    const std::vector&lt;uint8_t&gt;&amp; bytes() const { return buf_; }
+
+private:
+    void appendBytes(const void* p, size_t n) {
+        const auto* b = static_cast&lt;const uint8_t*&gt;(p);
+        buf_.insert(buf_.end(), b, b + n);
+    }
+    std::vector&lt;uint8_t&gt; buf_;
+};
+
+class ByteReader {
+public:
+    ByteReader(const uint8_t* data, size_t size)
+        : data_(data), size_(size) {}
+
+    uint8_t readU8() {
+        need(1);
+        return data_[offset_++];
+    }
+    uint16_t readU16() {
+        need(2);
+        uint16_t n;
+        std::memcpy(&amp;n, data_ + offset_, sizeof(n));
+        offset_ += sizeof(n);
+        return ntohs(n);                     // network -&gt; host order
+    }
+    uint32_t readU32() {
+        need(4);
+        uint32_t n;
+        std::memcpy(&amp;n, data_ + offset_, sizeof(n));
+        offset_ += sizeof(n);
+        return ntohl(n);
+    }
+    float readFloat() {
+        uint32_t bits = readU32();
+        float f;
+        std::memcpy(&amp;f, &amp;bits, sizeof(f));
+        return f;
+    }
+
+private:
+    void need(size_t n) {
+        if (offset_ + n &gt; size_)
+            throw std::runtime_error("ByteReader: buffer underrun");
+    }
+    const uint8_t* data_;
+    size_t size_;
+    size_t offset_ = 0;
+};</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Always bounds-check the reader</div>
+          <p>A UDP datagram can be truncated, malformed, or forged. The <code>need()</code> guard turns "read past the end" — which would otherwise be a silent memory bug — into a clean exception you can catch and drop the packet. Never trust the length of data that came off a socket.</p></div>
+        </div>
+
+        <h2>Serializing a Transform and a PlayerStatePacket</h2>
+
+        <p>Recall the <code>Transform</code> component from the engine lessons: a position and a rotation quaternion (we ignore scale here since it rarely changes for a networked player). We add free functions to serialize it, then wrap it in a <code>PlayerStatePacket</code> that carries the owning player's id.</p>
+
+        <pre><code class="language-cpp" data-file="PlayerStatePacket.h">#include "ByteBuffer.h"
+#include "Protocol.h"
+
+// Matches the engine's Transform (from the component-system lessons).
+struct Vec3 { float x, y, z; };
+struct Quat { float x, y, z, w; };
+
+struct Transform {
+    Vec3 position;
+    Quat rotation;
+};
+
+struct PlayerStatePacket {
+    uint32_t  playerId;
+    Transform transform;
+
+    // Write: type byte, then the payload, into a fresh byte vector.
+    std::vector&lt;uint8_t&gt; Serialize() const {
+        ByteWriter w;
+        w.writeU8(static_cast&lt;uint8_t&gt;(MsgType::PlayerState));
+
+        w.writeU32(playerId);
+
+        w.writeFloat(transform.position.x);
+        w.writeFloat(transform.position.y);
+        w.writeFloat(transform.position.z);
+
+        w.writeFloat(transform.rotation.x);
+        w.writeFloat(transform.rotation.y);
+        w.writeFloat(transform.rotation.z);
+        w.writeFloat(transform.rotation.w);
+
+        return w.bytes();  // 1 + 4 + 28 = 33 bytes
+    }
+
+    // Read: the caller has already peeked the type byte and dispatched here,
+    // so 'r' is positioned just after it.
+    static PlayerStatePacket Deserialize(ByteReader&amp; r) {
+        PlayerStatePacket p;
+        p.playerId = r.readU32();
+
+        p.transform.position.x = r.readFloat();
+        p.transform.position.y = r.readFloat();
+        p.transform.position.z = r.readFloat();
+
+        p.transform.rotation.x = r.readFloat();
+        p.transform.rotation.y = r.readFloat();
+        p.transform.rotation.z = r.readFloat();
+        p.transform.rotation.w = r.readFloat();
+
+        return p;
+    }
+};</code></pre>
+
+        <p>Notice how <code>Serialize</code> and <code>Deserialize</code> mirror each other exactly: same fields, same order. That symmetry is the whole discipline of serialization. If you ever add a field, add it to <em>both</em> in the same position, or the two sides silently disagree.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Keep the type byte out of the payload</div>
+          <p>Serialize writes the <code>MsgType</code>, but Deserialize does not read it — the dispatcher does that first to decide which packet type to build. Splitting the responsibility keeps each Deserialize function focused on just its own payload.</p></div>
+        </div>
+
+        <h2>Sending it between MiniEngine instances</h2>
+
+        <p>Now we connect it to the UDP socket from the previous lesson. On the sending side, MiniEngine grabs a player's <code>Transform</code>, serializes a packet, and calls <code>sendto</code>. On the receiving side it reads the datagram, peeks the type byte, dispatches, and applies the state to the matching remote player.</p>
+
+        <pre><code class="language-cpp" data-file="net_sync.cpp">// --- Sending: called each network tick for the local player ---
+void SendPlayerState(SOCKET sock, const sockaddr_in&amp; to,
+                     uint32_t myId, const Transform&amp; xf) {
+    PlayerStatePacket pkt{ myId, xf };
+    std::vector&lt;uint8_t&gt; bytes = pkt.Serialize();
+
+    int sent = sendto(sock,
+                      reinterpret_cast&lt;const char*&gt;(bytes.data()),
+                      static_cast&lt;int&gt;(bytes.size()),
+                      0,
+                      reinterpret_cast&lt;const sockaddr*&gt;(&amp;to),
+                      sizeof(to));
+    if (sent == SOCKET_ERROR) {
+        // WSAGetLastError() gives the real reason on Windows.
+        printf("sendto failed: %d\n", WSAGetLastError());
+    }
+}
+
+// --- Receiving: called when recvfrom returns a datagram ---
+void OnDatagram(const uint8_t* data, int len, Scene&amp; scene) {
+    if (len &lt; 1) return;            // not even a type byte
+    ByteReader r(data, static_cast&lt;size_t&gt;(len));
+
+    try {
+        auto type = static_cast&lt;MsgType&gt;(r.readU8());
+        switch (type) {
+            case MsgType::PlayerState: {
+                PlayerStatePacket p = PlayerStatePacket::Deserialize(r);
+                // Find the GameObject for this player and update its Transform.
+                if (GameObject* go = scene.FindPlayer(p.playerId)) {
+                    go-&gt;GetComponent&lt;Transform&gt;()-&gt;position = p.transform.position;
+                    go-&gt;GetComponent&lt;Transform&gt;()-&gt;rotation = p.transform.rotation;
+                }
+                break;
+            }
+            default:
+                // Unknown or unhandled type: ignore it safely.
+                break;
+        }
+    } catch (const std::exception&amp; e) {
+        // A malformed packet threw in the reader. Drop it, keep running.
+        printf("bad packet dropped: %s\n", e.what());
+    }
+}</code></pre>
+
+        <p>That is the full round trip. The same 33 bytes that leave one MiniEngine arrive at another and become a moving object on screen — regardless of whether the two machines share a CPU architecture or a compiler. Because every integer went through <code>htonl</code>/<code>ntohl</code> and every float was bit-cast rather than blindly copied, the layout is nailed down and reproducible.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Serialization is not compression or encryption</div>
+          <p>Our 33-byte packet is honest but not tiny. Real engines shrink transform updates by quantizing floats (sending a rotation as 3 bytes of compressed quaternion, for example) and by sending only what changed. That is an optimization to layer on later — get the correct, portable version working first.</p></div>
+        </div>
+
+        <h2>How versioning creeps in</h2>
+
+        <p>The moment two people run slightly different builds, the two sides can disagree about the packet layout. A common guard is to send a small <strong>protocol version</strong> in the <code>Hello</code> message and refuse mismatched clients. You do not need it today, but keep it in mind: a serialized format is a contract, and contracts have versions.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Never <code>memcpy</code>/send raw structs: padding and endianness differ between machines, corrupting the data.</li>
+            <li>A protocol is an agreed byte layout — ours leads with a <code>MsgType</code> byte, then a type-specific payload.</li>
+            <li><code>ByteWriter</code>/<code>ByteReader</code> centralize the packing: <code>htonl</code>/<code>htons</code> for integers, bit-cast via <code>memcpy</code> for floats.</li>
+            <li><code>Serialize</code> and <code>Deserialize</code> must mirror each other field-for-field, in the same order.</li>
+            <li>Always bounds-check the reader and drop malformed datagrams — data off a socket is never trusted.</li>
+            <li>Fixed-size packets suit real-time transforms; variable data needs a length prefix.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

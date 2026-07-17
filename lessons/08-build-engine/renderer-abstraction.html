@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Abstracting the Renderer — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Wrap the D3D11 device, context, swap chain, and depth buffer in a clean GraphicsDevice class with BeginFrame and EndFrame.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>Abstracting the Renderer</h1>
+
+        <p class="lead">
+          Over the last few lessons you learned how to create a Direct3D 11 device, build a swap chain, clear the
+          screen, and add a depth buffer — one long, ceremony-heavy block of setup code. In this lesson we fold all
+          of that into a single <code>GraphicsDevice</code> class. Instead of scattering raw DirectX calls through your
+          game loop, you will call <code>BeginFrame()</code> and <code>EndFrame()</code>. This is exactly how real
+          engines like Unity and Unreal hide the graphics API behind a clean surface.
+        </p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why we wrap the raw D3D11 objects behind one <strong>Renderer</strong> class.</li>
+            <li>How <code>Microsoft::WRL::ComPtr</code> frees GPU resources automatically.</li>
+            <li>Building <code>Initialize</code>, <code>BeginFrame</code>, and <code>EndFrame</code> around the device, context, swap chain, RTV, and DSV.</li>
+            <li>Exposing the device and context so other systems can issue draw calls.</li>
+            <li>Handling window resize cleanly by recreating the render targets.</li>
+          </ul>
+        </div>
+
+        <h2>Why abstract the renderer at all?</h2>
+        <p>
+          Direct3D is powerful, but it is verbose. Creating a device and swap chain, fishing the back buffer out of
+          that swap chain, wrapping it in a render target view, building a matching depth texture — that is dozens of
+          lines before a single triangle appears. If we leave all of it in <code>main()</code>, every new feature makes
+          that function longer and more fragile.
+        </p>
+        <p>
+          The fix is an <strong>abstraction</strong>: a class that <em>owns</em> the graphics objects and offers a small,
+          friendly set of methods. Callers say "begin the frame, clear to this color" and "end the frame, show it on
+          screen." They never touch a raw <code>ID3D11DeviceContext</code> pointer unless they truly need one. When you
+          later add DirectX 12 support or a debug overlay, you change one class instead of your whole codebase.
+        </p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">A name that describes a role</div>
+            <p>We call the class <code>GraphicsDevice</code> because it represents "the thing that talks to the GPU." Some engines call it <code>Renderer</code> or <code>RHI</code> (render hardware interface). The name matters less than the boundary it draws.</p>
+          </div>
+        </div>
+
+        <h2>ComPtr: no more manual Release()</h2>
+        <p>
+          Every DirectX object you create — the device, the swap chain, each view — is a COM object with an internal
+          reference count. In older tutorials you must call <code>Release()</code> on each one in the right order, or you
+          leak GPU memory. We are past that. <code>Microsoft::WRL::ComPtr</code> is a smart pointer for COM objects: when
+          it goes out of scope it calls <code>Release()</code> for you, just like <code>std::unique_ptr</code> calls
+          <code>delete</code>. Store every DirectX object in a <code>ComPtr</code> and destruction becomes automatic and
+          correct.
+        </p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ComPtr call</th><th>What it gives you</th></tr></thead>
+            <tbody>
+              <tr><td><code>.Get()</code></td><td>The raw pointer, for passing <em>into</em> a D3D call.</td></tr>
+              <tr><td><code>.GetAddressOf()</code></td><td>Address of the pointer, for a call that <em>creates</em> an object (an out-parameter).</td></tr>
+              <tr><td><code>.Reset()</code></td><td>Releases the object now and sets the pointer to null.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>The header</h2>
+        <p>
+          Here is the interface. Notice how small it is compared to the setup work it hides. The private members are all
+          <code>ComPtr</code>s, so the class needs no destructor at all.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GraphicsDevice.h">#pragma once
+#include &lt;d3d11.h&gt;
+#include &lt;wrl/client.h&gt;   // Microsoft::WRL::ComPtr
+#include &lt;cstdint&gt;
+
+class GraphicsDevice {
+public:
+    // Create the device, context, swap chain and back-buffer targets.
+    bool Initialize(HWND window, uint32_t width, uint32_t height);
+
+    // Bind the render target and wipe it (plus depth) for a new frame.
+    void BeginFrame(const float clearColor[4]);
+
+    // Present the finished frame to the screen.
+    void EndFrame();
+
+    // Recreate the buffers after the window changes size.
+    void Resize(uint32_t width, uint32_t height);
+
+    // Systems that record draw calls (mesh renderer, UI) grab these.
+    ID3D11Device*        Device()  const { return m_device.Get(); }
+    ID3D11DeviceContext* Context() const { return m_context.Get(); }
+
+private:
+    bool CreateRenderTargets(uint32_t width, uint32_t height);
+
+    template &lt;typename T&gt;
+    using ComPtr = Microsoft::WRL::ComPtr&lt;T&gt;;
+
+    ComPtr&lt;ID3D11Device&gt;           m_device;
+    ComPtr&lt;ID3D11DeviceContext&gt;    m_context;
+    ComPtr&lt;IDXGISwapChain&gt;         m_swapChain;
+    ComPtr&lt;ID3D11RenderTargetView&gt; m_renderTargetView;   // the RTV
+    ComPtr&lt;ID3D11DepthStencilView&gt; m_depthStencilView;   // the DSV
+    D3D11_VIEWPORT                 m_viewport{};
+};</code></pre>
+
+        <h2>Initializing the device</h2>
+        <p>
+          <code>Initialize</code> does the one-time setup. It fills out a swap-chain description and creates the device,
+          context, and swap chain together with <code>D3D11CreateDeviceAndSwapChain</code>. In a debug build we add the
+          debug device flag so DirectX prints helpful validation messages to the output window.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GraphicsDevice.cpp">#include "GraphicsDevice.h"
+
+using Microsoft::WRL::ComPtr;
+
+bool GraphicsDevice::Initialize(HWND window, uint32_t width, uint32_t height) {
+    // Describe the swap chain: one back buffer sized to the window.
+    DXGI_SWAP_CHAIN_DESC scd{};
+    scd.BufferCount       = 1;
+    scd.BufferDesc.Width  = width;
+    scd.BufferDesc.Height = height;
+    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferUsage       = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow      = window;
+    scd.SampleDesc.Count  = 1;      // no MSAA for now
+    scd.Windowed          = TRUE;
+
+    UINT flags = 0;
+#if defined(_DEBUG)
+    flags |= D3D11_CREATE_DEVICE_DEBUG; // extra validation in debug builds
+#endif
+
+    // Create device + context + swap chain in a single call.
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        nullptr,                     // default adapter (GPU)
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        flags,
+        nullptr, 0,                  // default feature levels
+        D3D11_SDK_VERSION,
+        &amp;scd,
+        m_swapChain.GetAddressOf(),
+        m_device.GetAddressOf(),
+        nullptr,                     // we don't need the chosen level
+        m_context.GetAddressOf());
+
+    if (FAILED(hr)) return false;
+    return CreateRenderTargets(width, height);
+}</code></pre>
+
+        <p>
+          Splitting the target creation into its own helper is deliberate — we will call it again from
+          <code>Resize</code>. It grabs the swap chain's back buffer, wraps it in a render target view, builds a matching
+          depth/stencil texture and view, and sets the viewport.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GraphicsDevice.cpp">bool GraphicsDevice::CreateRenderTargets(uint32_t width, uint32_t height) {
+    // 1) Wrap the swap chain's back buffer in a render target view.
+    ComPtr&lt;ID3D11Texture2D&gt; backBuffer;
+    HRESULT hr = m_swapChain-&gt;GetBuffer(
+        0, __uuidof(ID3D11Texture2D),
+        reinterpret_cast&lt;void**&gt;(backBuffer.GetAddressOf()));
+    if (FAILED(hr)) return false;
+
+    hr = m_device-&gt;CreateRenderTargetView(
+        backBuffer.Get(), nullptr, m_renderTargetView.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    // 2) Create a matching depth/stencil texture, then a view onto it.
+    D3D11_TEXTURE2D_DESC depthDesc{};
+    depthDesc.Width            = width;
+    depthDesc.Height           = height;
+    depthDesc.MipLevels        = 1;
+    depthDesc.ArraySize        = 1;
+    depthDesc.Format           = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depthDesc.SampleDesc.Count = 1;
+    depthDesc.Usage            = D3D11_USAGE_DEFAULT;
+    depthDesc.BindFlags        = D3D11_BIND_DEPTH_STENCIL;
+
+    ComPtr&lt;ID3D11Texture2D&gt; depthTexture;
+    hr = m_device-&gt;CreateTexture2D(
+        &amp;depthDesc, nullptr, depthTexture.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    hr = m_device-&gt;CreateDepthStencilView(
+        depthTexture.Get(), nullptr, m_depthStencilView.GetAddressOf());
+    if (FAILED(hr)) return false;
+
+    // 3) Viewport covers the whole window; depth runs 0 -&gt; 1.
+    m_viewport.Width    = static_cast&lt;float&gt;(width);
+    m_viewport.Height   = static_cast&lt;float&gt;(height);
+    m_viewport.MinDepth = 0.0f;
+    m_viewport.MaxDepth = 1.0f;
+    m_context-&gt;RSSetViewports(1, &amp;m_viewport);
+    return true;
+}</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Link against d3d11.lib</div>
+            <p>These calls live in the Direct3D 11 runtime, so tell the linker to include it. Add <code>#pragma comment(lib, "d3d11.lib")</code> near the top of the <code>.cpp</code>, or add <code>d3d11.lib</code> to your linker inputs. Forget it and you get unresolved-symbol errors, not a runtime crash.</p>
+          </div>
+        </div>
+
+        <h2>Begin and end a frame</h2>
+        <p>
+          This is the payoff. All the per-frame boilerplate — binding the targets, clearing color, clearing depth,
+          presenting — collapses into two methods. Every frame of your game loop calls <code>BeginFrame</code>, records
+          draw calls, then calls <code>EndFrame</code>.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GraphicsDevice.cpp">void GraphicsDevice::BeginFrame(const float clearColor[4]) {
+    // Bind our render target + depth buffer for this frame...
+    m_context-&gt;OMSetRenderTargets(
+        1, m_renderTargetView.GetAddressOf(), m_depthStencilView.Get());
+
+    // ...then wipe both so nothing from the last frame lingers.
+    m_context-&gt;ClearRenderTargetView(m_renderTargetView.Get(), clearColor);
+    m_context-&gt;ClearDepthStencilView(
+        m_depthStencilView.Get(),
+        D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+
+    m_context-&gt;RSSetViewports(1, &amp;m_viewport);
+}
+
+void GraphicsDevice::EndFrame() {
+    // Swap the finished back buffer onto the screen. 1 = wait for vsync.
+    m_swapChain-&gt;Present(1, 0);
+}</code></pre>
+
+        <p>
+          And <code>Resize</code>, so a maximized or dragged window does not stretch a stale image. We must release the
+          old views first — the swap chain cannot resize its buffers while anything still references them.
+        </p>
+
+        <pre><code class="language-cpp" data-file="GraphicsDevice.cpp">void GraphicsDevice::Resize(uint32_t width, uint32_t height) {
+    if (!m_swapChain) return;
+
+    // Unbind and release the old views before resizing the buffers.
+    m_context-&gt;OMSetRenderTargets(0, nullptr, nullptr);
+    m_renderTargetView.Reset();
+    m_depthStencilView.Reset();
+
+    m_swapChain-&gt;ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    CreateRenderTargets(width, height); // rebuild RTV, DSV, viewport
+}</code></pre>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Order of release matters</div>
+            <p>If you skip the <code>Reset()</code> calls, <code>ResizeBuffers</code> fails because the render target view still holds a reference to the old back buffer. This is one place where understanding COM reference counting pays off directly.</p>
+          </div>
+        </div>
+
+        <h2>Using it in the loop</h2>
+        <p>
+          Remember the <code>Application</code> and <code>Window</code> classes from the previous lesson? The renderer
+          slots right in beside them. Look how readable the loop becomes — no DirectX in sight except the color we choose.
+        </p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">GraphicsDevice gfx;
+if (!gfx.Initialize(window.Handle(), 1280, 720)) {
+    return -1; // couldn't reach the GPU
+}
+
+const float sky[4] = { 0.10f, 0.12f, 0.18f, 1.0f }; // RGBA
+
+while (window.ProcessMessages()) {
+    gfx.BeginFrame(sky);
+    //   ... later: systems record draw calls via gfx.Context() ...
+    gfx.EndFrame();
+}</code></pre>
+
+        <p>
+          That <code>gfx.Context()</code> accessor is our doorway to the future. When we build a mesh renderer, it will
+          ask the <code>GraphicsDevice</code> for the context and issue its own draw calls — but it never needs to know
+          how the swap chain was built or how depth is configured. The abstraction holds, and every new system we add
+          leans on it.
+        </p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <code>GraphicsDevice</code> class owns the device, context, swap chain, RTV, and DSV, hiding raw D3D11 behind a small surface.</li>
+            <li><code>Microsoft::WRL::ComPtr</code> releases every GPU resource automatically, so the class needs no destructor.</li>
+            <li><code>Initialize</code> does one-time setup; <code>CreateRenderTargets</code> is shared with <code>Resize</code>.</li>
+            <li><code>BeginFrame</code> binds and clears the targets; <code>EndFrame</code> presents the swap chain.</li>
+            <li><code>Device()</code> and <code>Context()</code> let other engine systems record draw calls without touching setup code.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

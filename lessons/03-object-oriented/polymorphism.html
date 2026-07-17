@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Virtual Functions &amp; Polymorphism — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Use virtual functions, override, and dynamic dispatch to drive many component types through one base pointer — the backbone of an engine's component system.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Virtual Functions &amp; Polymorphism</h1>
+
+        <p class="lead">In the last lesson you learned how <strong>inheritance</strong> lets a derived class reuse a base class. Now we make inheritance <em>do work</em>: with <strong>virtual functions</strong>, a single loop over base-class pointers can call the correct behavior for every different object it holds. This is exactly how Unity and Unreal update thousands of components each frame — and it is the mechanism we will build our own component system on top of.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>What <code>virtual</code> and <code>override</code> do, and how <strong>dynamic dispatch</strong> picks the right function at runtime.</li>
+            <li>The <em>vtable</em> mental model — why calling through a base pointer is not magic.</li>
+            <li>Pure virtual functions to define an <strong>abstract base class</strong> (an interface).</li>
+            <li>The essential <strong>virtual destructor</strong> rule that prevents subtle memory leaks.</li>
+            <li>How to iterate mixed <code>Component</code> objects through one list of base pointers.</li>
+          </ul>
+        </div>
+
+        <h2>The problem: one loop, many behaviors</h2>
+        <p>Imagine an engine object (an "entity") that owns several components. One component moves it, another renders it, another checks physics. Every frame the engine wants to say: "everybody, update yourselves." It should not know or care what <em>kind</em> of component each one is — it just calls <code>Update()</code> and each component does its own thing.</p>
+        <p>Without virtual functions, C++ decides which function to call based on the <strong>type of the pointer</strong>, not the type of the object it points to. That default is called <em>static dispatch</em>, and it gets in our way:</p>
+
+        <pre><code class="language-cpp" data-file="static_dispatch.cpp">#include &lt;iostream&gt;
+
+struct Component {
+    void Update() { std::cout &lt;&lt; "Component::Update\n"; }
+};
+
+struct Transform : Component {
+    void Update() { std::cout &lt;&lt; "Transform moved!\n"; }
+};
+
+int main() {
+    Transform t;
+    Component* c = &amp;t;   // a base pointer aimed at a Transform
+    c-&gt;Update();         // prints "Component::Update" — NOT what we wanted
+}</code></pre>
+
+        <p>Because <code>c</code> is declared as a <code>Component*</code>, the compiler picks <code>Component::Update</code> at compile time. The actual object being a <code>Transform</code> is ignored. To make the object's real type win, we opt in to <strong>dynamic dispatch</strong>.</p>
+
+        <h2>virtual and override</h2>
+        <p>Mark the base function <code>virtual</code>. That tells the compiler: "when this is called through a pointer or reference, look up the real object's version at runtime." In each derived class, repeat the signature and add <code>override</code>.</p>
+
+        <pre><code class="language-cpp" data-file="dynamic_dispatch.cpp">#include &lt;iostream&gt;
+
+struct Component {
+    virtual void Update() { std::cout &lt;&lt; "Component::Update\n"; }
+};
+
+struct Transform : Component {
+    void Update() override { std::cout &lt;&lt; "Transform moved!\n"; }
+};
+
+int main() {
+    Transform t;
+    Component* c = &amp;t;
+    c-&gt;Update();   // prints "Transform moved!" — the object's real type wins
+}</code></pre>
+
+        <p>That one keyword changes everything. The call is now resolved from the object, so the same <code>c-&gt;Update()</code> line runs different code depending on what <code>c</code> actually points to. That is <strong>polymorphism</strong>: "many shapes" behind one interface.</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Always write override</div>
+            <p>It is not required, but it makes the compiler verify that you are really overriding a base virtual with a matching signature. If you mistype the name or the parameters, you get a clear compile error instead of a function that silently never runs.</p>
+          </div>
+        </div>
+
+        <h2>The vtable, in plain terms</h2>
+        <p>How does the program know, at runtime, which <code>Update()</code> to call? You do not have to implement this, but the mental model kills a lot of confusion.</p>
+        <p>When a class has at least one virtual function, the compiler builds a small hidden table — the <strong>vtable</strong> — one per class. It holds the address of each virtual function's real implementation for that class. Every object of that class silently stores a hidden pointer (the <em>vptr</em>) to its class's vtable. A virtual call becomes: follow the object's vptr to the table, look up the slot for <code>Update</code>, and jump there.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="currentColor" stroke-width="1.5" font-family="sans-serif" font-size="12">
+              <rect x="20" y="60" width="120" height="70" rx="6" stroke="#4aa8ff"/>
+              <text x="80" y="52" text-anchor="middle" fill="currentColor" stroke="none">Transform object</text>
+              <text x="80" y="88" text-anchor="middle" fill="currentColor" stroke="none">vptr</text>
+              <line x1="80" y1="98" x2="80" y2="112" stroke="#4aa8ff"/>
+              <text x="80" y="124" text-anchor="middle" fill="currentColor" stroke="none">position, ...</text>
+              <line x1="140" y1="80" x2="320" y2="80" stroke="#4aa8ff"/>
+              <polygon points="320,80 312,76 312,84" fill="#4aa8ff" stroke="#4aa8ff"/>
+              <rect x="322" y="45" width="230" height="70" rx="6" stroke="#4aa8ff"/>
+              <text x="437" y="37" text-anchor="middle" fill="currentColor" stroke="none">Transform vtable</text>
+              <text x="437" y="72" text-anchor="middle" fill="currentColor" stroke="none">Update  &#8594;  Transform::Update</text>
+              <text x="437" y="98" text-anchor="middle" fill="currentColor" stroke="none">~Component &#8594; Transform::~Transform</text>
+            </svg>
+          </div>
+          <figcaption>Each polymorphic object carries a hidden pointer to its class's vtable; a virtual call is one extra lookup.</figcaption>
+        </figure>
+
+        <p>The cost is tiny: one pointer per object and one indirect jump per call. In exchange you get behavior that adapts to the real object type. For an engine updating a list of components, that trade is exactly what we want.</p>
+
+        <h2>Pure virtual functions and abstract classes</h2>
+        <p>Sometimes the base class has no sensible default. What does it mean for a generic <code>Component</code> to "update"? Nothing on its own — only concrete components know. We express that with a <strong>pure virtual function</strong>, written <code>= 0</code>:</p>
+
+        <pre><code class="language-cpp" data-file="component.h">struct Component {
+    virtual void Update(float dt) = 0;   // pure virtual: no body here
+    virtual ~Component() = default;      // (explained in the next section)
+};</code></pre>
+
+        <p>A class with at least one pure virtual function is <strong>abstract</strong>: you cannot create an instance of it directly. It exists to define a contract — an <em>interface</em> — that derived classes must fulfill. Any class that does not implement every pure virtual stays abstract too.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Interface = pure virtual base</div>
+            <p>C++ has no separate <code>interface</code> keyword like C# or Java. An abstract class whose functions are all pure virtual <em>is</em> the C++ way to declare an interface. Our <code>Component</code> is one: it promises every component can <code>Update</code>, without saying how.</p>
+          </div>
+        </div>
+
+        <h2>The virtual destructor rule</h2>
+        <p>This is the one that bites everyone. When you delete an object through a <strong>base pointer</strong>, C++ only runs the base destructor <em>unless the base destructor is virtual</em>. If a derived class allocated resources, they leak silently.</p>
+
+        <pre><code class="language-cpp" data-file="destructor.cpp">#include &lt;iostream&gt;
+#include &lt;vector&gt;
+
+struct Component {
+    // WITHOUT the "virtual" below, deleting via Component* skips ~Mesh.
+    virtual ~Component() { std::cout &lt;&lt; "~Component\n"; }
+};
+
+struct Mesh : Component {
+    std::vector&lt;float&gt; vertices{1.0f, 2.0f, 3.0f}; // owns memory
+    ~Mesh() override { std::cout &lt;&lt; "~Mesh (frees vertices)\n"; }
+};
+
+int main() {
+    Component* c = new Mesh();
+    delete c;   // virtual dtor => runs ~Mesh THEN ~Component. Correct.
+}</code></pre>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">If you delete through a base pointer, the base destructor MUST be virtual</div>
+            <p>Forgetting it is <em>undefined behavior</em> — in practice a leak, because the derived destructor never runs. Rule of thumb: any class meant to be inherited from and deleted polymorphically gets a <code>virtual ~Base() = default;</code>. Our <code>Component</code> already has one.</p>
+          </div>
+        </div>
+
+        <h2>Putting it together: a component system</h2>
+        <p>Now the payoff. We define the abstract <code>Component</code>, write two real components, store them as base pointers in a <code>std::vector</code>, and update them all in one loop. Because <code>Update</code> is virtual, each pointer runs its own code. We use <code>std::unique_ptr</code> (from an earlier lesson) so cleanup is automatic and correct.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+#include &lt;memory&gt;
+#include &lt;vector&gt;
+#include &lt;string&gt;
+
+// --- The interface every component must satisfy ---
+struct Component {
+    virtual void Update(float dt) = 0;   // pure virtual: no default behavior
+    virtual ~Component() = default;      // safe deletion via Component*
+};
+
+// --- A concrete component: moves an entity each frame ---
+struct TransformComponent : Component {
+    float x = 0.0f, y = 0.0f;
+    float vx = 1.0f, vy = 0.5f;          // velocity units per second
+
+    void Update(float dt) override {
+        x += vx * dt;
+        y += vy * dt;
+        std::cout &lt;&lt; "  Transform -&gt; (" &lt;&lt; x &lt;&lt; ", " &lt;&lt; y &lt;&lt; ")\n";
+    }
+};
+
+// --- Another concrete component: reports what it would draw ---
+struct RenderComponent : Component {
+    std::string mesh;
+    explicit RenderComponent(std::string m) : mesh(std::move(m)) {}
+
+    void Update(float dt) override {
+        std::cout &lt;&lt; "  Render   -&gt; drawing '" &lt;&lt; mesh &lt;&lt; "'\n";
+    }
+};
+
+int main() {
+    // One list holds different component types as base pointers.
+    std::vector&lt;std::unique_ptr&lt;Component&gt;&gt; components;
+    components.push_back(std::make_unique&lt;TransformComponent&gt;());
+    components.push_back(std::make_unique&lt;RenderComponent&gt;("cube.obj"));
+
+    const float dt = 0.016f;   // ~16 ms, one frame at 60 FPS
+
+    for (int frame = 0; frame &lt; 2; ++frame) {
+        std::cout &lt;&lt; "Frame " &lt;&lt; frame &lt;&lt; ":\n";
+        for (const auto&amp; c : components) {
+            c-&gt;Update(dt);     // dynamic dispatch: right Update per object
+        }
+    }
+    // unique_ptr destroys each component; virtual ~Component ensures
+    // the correct derived destructor runs. No manual delete needed.
+}</code></pre>
+
+        <p>Expected output:</p>
+        <pre><code class="language-console">Frame 0:
+  Transform -&gt; (0.016, 0.008)
+  Render   -&gt; drawing 'cube.obj'
+Frame 1:
+  Transform -&gt; (0.032, 0.016)
+  Render   -&gt; drawing 'cube.obj'</code></pre>
+
+        <p>Notice what <code>main</code> does <em>not</em> do: it never checks "is this a Transform or a Render?" It just calls <code>Update</code>. To add a <code>PhysicsComponent</code> later, you write a new derived class and push one more pointer — the update loop never changes. That extensibility is the whole point, and it is why real engines are built this way.</p>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Don't store polymorphic objects by value</div>
+            <p>Virtual dispatch only works through a pointer or reference. If you put derived objects into a <code>std::vector&lt;Component&gt;</code> (by value), the derived part is sliced off — called <em>object slicing</em> — and you lose the overridden behavior. Store <code>std::unique_ptr&lt;Component&gt;</code> (or references) instead.</p>
+          </div>
+        </div>
+
+        <h3>When you need the real type back</h3>
+        <p>Occasionally you hold a <code>Component*</code> but need to know if it is specifically a <code>TransformComponent</code>. The safe tool is <code>dynamic_cast</code>, which returns <code>nullptr</code> when the object is not that type:</p>
+
+        <pre><code class="language-cpp" data-file="query.cpp">Component* c = components[0].get();
+if (auto* t = dynamic_cast&lt;TransformComponent*&gt;(c)) {
+    t-&gt;x = 100.0f;   // only runs if c really points to a TransformComponent
+}</code></pre>
+
+        <p>Reach for this sparingly — most engine code should just call virtual functions and let polymorphism do the work. But it is the correct, safe way when you genuinely need the concrete type.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Keyword / feature</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>virtual void f();</code></td><td>Enables dynamic dispatch: the real object's version is called through a base pointer/reference.</td></tr>
+              <tr><td><code>void f() override;</code></td><td>Overrides a base virtual; compiler verifies the signature matches.</td></tr>
+              <tr><td><code>virtual void f() = 0;</code></td><td>Pure virtual — no default body; makes the class abstract (an interface).</td></tr>
+              <tr><td><code>virtual ~Base() = default;</code></td><td>Virtual destructor — required for safe <code>delete</code> through a base pointer.</td></tr>
+              <tr><td><code>dynamic_cast&lt;T*&gt;(p)</code></td><td>Safely recovers the concrete type; yields <code>nullptr</code> if <code>p</code> is not a <code>T</code>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li><code>virtual</code> turns on <strong>dynamic dispatch</strong>, so a call through a base pointer runs the real object's overridden function.</li>
+            <li>Always add <code>override</code> on derived functions to let the compiler catch signature mistakes.</li>
+            <li>The <strong>vtable</strong> is the runtime mechanism: one hidden pointer per object, one lookup per virtual call.</li>
+            <li>A <strong>pure virtual</strong> (<code>= 0</code>) makes a class abstract — the C++ way to define an interface like our <code>Component</code>.</li>
+            <li>Give any polymorphic base a <strong>virtual destructor</strong>, or deleting through a base pointer leaks the derived part.</li>
+            <li>Store components as <code>std::unique_ptr&lt;Component&gt;</code> and iterate them through one loop — the foundation of our component-based engine.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

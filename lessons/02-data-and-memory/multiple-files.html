@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Headers, Source Files &amp; the Preprocessor — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Split C++ into headers and source files, learn #include, include guards, the one-definition rule, and forward declarations.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Headers, Source Files &amp; the Preprocessor</h1>
+
+        <p class="lead">So far every program you have written lived inside a single <code>main.cpp</code>. That is fine for a toy, but our engine will grow to hundreds of files — a math library, a renderer, components, systems. In this lesson you will learn how C++ programs are split into <strong>headers</strong> (declarations) and <strong>source files</strong> (definitions), and how the preprocessor stitches them together. This is the skeleton every real C++ project hangs on.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>The difference between a <em>declaration</em> and a <em>definition</em>, and why the split matters</li>
+            <li>How <code>#include</code> and the preprocessor physically build a translation unit</li>
+            <li>Protecting headers with include guards and <code>#pragma once</code></li>
+            <li>The One Definition Rule (ODR) and how to avoid breaking it</li>
+            <li>Forward declarations to break dependencies and speed up builds</li>
+          </ul>
+        </div>
+
+        <h2>Two kinds of statements: declare vs. define</h2>
+        <p>Every name in C++ is either <strong>declared</strong> or <strong>defined</strong>. A <strong>declaration</strong> tells the compiler that something exists and what its shape is — its name, its return type, its parameters. A <strong>definition</strong> actually provides the body or the storage.</p>
+        <p>Think of a declaration as a promise ("there is a function called <code>Add</code> that takes two ints and returns an int") and a definition as delivering on it (the actual <code>{ return a + b; }</code>). You can declare something as many times as you like, but you may only define it <strong>once</strong>.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Why separate them?</div><p>Any file that wants to <em>use</em> <code>Add</code> only needs the declaration. The definition lives in one place and is compiled once. This is what lets a big project compile files independently and in parallel.</p></div>
+        </div>
+
+        <h2>Headers and source files</h2>
+        <p>By convention we put declarations in a <strong>header file</strong> (extension <code>.h</code> or <code>.hpp</code>) and definitions in a <strong>source file</strong> (extension <code>.cpp</code>). Other files <code>#include</code> the header to learn about the declarations; the source file is compiled separately to provide the definitions.</p>
+
+        <p>Let's build a tiny math library — exactly the kind of thing our engine's <strong>Transform</strong> and <strong>Vector</strong> math will eventually live in. First the header, which declares what the library offers:</p>
+
+        <pre><code class="language-cpp" data-file="Math.h">#pragma once   // include this header at most once per translation unit
+
+// A minimal 2D vector. Small, plain data — perfect for a header.
+struct Vec2 {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+// Declarations only: no function bodies here.
+float Dot(const Vec2&amp; a, const Vec2&amp; b);
+Vec2  Add(const Vec2&amp; a, const Vec2&amp; b);
+float Length(const Vec2&amp; v);</code></pre>
+
+        <p>Now the source file, which <code>#include</code>s its own header and supplies the definitions:</p>
+
+        <pre><code class="language-cpp" data-file="Math.cpp">#include "Math.h"   // pull in the declarations we are about to define
+#include &lt;cmath&gt;     // for std::sqrt
+
+// Each definition matches a declaration in Math.h exactly.
+float Dot(const Vec2&amp; a, const Vec2&amp; b) {
+    return a.x * b.x + a.y * b.y;
+}
+
+Vec2 Add(const Vec2&amp; a, const Vec2&amp; b) {
+    return Vec2{ a.x + b.x, a.y + b.y };
+}
+
+float Length(const Vec2&amp; v) {
+    return std::sqrt(Dot(v, v));   // reuse Dot for v · v
+}</code></pre>
+
+        <p>Finally, <code>main.cpp</code> uses the library. It includes the header — not the source file — and the two <code>.cpp</code> files are compiled separately, then <strong>linked</strong> together into one program.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include "Math.h"
+#include &lt;iostream&gt;
+
+int main() {
+    Vec2 a{ 3.0f, 4.0f };
+    Vec2 b{ 1.0f, 2.0f };
+
+    Vec2 sum = Add(a, b);
+    std::cout &lt;&lt; "sum = (" &lt;&lt; sum.x &lt;&lt; ", " &lt;&lt; sum.y &lt;&lt; ")\n";
+    std::cout &lt;&lt; "length of a = " &lt;&lt; Length(a) &lt;&lt; "\n"; // 5
+
+    return 0;
+}</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Quotes vs. angle brackets</div><p>Use <code>#include "Math.h"</code> (quotes) for <strong>your own</strong> headers — the compiler looks next to the current file first. Use <code>#include &lt;iostream&gt;</code> (angle brackets) for the <strong>standard library</strong> and system headers.</p></div>
+        </div>
+
+        <h2>The preprocessor: what #include really does</h2>
+        <p>Before the real compiler ever sees your code, a stage called the <strong>preprocessor</strong> runs. It is a simple text-substitution engine. When it sees <code>#include "Math.h"</code>, it literally pastes the entire contents of <code>Math.h</code> in place of that line. The result — one <code>.cpp</code> plus everything it pulled in — is called a <strong>translation unit</strong>, and that is what the compiler actually compiles.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 200" fill="none" stroke="#4aa8ff" stroke-width="2">
+              <rect x="20" y="70" width="120" height="60" rx="6"/>
+              <text x="80" y="105" fill="currentColor" stroke="none" font-size="14" text-anchor="middle">main.cpp</text>
+              <text x="80" y="55" fill="currentColor" stroke="none" font-size="12" text-anchor="middle">#include "Math.h"</text>
+              <path d="M150 100 H210" marker-end="url(#a)"/>
+              <rect x="220" y="70" width="150" height="60" rx="6"/>
+              <text x="295" y="98" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Preprocessor</text>
+              <text x="295" y="116" fill="currentColor" stroke="none" font-size="11" text-anchor="middle">pastes headers</text>
+              <path d="M380 100 H440" marker-end="url(#a)"/>
+              <rect x="450" y="70" width="130" height="60" rx="6"/>
+              <text x="515" y="98" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">Translation</text>
+              <text x="515" y="116" fill="currentColor" stroke="none" font-size="13" text-anchor="middle">unit</text>
+              <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="#4aa8ff" stroke="none"/></marker></defs>
+            </svg>
+          </div>
+          <figcaption>A source file plus all of its included headers becomes one translation unit.</figcaption>
+        </figure>
+
+        <h3>Macros, briefly</h3>
+        <p>The preprocessor also handles <code>#define</code>, which creates a <strong>macro</strong> — a name it replaces with text everywhere. You will see these in real code, so recognize them:</p>
+
+        <pre><code class="language-cpp" data-file="macros.cpp">#define PI 3.14159265f          // object-like macro
+#define SQUARE(x) ((x) * (x))    // function-like macro
+
+float area = PI * SQUARE(radius); // expands before compilation</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body"><div class="c-title">Prefer real C++ over macros</div><p>Macros ignore types and scope, so they cause confusing bugs. In modern C++ prefer <code>constexpr float PI = 3.14159265f;</code> and real functions. We keep <code>#define</code> for one job: header guards, next.</p></div>
+        </div>
+
+        <h2>Include guards and #pragma once</h2>
+        <p>Because <code>#include</code> is blind copy-paste, a header can easily be pasted <strong>twice</strong> into the same translation unit — for example if two headers you include both include <code>Math.h</code>. That would define <code>struct Vec2</code> twice in one unit, which is an error.</p>
+        <p>The classic fix is an <strong>include guard</strong>: a macro that makes the second paste do nothing.</p>
+
+        <pre><code class="language-cpp" data-file="Math.h">#ifndef MATH_H      // if MATH_H is not yet defined...
+#define MATH_H      // ...define it, then include the body once
+
+struct Vec2 { float x = 0.0f; float y = 0.0f; };
+float Dot(const Vec2&amp; a, const Vec2&amp; b);
+
+#endif // MATH_H    // second time around, the body is skipped</code></pre>
+
+        <p>Almost every compiler also supports a shorter, equivalent directive that does the same thing with less boilerplate. It is what we used in the very first <code>Math.h</code> above:</p>
+
+        <pre><code class="language-cpp" data-file="Math.h">#pragma once   // one line, no unique macro name to invent
+
+struct Vec2 { float x = 0.0f; float y = 0.0f; };</code></pre>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body"><div class="c-title">Our convention</div><p>We'll put <code>#pragma once</code> at the top of <strong>every</strong> header in the engine. It is supported by Visual Studio, Clang and GCC, and you never have to invent a unique guard name.</p></div>
+        </div>
+
+        <h2>The One Definition Rule</h2>
+        <p>The <strong>One Definition Rule (ODR)</strong> is the law that ties all this together: across your whole program, every function and every variable may have exactly <strong>one</strong> definition. Types like <code>struct Vec2</code> may appear in many translation units, but the definition must be <em>identical</em> everywhere — which is exactly why we put it in a header and guard it.</p>
+        <p>This is the reason headers hold <em>declarations</em>: a declaration can appear in a hundred files, but the single definition of <code>Add</code> lives only in <code>Math.cpp</code>. Put a plain function definition in a header and include it from two <code>.cpp</code> files, and the linker will complain about a duplicate symbol.</p>
+
+        <div class="table-wrap"><table>
+          <thead><tr><th>Goes in the header (.h)</th><th>Goes in the source (.cpp)</th></tr></thead>
+          <tbody>
+            <tr><td>Function declarations (prototypes)</td><td>Function definitions (bodies)</td></tr>
+            <tr><td>Type definitions: <code>struct</code>, <code>enum</code>, class</td><td>Non-inline, non-template implementation</td></tr>
+            <tr><td><code>constexpr</code> / <code>inline</code> constants</td><td>File-local helpers and static data</td></tr>
+            <tr><td><code>#pragma once</code> at the very top</td><td><code>#include</code> of its own header first</td></tr>
+          </tbody>
+        </table></div>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body"><div class="c-title">"Multiple definition" linker errors</div><p>If the linker says a symbol is <em>defined multiple times</em>, you almost certainly put a function <strong>body</strong> in a header. Move it to a <code>.cpp</code>, or mark it <code>inline</code> if it truly must live in the header.</p></div>
+        </div>
+
+        <h2>Forward declarations</h2>
+        <p>Sometimes a header only needs to know that a type <em>exists</em> — for instance to declare a pointer or reference to it — without needing its full definition. In that case you can use a <strong>forward declaration</strong> instead of including the whole header. This breaks dependency chains and dramatically speeds up compilation, something you will appreciate once the engine has dozens of headers.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.h">#pragma once
+
+// Forward declaration: "a struct named Mesh exists somewhere."
+// We do NOT need to #include "Mesh.h" here because we only use Mesh*.
+struct Mesh;
+
+class Renderer {
+public:
+    void Draw(const Mesh* mesh);   // pointer only — declaration is enough
+};</code></pre>
+
+        <p>The rule of thumb: if you only use a <strong>pointer or reference</strong> to a type, a forward declaration is enough. If you store it <strong>by value</strong>, call its methods, or access its members, you need the full definition — so you must <code>#include</code> its header (typically in the <code>.cpp</code>).</p>
+
+        <h2>Why big projects need this</h2>
+        <p>Imagine our engine as one giant <code>main.cpp</code> with fifty thousand lines. Every tiny edit would recompile everything, merge conflicts would be constant, and nobody could work on the renderer and the physics at the same time. Splitting into headers and source files means each <code>.cpp</code> compiles independently, only changed files rebuild, and clean interfaces (the headers) let subsystems evolve without disturbing their neighbors. That is exactly how Unity and Unreal organize their code, and it is the structure we will use for every component we build next.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>A <strong>declaration</strong> promises a name exists; a <strong>definition</strong> provides the body or storage — declare many times, define once.</li>
+            <li>Put declarations in <strong>headers</strong> (<code>.h</code>) and definitions in <strong>source files</strong> (<code>.cpp</code>); other files <code>#include</code> the header.</li>
+            <li><code>#include</code> is preprocessor text-pasting that builds a <strong>translation unit</strong>; guard every header with <code>#pragma once</code>.</li>
+            <li>The <strong>One Definition Rule</strong> forbids duplicate definitions — a body in a header shared by two <code>.cpp</code> files causes linker errors.</li>
+            <li>Use a <strong>forward declaration</strong> when you only need a pointer or reference to a type, to cut dependencies and build time.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

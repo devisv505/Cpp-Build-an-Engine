@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Decisions: if, else &amp; switch — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Learn how C++ programs make decisions with if, else if, else, switch/case and the ternary operator — and how to avoid switch fallthrough bugs.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+        <h1>Decisions: if, else &amp; switch</h1>
+
+        <p class="lead">So far your programs have run straight from top to bottom, doing exactly the same thing every time. Real software — and especially a game engine — has to <strong>react</strong>: is the player alive, is a key pressed, did the ray hit anything? In this lesson you'll teach C++ to choose between different paths using <code>if</code>, <code>else if</code>, <code>else</code>, the <code>switch</code> statement, and the compact ternary operator. These branches are the tiny gates that later drive our game loop, input handling, and component logic.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Write <code>if</code> / <code>else if</code> / <code>else</code> chains driven by boolean conditions</li>
+            <li>Combine and nest conditions cleanly, and read them the way the compiler does</li>
+            <li>Use <code>switch</code> / <code>case</code> / <code>break</code> / <code>default</code> — and dodge the classic fallthrough bug</li>
+            <li>Reach for the ternary <code>?:</code> operator when a full <code>if</code> is overkill</li>
+          </ul>
+        </div>
+
+        <h2>Boolean conditions: the fuel for every branch</h2>
+        <p>Every decision in C++ boils down to a single <code>bool</code> — a value that is either <code>true</code> or <code>false</code>. You already met the comparison and logical operators in the previous lesson; now we put them to work. Expressions like <code>hp &lt;= 0</code>, <code>score &gt; best</code>, or <code>isGrounded &amp;&amp; jumpPressed</code> all evaluate to a <code>bool</code>, and that's exactly what a branch needs.</p>
+
+        <p>The simplest branch is a lone <code>if</code>. If the condition is <code>true</code>, the block in braces runs; otherwise it's skipped entirely.</p>
+
+        <pre><code class="language-cpp" data-file="main.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int playerHealth = 30;
+
+    // The condition is a bool expression. Only runs when it's true.
+    if (playerHealth &lt; 50) {
+        std::cout &lt;&lt; "Warning: health is low!\n";
+    }
+
+    std::cout &lt;&lt; "Health = " &lt;&lt; playerHealth &lt;&lt; "\n";
+    return 0;
+}</code></pre>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Always use braces</div><p>C++ lets you skip the <code>{ }</code> when a branch has a single statement, but don't. Braces prevent a whole family of bugs (like the infamous "goto fail" security hole) and keep diffs clean when you add a second line later. In this course, every branch gets braces.</p></div></div>
+
+        <h2>Choosing between paths: else and else if</h2>
+        <p>An <code>if</code> on its own answers a yes/no question. Add <code>else</code> to handle the "no" case, and chain <code>else if</code> to test several conditions in order. C++ checks them top to bottom and runs the <strong>first</strong> block whose condition is <code>true</code> — then skips the rest.</p>
+
+        <pre><code class="language-cpp" data-file="grade.cpp">#include &lt;iostream&gt;
+
+int main() {
+    int hp = 62;
+
+    if (hp &lt;= 0) {
+        std::cout &lt;&lt; "Status: dead\n";
+    } else if (hp &lt; 25) {
+        std::cout &lt;&lt; "Status: critical\n";
+    } else if (hp &lt; 60) {
+        std::cout &lt;&lt; "Status: hurt\n";
+    } else {
+        std::cout &lt;&lt; "Status: healthy\n";   // hp is 60 or more
+    }
+
+    return 0;
+}</code></pre>
+
+        <p>Order matters. Because C++ stops at the first match, you go from the most specific or most urgent case to the most general. If you flipped the checks so <code>hp &lt; 60</code> came first, a health of 10 would print "hurt" and never reach the "critical" branch. The final <code>else</code> is your catch-all: it runs when nothing above matched.</p>
+
+        <div class="callout warn"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div class="c-body"><div class="c-title">= is not ==</div><p>Writing <code>if (hp = 0)</code> <em>assigns</em> 0 to <code>hp</code> and then tests the result (0, which is <code>false</code>). You almost always meant <code>==</code>. Modern compilers warn about this — turn warnings on and treat them as errors.</p></div></div>
+
+        <h2>Nesting and combining conditions</h2>
+        <p>You can place an <code>if</code> inside another <code>if</code> to express "this, and then within that, that". Often, though, a nested check reads more clearly when you flatten it with the logical operators <code>&amp;&amp;</code> (and) and <code>||</code> (or).</p>
+
+        <pre><code class="language-cpp" data-file="jump.cpp">bool isGrounded   = true;
+bool jumpPressed  = true;
+int  stamina      = 15;
+
+// Nested version
+if (isGrounded) {
+    if (jumpPressed &amp;&amp; stamina &gt; 10) {
+        // perform jump
+    }
+}
+
+// Flatter, equivalent version — usually easier to read
+if (isGrounded &amp;&amp; jumpPressed &amp;&amp; stamina &gt; 10) {
+    // perform jump
+}</code></pre>
+
+        <p>Both forms behave the same here. Reach for nesting when the inner and outer conditions need genuinely different <code>else</code> handling; otherwise, prefer the flat combined condition. One more thing worth knowing: <code>&amp;&amp;</code> and <code>||</code> are <strong>short-circuit</strong> operators. In <code>a &amp;&amp; b</code>, if <code>a</code> is <code>false</code>, C++ never even evaluates <code>b</code>. We'll lean on that later to safely write things like <code>if (ptr != nullptr &amp;&amp; ptr-&gt;IsActive())</code>.</p>
+
+        <h2>switch: branching on one value</h2>
+        <p>When you're comparing a single integer-like value against many fixed constants, a long <code>else if</code> chain gets noisy. The <code>switch</code> statement expresses that intent directly. It's perfect for enum-driven state — exactly the kind of thing an engine has plenty of, such as a game state or an input action.</p>
+
+        <pre><code class="language-cpp" data-file="state.cpp">#include &lt;iostream&gt;
+
+// An enum gives our states readable names instead of magic numbers.
+enum class GameState { MainMenu, Playing, Paused, GameOver };
+
+void update(GameState state) {
+    switch (state) {
+        case GameState::MainMenu:
+            std::cout &lt;&lt; "Showing the main menu\n";
+            break;                              // stop here — don't fall through
+
+        case GameState::Playing:
+            std::cout &lt;&lt; "Simulating the world\n";
+            break;
+
+        case GameState::Paused:
+            std::cout &lt;&lt; "Game paused\n";
+            break;
+
+        default:                                // anything we didn't list
+            std::cout &lt;&lt; "Game over screen\n";
+            break;
+    }
+}
+
+int main() {
+    update(GameState::Playing);
+    return 0;
+}</code></pre>
+
+        <p>The value in <code>switch (state)</code> is compared against each <code>case</code> label. When one matches, execution jumps there and runs until it hits a <code>break</code>. The <code>default</code> label catches any value that no <code>case</code> handled — think of it as the <code>switch</code> version of a trailing <code>else</code>. A <code>switch</code> only works on integral or enum types (and <code>char</code>), not on <code>float</code> or <code>std::string</code>.</p>
+
+        <div class="callout danger"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span><div class="c-body"><div class="c-title">Forgetting break = fallthrough</div><p>If you omit <code>break</code>, execution "falls through" into the next <code>case</code> and keeps running. Leaving out the <code>break</code> after <code>Playing</code> above would print both "Simulating the world" and "Game paused". This is a real, silent bug source — make <code>break</code> a reflex on every case.</p></div></div>
+
+        <h3>Intentional fallthrough</h3>
+        <p>Occasionally you <em>want</em> several cases to share one block — for example, treating two keys the same way. Stacking labels with no code between them is legal and clear, and it isn't the dangerous kind of fallthrough:</p>
+
+        <pre><code class="language-cpp" data-file="input.cpp">switch (key) {
+    case 'w':
+    case 'W':                 // both 'w' and 'W' run the same code
+        moveForward();
+        break;
+
+    case 's':
+    case 'S':
+        moveBackward();
+        break;
+}</code></pre>
+
+        <div class="callout tip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span><div class="c-body"><div class="c-title">Say what you mean</div><p>If you deliberately fall through after running some code, mark it with the C++17 attribute <code>[[fallthrough]];</code> on its own line. It documents intent for readers and silences compiler warnings, so accidental fallthrough still gets flagged.</p></div></div>
+
+        <h2>if vs. switch: which to use</h2>
+        <div class="table-wrap"><table><thead><tr><th>Use if / else if when…</th><th>Use switch when…</th></tr></thead><tbody>
+          <tr><td>Conditions involve ranges (<code>hp &lt; 25</code>) or comparisons</td><td>You test one value against fixed constants</td></tr>
+          <tr><td>You combine several variables with <code>&amp;&amp;</code> / <code>||</code></td><td>The value is an <code>int</code>, <code>char</code>, or <code>enum</code></td></tr>
+          <tr><td>Only two or three outcomes</td><td>There are many discrete cases (states, key codes)</td></tr>
+        </tbody></table></div>
+
+        <h2>The ternary operator: a decision as a value</h2>
+        <p>Sometimes an <code>if</code> just picks one of two <em>values</em> to store or print. The ternary operator <code>condition ? a : b</code> does that in a single expression: it evaluates to <code>a</code> when the condition is true, otherwise <code>b</code>.</p>
+
+        <pre><code class="language-cpp" data-file="ternary.cpp">#include &lt;iostream&gt;
+#include &lt;string&gt;
+
+int main() {
+    int hp = 0;
+
+    // Reads as: "hp &gt; 0 ? then 'Alive' : otherwise 'Dead'"
+    std::string label = (hp &gt; 0) ? "Alive" : "Dead";
+    std::cout &lt;&lt; "Player is " &lt;&lt; label &lt;&lt; "\n";
+
+    // Handy inline, too — clamp a value without a temporary variable.
+    int lives = 3;
+    std::cout &lt;&lt; "Lives: " &lt;&lt; (lives &gt; 0 ? lives : 0) &lt;&lt; "\n";
+    return 0;
+}</code></pre>
+
+        <p>Keep ternaries short and readable — they shine for simple either/or choices. If either branch needs several statements or the logic starts to nest, go back to a full <code>if</code>. Clarity beats cleverness, especially in engine code you'll be re-reading for months.</p>
+
+        <div class="callout"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span><div class="c-body"><div class="c-title">Where this goes next</div><p>Branches are how our engine will decide whether an entity is active before updating it, whether a collision actually happened, or which render path to take. Combined with the loops in the next lesson, they form the beating heart of the game loop.</p></div></div>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>Every branch is driven by a <code>bool</code> condition; <code>if</code> / <code>else if</code> / <code>else</code> run the first block that's true and skip the rest, so order matters.</li>
+            <li>Always use braces, and remember <code>==</code> compares while <code>=</code> assigns.</li>
+            <li>Combine conditions with short-circuiting <code>&amp;&amp;</code> and <code>||</code>; flatten nested <code>if</code>s when it reads more clearly.</li>
+            <li><code>switch</code> is ideal for one value against many constant cases — but forgetting <code>break</code> causes silent fallthrough.</li>
+            <li>The ternary <code>?:</code> picks between two values in a single expression; keep it simple.</li>
+          </ul>
+        </div>
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

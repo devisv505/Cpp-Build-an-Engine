@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Camera Component — Learn C++ &amp; DirectX</title>
+  <meta name="description" content="Build a Camera component that derives from Component, produces view and projection matrices from its Transform, and feeds the renderer's per-object MVP.">
+  <link rel="stylesheet" href="../../css/styles.css">
+</head>
+<body class="lesson-page">
+  <div id="app">
+    <main class="content">
+      <article class="lesson">
+
+        <h1>The Camera Component</h1>
+
+        <p class="lead">Every engine needs an eye. In Unity you drop a Camera onto a GameObject; in Unreal it is an actor component. We are going to do exactly the same thing: our camera will be <em>just another component</em> that lives on a GameObject and reads its Transform. By the end of this lesson our renderer will be able to ask one object, "what does the world look like from here?", and turn that answer into the matrix every mesh needs to appear on screen.</p>
+
+        <div class="objectives">
+          <div class="o-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg> What you'll learn</div>
+          <ul>
+            <li>Why a camera is best modelled as a <code>Component</code>, not a special hard-coded object</li>
+            <li>How to build a <strong>view matrix</strong> from the owner GameObject's Transform</li>
+            <li>How to build a <strong>projection matrix</strong> from FOV, aspect ratio, near and far planes</li>
+            <li>How the Scene tracks an <em>active camera</em> and the renderer uses it for each object's MVP</li>
+          </ul>
+        </div>
+
+        <h2>A camera is just a component</h2>
+
+        <p>In the previous lesson we built <code>GameObject</code> and the <code>Component</code> base class, and we gave every GameObject a <code>Transform</code> that describes where it sits in the world. A camera does not need any new machinery. It needs a <em>position and orientation</em> in the world (that is the Transform we already have) plus a few lens settings. So the camera is a small class that derives from <code>Component</code> and does one job: turn its owner's Transform into the matrices the GPU wants.</p>
+
+        <p>This is the same design Unity and Unreal use, and it is a big reason engines feel so flexible. Because the camera rides on a GameObject, moving the camera is the same as moving any object, parenting works for free, and you can have many cameras and simply choose which one is active.</p>
+
+        <figure>
+          <div class="figure-box">
+            <svg viewBox="0 0 600 140" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The vertex transform pipeline">
+              <g stroke="currentColor" stroke-width="1.5" font-family="inherit" font-size="13">
+                <rect x="10" y="45" width="110" height="50" rx="8"/>
+                <text x="65" y="75" text-anchor="middle" fill="currentColor" stroke="none">Model space</text>
+                <rect x="180" y="45" width="110" height="50" rx="8"/>
+                <text x="235" y="75" text-anchor="middle" fill="currentColor" stroke="none">World space</text>
+                <rect x="350" y="45" width="110" height="50" rx="8"/>
+                <text x="405" y="75" text-anchor="middle" fill="currentColor" stroke="none">View space</text>
+                <rect x="490" y="45" width="100" height="50" rx="8"/>
+                <text x="540" y="75" text-anchor="middle" fill="currentColor" stroke="none">Clip space</text>
+                <g stroke="#4aa8ff">
+                  <line x1="120" y1="70" x2="178" y2="70"/>
+                  <path d="M178 70 l-8 -4 v8 z" fill="#4aa8ff" stroke="none"/>
+                  <line x1="290" y1="70" x2="348" y2="70"/>
+                  <path d="M348 70 l-8 -4 v8 z" fill="#4aa8ff" stroke="none"/>
+                  <line x1="460" y1="70" x2="488" y2="70"/>
+                  <path d="M488 70 l-8 -4 v8 z" fill="#4aa8ff" stroke="none"/>
+                </g>
+                <text x="149" y="35" text-anchor="middle" fill="#4aa8ff" stroke="none" font-size="12">world</text>
+                <text x="319" y="35" text-anchor="middle" fill="#4aa8ff" stroke="none" font-size="12">view</text>
+                <text x="474" y="35" text-anchor="middle" fill="#4aa8ff" stroke="none" font-size="12">proj</text>
+              </g>
+            </svg>
+          </div>
+          <figcaption>A vertex travels from model space to clip space. The camera supplies the <em>view</em> and <em>projection</em> steps; the object's Transform supplies <em>world</em>.</figcaption>
+        </figure>
+
+        <h2>The view matrix: where the camera is looking</h2>
+
+        <p>A Transform can already produce a <strong>world matrix</strong> — the matrix that places an object into the scene. The view matrix is the mirror image of that idea. Instead of pushing an object out into the world, it pulls the whole world <em>in front of a camera sitting at the origin, looking down +Z</em>. If the camera's world matrix says "I am here, facing this way", then undoing that transform is exactly what moves everything into the camera's point of view.</p>
+
+        <p>That "undoing" is a matrix inverse. So the view matrix is simply the inverse of the camera's world matrix — no separate look-at bookkeeping required.</p>
+
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">View = inverse of the camera's world matrix</div>
+            <p>This one identity is the whole trick. Because our camera lives on a GameObject with a Transform, we reuse the <code>GetWorldMatrix()</code> we already wrote last lesson and invert it. Move the GameObject and the view updates automatically.</p>
+          </div>
+        </div>
+
+        <h2>The projection matrix: how the camera sees</h2>
+
+        <p>The projection matrix decides the shape of the viewing volume — the frustum. For a perspective camera it comes from four familiar knobs:</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Parameter</th><th>Meaning</th><th>Typical value</th></tr></thead>
+            <tbody>
+              <tr><td><code>fovY</code></td><td>Vertical field of view (in radians) — how wide the lens is</td><td>45°–60°</td></tr>
+              <tr><td><code>aspect</code></td><td>Back-buffer width divided by height</td><td>16 / 9</td></tr>
+              <tr><td><code>nearZ</code></td><td>Closest distance that is still drawn</td><td>0.1</td></tr>
+              <tr><td><code>farZ</code></td><td>Farthest distance that is still drawn</td><td>1000</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>DirectXMath gives us <code>XMMatrixPerspectiveFovLH</code>, which builds exactly this left-handed perspective matrix. Here is the whole Camera component — small, focused, and derived from <code>Component</code> just like everything else:</p>
+
+        <pre><code class="language-cpp" data-file="Camera.h">#include &lt;DirectXMath.h&gt;
+using namespace DirectX;
+
+// Camera derives from Component, exactly like Transform or MeshRenderer.
+// It stores no position of its own — it reads the owner GameObject's Transform.
+class Camera : public Component
+{
+public:
+    float fovY   = XM_PIDIV4;      // vertical field of view (45 degrees)
+    float aspect = 16.0f / 9.0f;   // back-buffer width / height
+    float nearZ  = 0.1f;           // closest visible distance
+    float farZ   = 1000.0f;        // farthest visible distance
+
+    // The view matrix pulls the WORLD in front of a camera at the origin.
+    // That is simply the inverse of the camera's world transform.
+    XMMATRIX GetView() const
+    {
+        XMMATRIX world = owner-&gt;transform-&gt;GetWorldMatrix();
+        return XMMatrixInverse(nullptr, world);
+    }
+
+    // A perspective projection built from the four classic lens knobs.
+    XMMATRIX GetProjection() const
+    {
+        return XMMatrixPerspectiveFovLH(fovY, aspect, nearZ, farZ);
+    }
+
+    // The combined matrix the renderer wants for every object this frame.
+    XMMATRIX GetViewProjection() const
+    {
+        return GetView() * GetProjection();
+    }
+};</code></pre>
+
+        <p>Notice <code>owner</code> — that is the <code>GameObject*</code> back-pointer the <code>Component</code> base class gave every component last lesson. Through it the camera can reach the shared <code>transform</code>. That is the entire link between "a thing in the scene" and "a lens on the scene".</p>
+
+        <div class="callout tip">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V17h6v-.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Recompute aspect on resize</div>
+            <p>The <code>aspect</code> ratio must match the render target. When the window resizes and you rebuild the swap chain's buffers, set <code>camera-&gt;aspect = width / (float)height;</code> so nothing looks stretched.</p>
+          </div>
+        </div>
+
+        <h2>GetViewProjection(): one matrix for the pipeline</h2>
+
+        <p>The renderer does not want view and projection separately — it wants them multiplied. Because DirectXMath uses <strong>row vectors</strong>, transforms compose left to right, so <code>view * projection</code> is the correct order. Combining them once per frame (not once per object) is a small but real optimisation: the view and projection never change while we walk the object list.</p>
+
+        <h2>The scene tracks the active camera</h2>
+
+        <p>A scene may hold several cameras — a main view, a minimap, a shadow view. The renderer needs to know which one to render through <em>right now</em>. We store a single non-owning pointer on the Scene: the GameObject owns the Camera; the Scene merely remembers which camera is active.</p>
+
+        <pre><code class="language-cpp" data-file="Scene.h">class Scene
+{
+public:
+    std::vector&lt;std::unique_ptr&lt;GameObject&gt;&gt; objects;
+
+    // Raw, NON-owning pointer. The GameObject owns the Camera via its
+    // component list; the Scene only remembers which one is rendering.
+    Camera* activeCamera = nullptr;
+
+    void SetActiveCamera(Camera* cam) { activeCamera = cam; }
+};</code></pre>
+
+        <div class="callout warn">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Never store an owning pointer here</div>
+            <p><code>activeCamera</code> must be a plain <code>Camera*</code>, not a <code>unique_ptr</code>. The GameObject already owns the component. If two things tried to own it, you would get a double free when the scene tears down.</p>
+          </div>
+        </div>
+
+        <h2>The renderer builds the per-object MVP</h2>
+
+        <p>Now the payoff. Each frame the renderer grabs the active camera's view-projection <strong>once</strong>, then loops over the drawable objects. For each one it folds in that object's world matrix to produce the <strong>MVP</strong> (model-view-projection) matrix, and uploads it to a constant buffer the vertex shader reads.</p>
+
+        <pre><code class="language-cpp" data-file="Renderer.cpp">struct CBPerObject
+{
+    XMFLOAT4X4 mvp;   // world * view * projection, ready for the GPU
+};
+
+void Renderer::DrawScene(Scene&amp; scene)
+{
+    if (scene.activeCamera == nullptr)
+        return;   // nothing to look through — skip the frame
+
+    // Ask the active camera for view * projection ONCE this frame.
+    XMMATRIX viewProj = scene.activeCamera-&gt;GetViewProjection();
+
+    for (auto&amp; obj : scene.objects)
+    {
+        MeshRenderer* mesh = obj-&gt;GetComponent&lt;MeshRenderer&gt;();
+        if (mesh == nullptr)
+            continue;   // this GameObject has nothing to draw
+
+        // Per-object MVP: the object's world folded into view * projection.
+        XMMATRIX mvp = obj-&gt;transform-&gt;GetWorldMatrix() * viewProj;
+
+        // HLSL reads matrices column-major but DirectXMath is row-major,
+        // so we transpose before copying into the constant buffer.
+        CBPerObject cb;
+        XMStoreFloat4x4(&amp;cb.mvp, XMMatrixTranspose(mvp));
+        m_context-&gt;UpdateSubresource(m_cbPerObject.Get(), 0, nullptr, &amp;cb, 0, 0);
+
+        mesh-&gt;Draw(m_context.Get());   // binds buffers and calls DrawIndexed
+    }
+}</code></pre>
+
+        <p>And the matching vertex shader is tiny — it just multiplies each vertex by the MVP we uploaded:</p>
+
+        <pre><code class="language-hlsl" data-file="VertexShader.hlsl">cbuffer CBPerObject : register(b0)
+{
+    float4x4 gMVP;   // model-view-projection for this object
+};
+
+struct VSInput
+{
+    float3 posL : POSITION;   // vertex position in local / model space
+};
+
+float4 main(VSInput vin) : SV_POSITION
+{
+    // Row-vector convention: position on the left, matrix on the right.
+    return mul(float4(vin.posL, 1.0f), gMVP);
+}</code></pre>
+
+        <div class="callout danger">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></svg></span>
+          <div class="c-body">
+            <div class="c-title">Forgetting the transpose = a black screen</div>
+            <p>DirectXMath stores matrices row-major; an HLSL constant buffer interprets them column-major. If you skip <code>XMMatrixTranspose</code>, your MVP is effectively transposed and everything projects to nowhere. When a scene renders blank with no errors, check this first.</p>
+          </div>
+        </div>
+
+        <p>That is the complete data flow: a GameObject's Transform feeds the Camera, the Camera feeds the Scene's active-camera slot, and the renderer combines it with each object's world matrix to place every triangle on screen. In the next lesson we will wire this into the engine loop so it all runs, frame after frame.</p>
+
+        <div class="recap">
+          <div class="r-title">Recap</div>
+          <ul>
+            <li>The camera is <strong>just a Component</strong> on a GameObject, so it reuses the Transform we already built.</li>
+            <li>The <strong>view matrix</strong> is the inverse of the camera's world matrix; the <strong>projection matrix</strong> comes from FOV, aspect, near and far.</li>
+            <li><code>GetViewProjection()</code> returns <code>view * projection</code> once per frame for the renderer to reuse.</li>
+            <li>The Scene keeps a <strong>non-owning</strong> <code>activeCamera</code> pointer; the GameObject remains the owner.</li>
+            <li>The renderer builds a per-object <strong>MVP</strong> = <code>world * viewProj</code>, transposes it, and the vertex shader multiplies each vertex by it.</li>
+          </ul>
+        </div>
+
+      </article>
+    </main>
+  </div>
+  <script src="../../js/curriculum.js"></script>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
