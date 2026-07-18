@@ -190,6 +190,11 @@ Mesh*      m = entity.GetComponent&lt;Mesh&gt;();</code></pre>
           <div class="c-body"><div class="c-title">Requirements come from usage</div><p>A template silently requires whatever operations it uses. <code>Max</code> needs <code>operator&gt;</code>; <code>Array</code> needs <code>T</code> to be copy-assignable. If you instantiate a template with a type that lacks a needed operation, the error appears at the point of use — another reason to keep your own types well-behaved with the operators from the previous lesson.</p></div>
         </div>
 
+        <div class="callout">
+          <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01" stroke-linecap="round"/></svg></span>
+          <div class="c-body"><div class="c-title">Looking ahead: stating requirements out loud</div><p>Coming from Java or C#? There you would write <code>&lt;T extends Component&gt;</code> to restrict what <code>T</code> is allowed to be. Modern C++ (C++20) can state the same requirement with a <strong>concept</strong>: declare the sketch above as <code>template &lt;std::derived_from&lt;Component&gt; T&gt; T* GetComponent();</code> and it only compiles when <code>T</code> really inherits from <code>Component</code>. The payoff is the error message: a wrong <code>T</code> now fails at the call site with "constraints not satisfied" instead of a confusing error deep inside the template. Concepts are a big topic of their own, but this one pattern covers most engine code — and it is exactly what we'll use when we build the real <code>GetComponent</code> in the engine module.</p></div>
+        </div>
+
         <div class="recap">
           <div class="r-title">Recap</div>
           <ul>
