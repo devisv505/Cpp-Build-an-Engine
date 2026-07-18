@@ -62,45 +62,46 @@
 
         <h2>Dot product in code</h2>
 
-        <p>Let's extend the small <code>Vec3</code> type from last lesson with a dot product and a couple of helpers. This is real, compilable C++17.</p>
+        <p>Let's extend the same <code>Vector3</code> type from last lesson — the one with member operators — by adding a dot product and a couple of helpers as member functions. This is real, compilable C++17.</p>
 
-        <pre><code class="language-cpp" data-file="dot.cpp">#include &lt;iostream&gt;
+        <pre><code class="language-cpp" data-file="Vector3.h">#include &lt;iostream&gt;
 #include &lt;cmath&gt;
 
-struct Vec3 {
+struct Vector3 {
     float x = 0, y = 0, z = 0;
+
+    // Dot product: multiply matching components and sum.
+    float Dot(const Vector3&amp; rhs) const {
+        return x * rhs.x + y * rhs.y + z * rhs.z;
+    }
+
+    // Length (magnitude): |v| = sqrt(v · v).
+    float Length() const {
+        return std::sqrt(Dot(*this));
+    }
+
+    // Return a unit-length copy (guard against divide-by-zero).
+    Vector3 Normalized() const {
+        float len = Length();
+        if (len &lt; 1e-6f) return {0, 0, 0};
+        return { x / len, y / len, z / len };
+    }
+
+    // Angle to another vector, in degrees.
+    float AngleDeg(const Vector3&amp; rhs) const {
+        float c = Normalized().Dot(rhs.Normalized());
+        // Clamp to avoid tiny floating-point overshoot past ±1.
+        c = std::fmax(-1.0f, std::fmin(1.0f, c));
+        return std::acos(c) * (180.0f / 3.14159265f);
+    }
 };
 
-// Dot product: multiply matching components and sum.
-float dot(const Vec3&amp; a, const Vec3&amp; b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-float length(const Vec3&amp; v) {
-    return std::sqrt(dot(v, v));   // |v| = sqrt(v · v)
-}
-
-// Return a unit-length copy (guard against divide-by-zero).
-Vec3 normalize(const Vec3&amp; v) {
-    float len = length(v);
-    if (len &lt; 1e-6f) return {0, 0, 0};
-    return { v.x / len, v.y / len, v.z / len };
-}
-
-// Angle between two vectors, in degrees.
-float angleDeg(const Vec3&amp; a, const Vec3&amp; b) {
-    float c = dot(normalize(a), normalize(b));
-    // Clamp to avoid tiny floating-point overshoot past ±1.
-    c = std::fmax(-1.0f, std::fmin(1.0f, c));
-    return std::acos(c) * (180.0f / 3.14159265f);
-}
-
 int main() {
-    Vec3 a{1, 0, 0};
-    Vec3 b{1, 1, 0};
+    Vector3 a{1, 0, 0};
+    Vector3 b{1, 1, 0};
 
-    std::cout &lt;&lt; "dot   = " &lt;&lt; dot(a, b)      &lt;&lt; "\n"; // 1
-    std::cout &lt;&lt; "angle = " &lt;&lt; angleDeg(a, b) &lt;&lt; " deg\n"; // ~45
+    std::cout &lt;&lt; "dot   = " &lt;&lt; a.Dot(b)      &lt;&lt; "\n"; // 1
+    std::cout &lt;&lt; "angle = " &lt;&lt; a.AngleDeg(b) &lt;&lt; " deg\n"; // ~45
     return 0;
 }</code></pre>
 
@@ -165,52 +166,56 @@ float3 color = albedo * lightColor * ndotl;</code></pre>
         <pre><code class="language-cpp" data-file="cross.cpp">#include &lt;iostream&gt;
 #include &lt;cmath&gt;
 
-struct Vec3 { float x = 0, y = 0, z = 0; };
+struct Vector3 {
+    float x = 0, y = 0, z = 0;
 
-Vec3 operator-(const Vec3&amp; a, const Vec3&amp; b) {
-    return { a.x - b.x, a.y - b.y, a.z - b.z };
-}
+    // Subtract: (b - a) is the direction from a to b.
+    Vector3 operator-(const Vector3&amp; rhs) const {
+        return { x - rhs.x, y - rhs.y, z - rhs.z };
+    }
 
-float dot(const Vec3&amp; a, const Vec3&amp; b) {
-    return a.x*b.x + a.y*b.y + a.z*b.z;
-}
+    float Dot(const Vector3&amp; rhs) const {
+        return x * rhs.x + y * rhs.y + z * rhs.z;
+    }
 
-// Cross product: result is perpendicular to both a and b.
-Vec3 cross(const Vec3&amp; a, const Vec3&amp; b) {
-    return {
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x
-    };
-}
+    // Cross product: result is perpendicular to both this and rhs.
+    Vector3 Cross(const Vector3&amp; rhs) const {
+        return {
+            y * rhs.z - z * rhs.y,
+            z * rhs.x - x * rhs.z,
+            x * rhs.y - y * rhs.x
+        };
+    }
 
-Vec3 normalize(const Vec3&amp; v) {
-    float len = std::sqrt(dot(v, v));
-    if (len &lt; 1e-6f) return {0, 0, 0};
-    return { v.x / len, v.y / len, v.z / len };
-}
+    // Return a unit-length copy (guard against divide-by-zero).
+    Vector3 Normalized() const {
+        float len = std::sqrt(Dot(*this));
+        if (len &lt; 1e-6f) return {0, 0, 0};
+        return { x / len, y / len, z / len };
+    }
+};
 
 // Face normal of the triangle (p0, p1, p2).
-Vec3 triangleNormal(const Vec3&amp; p0, const Vec3&amp; p1, const Vec3&amp; p2) {
-    Vec3 edge1 = p1 - p0;
-    Vec3 edge2 = p2 - p0;
-    return normalize(cross(edge1, edge2));
+Vector3 triangleNormal(const Vector3&amp; p0, const Vector3&amp; p1, const Vector3&amp; p2) {
+    Vector3 edge1 = p1 - p0;
+    Vector3 edge2 = p2 - p0;
+    return edge1.Cross(edge2).Normalized();
 }
 
 int main() {
     // A triangle lying flat in the XZ plane.
-    Vec3 p0{0, 0, 0};
-    Vec3 p1{1, 0, 0};
-    Vec3 p2{0, 0, 1};
+    Vector3 p0{0, 0, 0};
+    Vector3 p1{1, 0, 0};
+    Vector3 p2{0, 0, 1};
 
-    Vec3 n = triangleNormal(p0, p1, p2);
+    Vector3 n = triangleNormal(p0, p1, p2);
     std::cout &lt;&lt; "normal = ("
               &lt;&lt; n.x &lt;&lt; ", " &lt;&lt; n.y &lt;&lt; ", " &lt;&lt; n.z &lt;&lt; ")\n";
     // Expect (0, -1, 0): perpendicular to the flat triangle.
     return 0;
 }</code></pre>
 
-        <p>Run it and the normal comes out as <code>(0, -1, 0)</code> — straight down, perpendicular to a triangle that lies flat. Swap the order of the two edges (cross <code>edge2</code> with <code>edge1</code>) and the normal flips to <code>(0, 1, 0)</code>. That flip is handedness in action, and it is why the <strong>winding order</strong> of your triangle vertices matters when the engine decides which side of a face is "front".</p>
+        <p>Run it and the normal comes out as <code>(0, -1, 0)</code> — straight down, perpendicular to a triangle that lies flat. Swap the order of the two edges (<code>edge2.Cross(edge1)</code>) and the normal flips to <code>(0, 1, 0)</code>. That flip is handedness in action, and it is why the <strong>winding order</strong> of your triangle vertices matters when the engine decides which side of a face is "front".</p>
 
         <h3>Building a coordinate frame</h3>
 
